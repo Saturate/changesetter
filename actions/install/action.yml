@@ -1,0 +1,60 @@
+name: Install changesetter
+description: Download and cache the changesetter CLI binary
+
+inputs:
+  version:
+    description: Version to install (e.g. "0.1.0" or "latest")
+    required: false
+    default: latest
+
+runs:
+  using: composite
+  steps:
+    - name: Determine version
+      id: version
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          VERSION=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/')
+        else
+          VERSION="${{ inputs.version }}"
+        fi
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+    - name: Determine platform
+      id: platform
+      shell: bash
+      run: |
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64) ARCH="x86_64" ;;
+          aarch64|arm64) ARCH="aarch64" ;;
+        esac
+        case "$OS" in
+          linux) TARGET="${ARCH}-unknown-linux-gnu" ;;
+          darwin) TARGET="${ARCH}-apple-darwin" ;;
+          *) echo "Unsupported OS: $OS"; exit 1 ;;
+        esac
+        echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+
+    - name: Cache changesetter
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.changesetter/bin
+        key: changesetter-${{ steps.version.outputs.version }}-${{ steps.platform.outputs.target }}
+
+    - name: Download changesetter
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        TARGET="${{ steps.platform.outputs.target }}"
+        URL="https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${TARGET}.tar.gz"
+        mkdir -p ~/.changesetter/bin
+        curl -sL "$URL" | tar xz -C ~/.changesetter/bin
+
+    - name: Add to PATH
+      shell: bash
+      run: echo "$HOME/.changesetter/bin" >> "$GITHUB_PATH"

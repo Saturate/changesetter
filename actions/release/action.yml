@@ -1,0 +1,99 @@
+name: Changesetter Release
+description: Run changesetter release and optionally create GitHub Releases
+
+inputs:
+  github-release:
+    description: Whether to create GitHub Releases
+    required: false
+    default: "true"
+  draft:
+    description: Create GitHub Releases as drafts
+    required: false
+    default: "false"
+  version:
+    description: changesetter version to install
+    required: false
+    default: latest
+
+outputs:
+  released:
+    description: Whether any releases were created
+    value: ${{ steps.release.outputs.released }}
+  releases:
+    description: JSON array of release objects
+    value: ${{ steps.release.outputs.releases }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install changesetter
+      uses: saturate/changesetter/actions/install@v1
+      with:
+        version: ${{ inputs.version }}
+
+    - name: Configure git
+      shell: bash
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Run release
+      id: release
+      shell: bash
+      run: |
+        OUTPUT=$(changesetter release --output json 2>/dev/null) || true
+
+        if [ -z "$OUTPUT" ] || [ "$OUTPUT" = "null" ]; then
+          echo "released=false" >> "$GITHUB_OUTPUT"
+          echo "releases=[]" >> "$GITHUB_OUTPUT"
+          echo "No releases to create."
+          exit 0
+        fi
+
+        RELEASES=$(echo "$OUTPUT" | jq -c '.releases')
+        COUNT=$(echo "$RELEASES" | jq 'length')
+
+        if [ "$COUNT" = "0" ]; then
+          echo "released=false" >> "$GITHUB_OUTPUT"
+          echo "releases=[]" >> "$GITHUB_OUTPUT"
+          echo "No releases to create."
+          exit 0
+        fi
+
+        echo "released=true" >> "$GITHUB_OUTPUT"
+        echo "releases=$RELEASES" >> "$GITHUB_OUTPUT"
+        echo "json<<EOF" >> "$GITHUB_OUTPUT"
+        echo "$OUTPUT" >> "$GITHUB_OUTPUT"
+        echo "EOF" >> "$GITHUB_OUTPUT"
+
+    - name: Push tags
+      if: steps.release.outputs.released == 'true'
+      shell: bash
+      run: git push --tags
+
+    - name: Create GitHub Releases
+      if: steps.release.outputs.released == 'true' && inputs.github-release == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        RELEASES='${{ steps.release.outputs.releases }}'
+        DRAFT_FLAG=""
+        if [ "${{ inputs.draft }}" = "true" ]; then
+          DRAFT_FLAG="--draft"
+        fi
+
+        echo "$RELEASES" | jq -c '.[]' | while read -r release; do
+          TAG=$(echo "$release" | jq -r '.tag')
+          NAME=$(echo "$release" | jq -r '.name')
+          VERSION=$(echo "$release" | jq -r '.version')
+          CHANGELOG=$(echo "$release" | jq -r '.changelog')
+
+          TITLE="${NAME} v${VERSION}"
+
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            --notes "$CHANGELOG" \
+            $DRAFT_FLAG \
+            --verify-tag || true
+        done
