@@ -1,0 +1,16 @@
+---
+source: tests/snapshot_changelog.rs
+expression: content
+---
+# Changelog
+
+
+## 0.2.0 - 2026-07-25
+
+#### Added retry logic
+
+Retries up to 3 times.
+
+## 0.1.0 - 2026-07-01
+
+Initial release.

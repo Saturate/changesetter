@@ -1,0 +1,13 @@
+---
+source: tests/snapshot_changelog.rs
+expression: entry
+---
+## 0.2.0, 1.0.1 - 2026-07-25
+
+### mylib
+
+#### Added retry logic
+
+### my-frontend
+
+#### Updated dashboard layout

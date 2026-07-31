@@ -1,0 +1,10 @@
+---
+source: tests/snapshot_changelog.rs
+expression: entry
+---
+## 1.1.0 - 2026-07-25
+
+#### New authentication flow
+## 2.0.1 - 2026-07-25
+
+#### Fixed login button alignment

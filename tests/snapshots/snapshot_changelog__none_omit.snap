@@ -1,0 +1,7 @@
+---
+source: tests/snapshot_changelog.rs
+expression: entry
+---
+## 1.0.1 - 2026-07-25
+
+#### Fix

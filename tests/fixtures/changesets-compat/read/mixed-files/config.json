@@ -1,0 +1,5 @@
+{
+  "changelog": ["@changesets/changelog-github", { "repo": "test/repo" }],
+  "commit": false,
+  "access": "public"
+}

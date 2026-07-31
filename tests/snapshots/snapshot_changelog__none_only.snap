@@ -1,0 +1,11 @@
+---
+source: tests/snapshot_changelog.rs
+expression: entry
+---
+### Internal
+
+#### Updated CI configuration
+
+Switched runners.
+
+#### Added CONTRIBUTING.md
