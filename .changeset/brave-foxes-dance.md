@@ -1,5 +1,5 @@
 ---
-changesetter: minor
+changesetter: patch
 ---
 
 #### Initial release
