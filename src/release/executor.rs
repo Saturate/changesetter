@@ -29,7 +29,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     let changesets = reader::read_changesets(&changeset_dir)?;
 
     if changesets.is_empty() {
-        println!("No pending changesets, nothing to release.");
+        eprintln!("No pending changesets, nothing to release.");
         return Ok(ExecuteResult {
             plan: ReleasePlan {
                 releases: vec![],
@@ -46,7 +46,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     let release_plan = plan::assemble(&changesets, &packages);
 
     if release_plan.releases.is_empty() && release_plan.none_entries.is_empty() {
-        println!("No pending changesets, nothing to release.");
+        eprintln!("No pending changesets, nothing to release.");
         return Ok(ExecuteResult {
             plan: release_plan,
             date: String::new(),

@@ -31,18 +31,24 @@ jobs:
       - name: Run release
         id: release
         run: |
-          OUTPUT=$(./target/release/changesetter release --output json 2>&1) || EXIT_CODE=$?
+          OUTPUT=$(./target/release/changesetter release --output json) || EXIT_CODE=$?
 
           if [ "${EXIT_CODE:-0}" -ne 0 ]; then
-            echo "$OUTPUT" >&2
+            echo "changesetter release failed with exit code ${EXIT_CODE}" >&2
             echo "released=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          RELEASES=$(echo "$OUTPUT" | jq -c '.releases // []')
+          if [ -z "$OUTPUT" ] || ! echo "$OUTPUT" | jq -e '.releases' > /dev/null 2>&1; then
+            echo "No releases to create."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          RELEASES=$(echo "$OUTPUT" | jq -c '.releases')
           COUNT=$(echo "$RELEASES" | jq 'length')
 
-          if [ "$COUNT" = "0" ] || [ -z "$OUTPUT" ]; then
+          if [ "$COUNT" = "0" ]; then
             echo "No releases to create."
             echo "released=false" >> "$GITHUB_OUTPUT"
             exit 0
