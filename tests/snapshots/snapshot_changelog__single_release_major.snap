@@ -1,0 +1,9 @@
+---
+source: tests/snapshot_changelog.rs
+expression: entry
+---
+## 2.0.0 - 2026-07-25
+
+#### Removed deprecated v1 API
+
+All v1 endpoints have been removed. Migrate to v2.

@@ -1,0 +1,7 @@
+---
+source: tests/snapshot_changelog.rs
+expression: entry
+---
+### Misc
+
+#### Updated README
