@@ -77,4 +77,5 @@ jobs:
         run: |
           gh release upload "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" \
+            --clobber \
             changesetter-*.tar.gz changesetter-*.zip
