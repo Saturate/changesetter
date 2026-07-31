@@ -2,7 +2,6 @@ use std::path::Path;
 
 use clap::Args;
 
-use crate::config::Config;
 use crate::release::executor::{self, ExecuteOptions, ExecuteResult};
 
 #[derive(Args)]
@@ -43,22 +42,21 @@ pub fn run_in(repo_root: &Path, args: &ReleaseArgs) -> anyhow::Result<()> {
     }
 
     if args.output.as_deref() == Some("json") {
-        print_json_output(&result, repo_root)?;
+        print_json_output(&result)?;
     }
 
     Ok(())
 }
 
 fn create_tags(repo_root: &Path, result: &ExecuteResult) -> anyhow::Result<()> {
-    let config = Config::load(repo_root)?;
-    let is_monorepo = result.plan.releases.len() > 1;
-
     for release in &result.plan.releases {
-        let tag = config
-            .tag
-            .format_tag(&release.name, &release.version.to_string(), is_monorepo);
+        let tag = result.config.tag.format_tag(
+            &release.name,
+            &release.version.to_string(),
+            result.is_monorepo,
+        );
 
-        let message = if config.release.tag_annotated {
+        let message = if result.config.release.tag_annotated {
             Some(release.changelog.as_str())
         } else {
             None
@@ -71,18 +69,17 @@ fn create_tags(repo_root: &Path, result: &ExecuteResult) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_json_output(result: &ExecuteResult, repo_root: &Path) -> anyhow::Result<()> {
-    let config = Config::load(repo_root)?;
-    let is_monorepo = result.plan.releases.len() > 1;
-
+fn print_json_output(result: &ExecuteResult) -> anyhow::Result<()> {
     let releases: Vec<serde_json::Value> = result
         .plan
         .releases
         .iter()
         .map(|r| {
-            let tag = config
-                .tag
-                .format_tag(&r.name, &r.version.to_string(), is_monorepo);
+            let tag =
+                result
+                    .config
+                    .tag
+                    .format_tag(&r.name, &r.version.to_string(), result.is_monorepo);
             serde_json::json!({
                 "name": r.name,
                 "version": r.version.to_string(),
@@ -124,7 +121,7 @@ mod tests {
     fn setup_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         Command::new("git")
-            .args(["init", "-q"])
+            .args(["init", "-q", "-b", "main"])
             .current_dir(dir.path())
             .output()
             .unwrap();
@@ -135,6 +132,16 @@ mod tests {
             .unwrap();
         Command::new("git")
             .args(["config", "user.name", "Test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "tag.gpgsign", "false"])
             .current_dir(dir.path())
             .output()
             .unwrap();

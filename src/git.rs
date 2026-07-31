@@ -91,7 +91,7 @@ pub fn git_commit(repo_root: &Path, message: &str) -> anyhow::Result<()> {
 pub fn git_tag(repo_root: &Path, tag: &str, message: Option<&str>) -> anyhow::Result<()> {
     let output = if let Some(msg) = message {
         Command::new("git")
-            .args(["tag", "-a", tag, "-m", msg])
+            .args(["tag", "-a", tag, "-m", msg, "--cleanup=verbatim"])
             .current_dir(repo_root)
             .output()?
     } else {

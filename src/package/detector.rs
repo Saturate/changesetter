@@ -127,7 +127,7 @@ mod tests {
 
     fn init_git(dir: &Path) {
         Command::new("git")
-            .args(["init", "-q"])
+            .args(["init", "-q", "-b", "main"])
             .current_dir(dir)
             .output()
             .unwrap();
@@ -138,6 +138,11 @@ mod tests {
             .unwrap();
         Command::new("git")
             .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
             .current_dir(dir)
             .output()
             .unwrap();

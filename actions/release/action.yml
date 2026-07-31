@@ -41,7 +41,14 @@ runs:
       id: release
       shell: bash
       run: |
-        OUTPUT=$(changesetter release --output json 2>/dev/null) || true
+        EXIT_CODE=0
+        OUTPUT=$(changesetter release --output json 2>&1) || EXIT_CODE=$?
+
+        if [ "$EXIT_CODE" -ne 0 ]; then
+          echo "$OUTPUT" >&2
+          echo "changesetter release failed with exit code $EXIT_CODE" >&2
+          exit "$EXIT_CODE"
+        fi
 
         if [ -z "$OUTPUT" ] || [ "$OUTPUT" = "null" ]; then
           echo "released=false" >> "$GITHUB_OUTPUT"

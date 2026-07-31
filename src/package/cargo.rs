@@ -39,10 +39,19 @@ impl Adapter for CargoAdapter {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let version_str = pkg
-                .get("version")
-                .and_then(|v| v.as_str())
-                .unwrap_or("0.0.0");
+
+            let version_item = pkg.get("version");
+            let is_workspace_inherited = version_item
+                .and_then(|v| v.as_table_like())
+                .and_then(|t| t.get("workspace"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if is_workspace_inherited {
+                return Ok(None);
+            }
+
+            let version_str = version_item.and_then(|v| v.as_str()).unwrap_or("0.0.0");
             let version = Version::parse(version_str)?;
 
             return Ok(Some(Package {
@@ -135,10 +144,6 @@ impl Adapter for CargoAdapter {
         })?;
 
         Ok(())
-    }
-
-    fn post_bump_hook(&self, _path: &Path) -> Option<String> {
-        Some("cargo check".to_string())
     }
 }
 
@@ -253,11 +258,19 @@ version = "0.1.0"
     }
 
     #[test]
-    fn post_bump_hook_returns_cargo_check() {
+    fn detect_skips_workspace_inherited_version() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "member-crate"
+version.workspace = true
+edition = "2024"
+"#,
+        )
+        .unwrap();
+
         let adapter = CargoAdapter;
-        assert_eq!(
-            adapter.post_bump_hook(Path::new(".")),
-            Some("cargo check".to_string())
-        );
+        assert!(adapter.detect(dir.path()).unwrap().is_none());
     }
 }
