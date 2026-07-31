@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use crate::changeset::types::{BumpLevel, Changeset};
 use crate::package::types::{Package, Version};
@@ -12,6 +13,7 @@ pub struct ReleasePlan {
 #[derive(Debug, Clone)]
 pub struct PlannedRelease {
     pub name: String,
+    pub path: PathBuf,
     pub version: Version,
     pub previous_version: Version,
     pub bump: BumpLevel,
@@ -79,6 +81,9 @@ pub fn assemble(changesets: &[Changeset], packages: &[Package]) -> ReleasePlan {
         let previous_version = pkg
             .map(|p| p.version.clone())
             .unwrap_or_else(|| Version::new(0, 0, 0));
+        let pkg_path = pkg
+            .map(|p| p.path.clone())
+            .unwrap_or_else(|| PathBuf::from("."));
 
         let new_version = apply_bump(&previous_version, *bump);
 
@@ -90,6 +95,7 @@ pub fn assemble(changesets: &[Changeset], packages: &[Package]) -> ReleasePlan {
 
         releases.push(PlannedRelease {
             name: pkg_name.clone(),
+            path: pkg_path,
             version: new_version,
             previous_version,
             bump: *bump,

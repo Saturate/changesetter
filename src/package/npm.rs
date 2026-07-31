@@ -126,24 +126,6 @@ impl Adapter for NpmAdapter {
 
         Ok(())
     }
-
-    fn post_bump_hook(&self, path: &Path) -> Option<String> {
-        let dir = if path.is_file() {
-            path.parent().unwrap_or(Path::new("."))
-        } else {
-            path
-        };
-
-        if dir.join("pnpm-lock.yaml").exists() {
-            Some("pnpm install".to_string())
-        } else if dir.join("yarn.lock").exists() {
-            Some("yarn install".to_string())
-        } else if dir.join("bun.lockb").exists() || dir.join("bun.lock").exists() {
-            Some("bun install".to_string())
-        } else {
-            Some("npm install".to_string())
-        }
-    }
 }
 
 fn detect_indent(content: &str) -> String {
@@ -259,37 +241,5 @@ mod tests {
 
         let content = std::fs::read_to_string(&pkg_json).unwrap();
         assert!(content.contains("\n    \""));
-    }
-
-    #[test]
-    fn post_bump_detects_pnpm() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
-        let adapter = NpmAdapter;
-        assert_eq!(
-            adapter.post_bump_hook(dir.path()),
-            Some("pnpm install".to_string())
-        );
-    }
-
-    #[test]
-    fn post_bump_detects_yarn() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("yarn.lock"), "").unwrap();
-        let adapter = NpmAdapter;
-        assert_eq!(
-            adapter.post_bump_hook(dir.path()),
-            Some("yarn install".to_string())
-        );
-    }
-
-    #[test]
-    fn post_bump_defaults_to_npm() {
-        let dir = tempfile::tempdir().unwrap();
-        let adapter = NpmAdapter;
-        assert_eq!(
-            adapter.post_bump_hook(dir.path()),
-            Some("npm install".to_string())
-        );
     }
 }

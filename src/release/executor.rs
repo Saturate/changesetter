@@ -19,6 +19,8 @@ pub struct ExecuteOptions {
 pub struct ExecuteResult {
     pub plan: ReleasePlan,
     pub date: String,
+    pub config: Config,
+    pub is_monorepo: bool,
 }
 
 pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Result<ExecuteResult> {
@@ -34,10 +36,13 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
                 none_entries: vec![],
             },
             date: String::new(),
+            is_monorepo: false,
+            config,
         });
     }
 
     let packages = crate::package::detector::detect_packages(repo_root, &config)?;
+    let is_monorepo = packages.len() > 1;
     let release_plan = plan::assemble(&changesets, &packages);
 
     if release_plan.releases.is_empty() && release_plan.none_entries.is_empty() {
@@ -45,6 +50,8 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         return Ok(ExecuteResult {
             plan: release_plan,
             date: String::new(),
+            is_monorepo,
+            config,
         });
     }
 
@@ -55,6 +62,8 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         return Ok(ExecuteResult {
             plan: release_plan,
             date,
+            is_monorepo,
+            config,
         });
     }
 
@@ -67,15 +76,15 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         return Ok(ExecuteResult {
             plan: release_plan,
             date,
+            is_monorepo,
+            config,
         });
     }
 
-    // Apply version bumps
     for release in &release_plan.releases {
         apply_version_bump(repo_root, &release.name, &release.version, &packages)?;
     }
 
-    // Run post-bump hooks from config
     if !config.hooks.post_bump.is_empty() {
         for hook in &config.hooks.post_bump {
             eprintln!("Running post-bump hook: {hook}");
@@ -89,8 +98,6 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         }
     }
 
-    // Update changelog
-    let is_monorepo = packages.len() > 1;
     if config.changelog.per_package && is_monorepo {
         generator::write_per_package_changelogs(&release_plan, &config.changelog, &date)?;
     } else {
@@ -104,7 +111,6 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         generator::update_changelog_file(&changelog_path, &entry)?;
     }
 
-    // Remove consumed changeset files
     for cs in &changesets {
         if let Some(name) = &cs.filename {
             let path = changeset_dir.join(format!("{name}.md"));
@@ -115,7 +121,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     }
 
     if !opts.no_commit {
-        commit_version_changes(repo_root, &release_plan, &config)?;
+        commit_version_changes(repo_root, &release_plan, &config, is_monorepo)?;
     }
 
     for release in &release_plan.releases {
@@ -128,6 +134,8 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     Ok(ExecuteResult {
         plan: release_plan,
         date,
+        is_monorepo,
+        config,
     })
 }
 
@@ -179,8 +187,41 @@ fn commit_version_changes(
     repo_root: &Path,
     plan: &ReleasePlan,
     config: &Config,
+    is_monorepo: bool,
 ) -> anyhow::Result<()> {
-    crate::git::git_add(repo_root, &["."])?;
+    let mut paths_to_stage: Vec<String> = Vec::new();
+
+    paths_to_stage.push(".changeset/".to_string());
+
+    let manifest_names = ["Cargo.toml", "package.json"];
+    for release in &plan.releases {
+        let rel_path = release
+            .path
+            .strip_prefix(repo_root)
+            .unwrap_or(&release.path);
+        for name in &manifest_names {
+            let full = repo_root.join(rel_path).join(name);
+            if full.exists() {
+                paths_to_stage.push(rel_path.join(name).to_string_lossy().to_string());
+            }
+        }
+
+        if is_monorepo && config.changelog.per_package {
+            paths_to_stage.push(
+                rel_path
+                    .join(&config.changelog.file)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+    }
+
+    if !is_monorepo || !config.changelog.per_package {
+        paths_to_stage.push(config.changelog.file.clone());
+    }
+
+    let path_refs: Vec<&str> = paths_to_stage.iter().map(|s| s.as_str()).collect();
+    crate::git::git_add(repo_root, &path_refs)?;
 
     let versions: Vec<String> = plan
         .releases
@@ -277,7 +318,7 @@ mod tests {
     fn setup_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         Command::new("git")
-            .args(["init", "-q"])
+            .args(["init", "-q", "-b", "main"])
             .current_dir(dir.path())
             .output()
             .unwrap();
@@ -288,6 +329,11 @@ mod tests {
             .unwrap();
         Command::new("git")
             .args(["config", "user.name", "Test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
             .current_dir(dir.path())
             .output()
             .unwrap();

@@ -9,17 +9,18 @@ pub fn write_changeset(
     packages: &BTreeMap<String, BumpLevel>,
     body: &str,
 ) -> anyhow::Result<String> {
-    let name = words::generate_name();
-    let path = changeset_dir.join(format!("{name}.md"));
+    let mut name = words::generate_name();
+    let mut path = changeset_dir.join(format!("{name}.md"));
 
-    // Avoid collisions
-    let (name, path) = if path.exists() {
-        let alt = format!("{name}-2");
-        let alt_path = changeset_dir.join(format!("{alt}.md"));
-        (alt, alt_path)
-    } else {
-        (name, path)
-    };
+    let mut attempt = 2;
+    while path.exists() {
+        name = format!("{}-{attempt}", words::generate_name());
+        path = changeset_dir.join(format!("{name}.md"));
+        attempt += 1;
+        if attempt > 100 {
+            anyhow::bail!("failed to generate a unique changeset filename after 100 attempts");
+        }
+    }
 
     let mut content = String::from("---\n");
     for (pkg, bump) in packages {

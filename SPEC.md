@@ -17,7 +17,7 @@ Success looks like: `cargo install changesetter`, add two workflow files, and ev
 
 ## Tech stack
 
-- Language: Rust (MSRV 1.97)
+- Language: Rust (MSRV 1.85)
 - Serialization: serde + toml (config), serde + serde_yaml (changeset frontmatter)
 - Markdown: pulldown-cmark or similar for changelog generation
 - XML: quick-xml for .csproj adapter (v0.2, preserves existing structure/comments/conditionals)

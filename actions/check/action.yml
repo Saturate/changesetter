@@ -48,11 +48,14 @@ runs:
     - name: Post PR comment
       if: inputs.comment == 'true' && github.event_name == 'pull_request'
       uses: actions/github-script@v7
+      env:
+        CHECK_OUTPUT: ${{ steps.check.outputs.output }}
+        CHECK_EXIT_CODE: ${{ steps.check.outputs.exit_code }}
       with:
         script: |
           const marker = '<!-- changesetter-check -->';
-          const exitCode = parseInt('${{ steps.check.outputs.exit_code }}');
-          const output = `${{ steps.check.outputs.output }}`;
+          const exitCode = parseInt(process.env.CHECK_EXIT_CODE);
+          const output = process.env.CHECK_OUTPUT;
 
           let body;
           if (exitCode === 0) {

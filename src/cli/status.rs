@@ -58,7 +58,7 @@ mod tests {
     fn setup_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         Command::new("git")
-            .args(["init", "-q"])
+            .args(["init", "-q", "-b", "main"])
             .current_dir(dir.path())
             .output()
             .unwrap();
@@ -69,6 +69,11 @@ mod tests {
             .unwrap();
         Command::new("git")
             .args(["config", "user.name", "Test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
             .current_dir(dir.path())
             .output()
             .unwrap();

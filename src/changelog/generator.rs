@@ -124,7 +124,7 @@ fn release_changelog_path(
     release: &PlannedRelease,
     config: &ChangelogConfig,
 ) -> std::path::PathBuf {
-    std::path::PathBuf::from(&release.name).join(&config.file)
+    release.path.join(&config.file)
 }
 
 #[cfg(test)]
@@ -149,6 +149,7 @@ mod tests {
     ) -> PlannedRelease {
         PlannedRelease {
             name: name.to_string(),
+            path: std::path::PathBuf::from("."),
             version: Version::parse(next).unwrap(),
             previous_version: Version::parse(prev).unwrap(),
             bump,
