@@ -1,0 +1,70 @@
+---
+title: Migrating from changesets
+description: Switch from @changesets/cli to changesetter with minimal disruption.
+---
+
+changesetter reads the same changeset file format as `@changesets/cli`. Migration is file-for-file compatible.
+
+## File format
+
+Any `.changeset/*.md` file that works with `@changesets/cli` works with `changesetter`. The YAML frontmatter, bump levels (`patch`, `minor`, `major`), and markdown body are parsed identically.
+
+changesetter adds `none` as a bump level, which changesets doesn't expose in its file format. Existing changesets files won't use `none`, so there's no conflict.
+
+## Config
+
+changesets uses `.changeset/config.json`. changesetter uses `changesetter.toml` at the repo root.
+
+Both files can coexist. changesetter ignores `config.json`, and changesets ignores `changesetter.toml`.
+
+### Key differences
+
+| changesets (config.json) | changesetter (changesetter.toml) |
+|---|---|
+| `"fixed": [["a", "b"]]` | `[groups.name] fixed = ["a", "b"]` |
+| `"linked": [["a", "b"]]` | `[groups.name] linked = ["a", "b"]` |
+| `"ignore": ["x"]` | `ignore = ["x"]` |
+| `"changelog": "@changesets/changelog-github"` | Built-in format, not pluggable |
+| `"commit": true` | Always commits (use `--no-commit` to skip) |
+| `"access": "public"` | No equivalent (changesetter doesn't publish to registries) |
+
+changesetter doesn't support pluggable changelog formats. The built-in format follows Keep a Changelog conventions. If you rely on a custom changelog plugin, check whether the default format meets your needs.
+
+## Migration steps
+
+1. Install changesetter:
+   ```bash
+   cargo install changesetter
+   ```
+
+2. Optionally create a config:
+   ```bash
+   changesetter init --config
+   ```
+   Then port settings from `.changeset/config.json` to `changesetter.toml`.
+
+3. Existing `.changeset/*.md` files work as-is. No conversion needed.
+
+4. Replace CI workflows. Swap `changesets/action` with `saturate/changesetter/actions/check` and `saturate/changesetter/actions/release`.
+
+5. Remove `@changesets/cli` from your dependencies:
+   ```bash
+   npm uninstall @changesets/cli
+   ```
+
+6. Optionally remove `.changeset/config.json` once you're confident in the switch.
+
+## Coexistence
+
+During migration, both tools can coexist:
+- Both read `.changeset/*.md` files
+- Each has its own config file in a different location
+- Running one tool doesn't break the other's state
+
+This lets you switch gradually, for example running changesetter on some repos while keeping changesets on others.
+
+## What changesetter doesn't do
+
+changesetter is a versioning and changelog tool. It doesn't publish packages to registries. The `publish` step from changesets should be handled by your CI workflow or a separate tool.
+
+The release action creates git tags and GitHub Releases. Publishing to npm, crates.io, or PyPI is a separate workflow step triggered by the tag.

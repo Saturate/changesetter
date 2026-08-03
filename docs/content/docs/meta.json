@@ -1,0 +1,11 @@
+{
+  "pages": [
+    "index",
+    "cli",
+    "configuration",
+    "changeset-format",
+    "adapters",
+    "github-actions",
+    "recipes"
+  ]
+}

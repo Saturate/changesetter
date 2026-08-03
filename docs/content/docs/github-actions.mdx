@@ -1,0 +1,145 @@
+---
+title: GitHub Actions
+description: CI/CD setup for changeset checking and automated releases.
+---
+
+changesetter ships composite GitHub Actions for checking changesets on PRs and running releases on merge to main.
+
+## Changeset check
+
+Runs `changesetter check` on pull requests and posts a comment with the result.
+
+```yaml
+# .github/workflows/changeset-check.yml
+name: Changeset Check
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: saturate/changesetter/actions/check@v1
+        with:
+          comment: true
+```
+
+### Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `base` | Auto-detect from PR | Base branch to compare against |
+| `comment` | `true` | Post/update a PR comment with the changeset summary |
+| `version` | `latest` | changesetter version to install |
+
+The comment is updated on subsequent pushes rather than creating duplicates. It uses an HTML marker (`<!-- changesetter-check -->`) to find the existing comment.
+
+`fetch-depth: 0` is required for the `--base` diff to work.
+
+## Direct release
+
+Runs `changesetter release` on push to main, creates tags and GitHub Releases.
+
+```yaml
+# .github/workflows/release.yml
+name: Release
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: saturate/changesetter/actions/release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+When changesets are pending, the action bumps versions, updates changelogs, commits, tags, pushes, and creates GitHub Releases with the changelog as the body.
+
+When no changesets are pending, the action does nothing.
+
+### Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `github-release` | `true` | Create GitHub Releases |
+| `draft` | `false` | Create releases as drafts |
+| `version-pr` | `false` | Use version-PR mode instead of direct release |
+| `version-pr-title` | `"Version Packages"` | Title for the version PR |
+| `version` | `latest` | changesetter version to install |
+
+### Outputs
+
+| Output | Description |
+|---|---|
+| `released` | `true` if releases were created |
+| `releases` | JSON array of `{name, version, tag, changelog}` |
+| `version-pr` | URL of the version PR (version-PR mode only) |
+
+## Version-PR mode
+
+Instead of releasing directly on merge, create a "Version Packages" PR that batches all pending changesets. Merging that PR triggers the actual release.
+
+```yaml
+name: Release
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: changesetter-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: saturate/changesetter/actions/release@v1
+        with:
+          version-pr: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+The flow:
+1. Push to main with pending changesets: creates/updates a PR on `changesetter/version-packages` branch with label `changesetter:version`
+2. Push to main without pending changesets + a recently merged version PR: runs the release
+3. Push to main without pending changesets and no merged version PR: does nothing
+
+The `pull-requests: write` permission is required to create PRs. The `concurrency` group prevents races when multiple pushes arrive in quick succession.
+
+## Permissions
+
+| Permission | When needed |
+|---|---|
+| `contents: write` | Always (for commits, tags, releases) |
+| `pull-requests: write` | Version-PR mode only |
+
+## Install action
+
+The check and release actions use the install action internally. If you need the binary in a custom step:
+
+```yaml
+- uses: saturate/changesetter/actions/install@v1
+  with:
+    version: latest
+```
+
+This downloads the prebuilt binary from GitHub Releases and adds it to PATH. Results are cached by version and platform.

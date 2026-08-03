@@ -1,0 +1,100 @@
+---
+title: Changeset Format
+description: Frontmatter rules, bump levels, and file structure.
+---
+
+Changeset files live in `.changeset/` with random human-readable names like `cool-dogs-dance.md`. The format is compatible with the original [changesets](https://github.com/changesets/changesets) tool.
+
+## Structure
+
+Each file has YAML frontmatter mapping package names to bump levels, followed by a markdown body:
+
+```markdown
+---
+mylib: patch
+my-api: minor
+---
+
+#### Fixed null handling in response parser
+
+The API was returning null for optional fields. Now defaults to empty
+values instead of crashing the deserializer.
+```
+
+## Bump levels
+
+| Level | Meaning |
+|---|---|
+| `none` | No version change. The changeset is documented but doesn't bump the package. |
+| `patch` | Bug fix. Increments `x.y.Z`. |
+| `minor` | New feature, backwards compatible. Increments `x.Y.0`. |
+| `major` | Breaking change. Increments `X.0.0`. |
+
+When multiple changesets affect the same package, the highest bump wins. `none` + `patch` = `patch`. `patch` + `minor` = `minor`.
+
+## Multi-package changesets
+
+A single changeset can reference multiple packages with different bump levels:
+
+```markdown
+---
+mylib: patch
+my-api: minor
+---
+
+#### Shared change affecting both packages
+```
+
+The same markdown body is written to every referenced package's changelog. To write different descriptions per package, use separate changeset files.
+
+## Scoped npm packages
+
+YAML requires quoting keys that contain special characters:
+
+```markdown
+---
+"@myorg/utils": patch
+"@myorg/core": minor
+---
+
+#### Fixed scoped package resolution
+```
+
+## The `default` package name
+
+For single-package repos, you can use `default` in the frontmatter instead of the actual package name:
+
+```markdown
+---
+default: patch
+---
+
+#### Fixed a bug
+```
+
+`default` resolves to the single detected package name. In monorepos (more than one package), `default` is not valid; use the real package names.
+
+## None-bump changesets
+
+Changes that should be documented but don't change any version:
+
+```markdown
+---
+mylib: none
+---
+
+#### Updated CI configuration
+
+Switched from ubuntu-20.04 to ubuntu-24.04 runners.
+```
+
+None-bump entries appear in the changelog under a configurable heading (default: "Internal"). They pass `changesetter check` but don't trigger a version bump.
+
+## Frontmatter rules
+
+- Keys are package names as defined in config or auto-detected from manifests
+- Values must be one of: `none`, `patch`, `minor`, `major`
+- Keys with `@` or `/` must be quoted
+- Multiple packages allowed in one changeset
+- Empty frontmatter is an error
+- The body after the closing `---` is markdown; the first heading becomes the changelog entry title

@@ -1,0 +1,97 @@
+---
+title: CLI Reference
+description: All changesetter commands, flags, and exit codes.
+---
+
+## `changesetter init`
+
+Create the `.changeset/` directory. Idempotent; succeeds if the directory already exists.
+
+| Flag | Description |
+|---|---|
+| `--config` | Generate a starter `changesetter.toml` |
+
+## `changesetter add`
+
+Create a new changeset file.
+
+| Flag | Description |
+|---|---|
+| `--package <name>` | Package(s) affected (repeatable) |
+| `--bump <level>` | Bump level: `patch`, `minor`, `major`, `none` |
+| `--no-bump` | Shorthand for `--bump none` |
+| `-m, --message <text>` | Change description |
+
+When run without flags in a terminal, prompts interactively for packages, bump level, and description. When stdin is not a TTY (CI), all flags are required.
+
+## `changesetter check`
+
+Verify that at least one changeset file exists. Used in CI to enforce changeset presence on PRs.
+
+| Flag | Description |
+|---|---|
+| `--base <ref>` | Compare against a base branch (e.g. `origin/main`) |
+
+Without `--base`, checks for any `.md` files in `.changeset/`. With `--base`, uses `git diff` to check for changeset files added in the current branch.
+
+## `changesetter status`
+
+Show pending changesets and a preview of what the next release would look like. Read-only, no side effects.
+
+## `changesetter version`
+
+Bump versions in manifest files and update changelogs. Does not create git tags.
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Show what would change, modify nothing |
+| `--no-commit` | Update files but don't git commit |
+| `--snapshot <tag>` | Create a snapshot version (e.g. `0.0.0-canary-20260801T120000`) |
+
+Snapshot versions don't consume changesets, update changelogs, or create tags. They only update manifest files for preview builds.
+
+## `changesetter release`
+
+The full release pipeline: version bump, changelog, commit, and git tags.
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Show the full plan without modifying anything |
+| `--no-commit` | Modify files but don't commit or tag |
+| `--output json` | Write structured JSON to stdout |
+
+The JSON output is consumed by the GitHub Actions release action to create GitHub Releases.
+
+When no changesets are pending, exits 0 with a message and no side effects.
+
+## `changesetter pre`
+
+Manage pre-release mode.
+
+### `changesetter pre enter <tag>`
+
+Enter pre-release mode. Subsequent releases produce versions like `1.0.0-rc.0`.
+
+```bash
+changesetter pre enter rc
+changesetter pre enter beta
+changesetter pre enter alpha
+```
+
+Creates `.changeset/pre.json` to track the pre-release state.
+
+### `changesetter pre exit`
+
+Exit pre-release mode. The next release produces stable versions.
+
+### `changesetter pre status`
+
+Show the current pre-release state.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success, including "nothing to do" for release with no pending changesets |
+| 1 | Check failed (no changeset found), validation error (bad frontmatter, unknown package, unknown bump level) |
+| 2 | Environment error (dirty working tree, git not found, not a git repo, base ref unavailable) |

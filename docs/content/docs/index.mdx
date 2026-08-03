@@ -1,0 +1,95 @@
+---
+title: Getting Started
+description: Install changesetter and set up your first changeset workflow.
+---
+
+## Install
+
+From source:
+
+```bash
+cargo install changesetter
+```
+
+Or download a prebuilt binary (Linux, macOS, Windows):
+
+```bash
+curl -sL https://github.com/saturate/changesetter/releases/latest/download/changesetter-x86_64-unknown-linux-gnu.tar.gz | tar xz
+```
+
+## Initialize
+
+Run `init` in your repository root. This creates the `.changeset/` directory where changeset files live.
+
+```bash
+changesetter init
+```
+
+Optionally generate a starter `changesetter.toml`:
+
+```bash
+changesetter init --config
+```
+
+## Create a changeset
+
+Interactive mode prompts for affected packages, bump level, and a description:
+
+```bash
+changesetter add
+```
+
+Non-interactive mode for CI scripts:
+
+```bash
+changesetter add --package mylib --bump patch --message "Fixed null handling"
+```
+
+For changes that don't warrant a version bump:
+
+```bash
+changesetter add --package mylib --no-bump --message "Updated CI config"
+```
+
+This creates a markdown file in `.changeset/` with a random name like `cool-dogs-dance.md`. See [Changeset Format](/docs/changeset-format) for details on the file structure.
+
+## Verify in CI
+
+Add a check step to your pull request workflow. It fails if no changeset exists on the branch:
+
+```bash
+changesetter check --base origin/main
+```
+
+See [GitHub Actions](/docs/github-actions) for ready-made workflow files.
+
+## Preview the release
+
+See what would happen without changing anything:
+
+```bash
+changesetter status
+```
+
+## Release
+
+Run the full pipeline: bump versions in manifest files, generate CHANGELOG.md, commit, and create git tags.
+
+```bash
+changesetter release
+```
+
+Or preview first:
+
+```bash
+changesetter release --dry-run
+```
+
+The release command outputs JSON when run with `--output json`, which the GitHub Actions release action uses to create GitHub Releases.
+
+## Next steps
+
+- [CLI Reference](/docs/cli) for all commands and flags
+- [Configuration](/docs/configuration) for `changesetter.toml` options
+- [Supported Ecosystems](/docs/adapters) for which manifest files are detected
+- [GitHub Actions](/docs/github-actions) for CI/CD setup

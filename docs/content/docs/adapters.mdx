@@ -1,0 +1,78 @@
+---
+title: Supported Ecosystems
+description: Which manifest files changesetter detects and how it reads versions.
+---
+
+changesetter auto-detects packages by scanning for known manifest files using `git ls-files`. No configuration is needed for most repos.
+
+## Supported adapters
+
+| Manifest | Ecosystem | Name source | Version field |
+|---|---|---|---|
+| `Cargo.toml` | Rust | `package.name` | `package.version` |
+| `Cargo.toml` (workspace) | Rust | `workspace.package.name` | `workspace.package.version` |
+| `package.json` | Node | `name` | `version` |
+| `pyproject.toml` | Python (PEP 621) | `project.name` | `project.version` |
+| `pyproject.toml` | Python (Poetry) | `tool.poetry.name` | `tool.poetry.version` |
+| `*.csproj` | .NET | `AssemblyName` or filename | `PropertyGroup > Version` |
+| `Chart.yaml` | Helm | `name` | `version` |
+
+## Cargo
+
+Detects single crates and workspaces. When a Cargo.toml has `workspace.package.version`, the workspace is treated as a single package by default.
+
+Member crates with `version.workspace = true` are skipped (they inherit the workspace version). To bump workspace members independently, list them in `changesetter.toml`:
+
+```toml
+[[package]]
+name = "core-lib"
+path = "crates/core"
+type = "cargo"
+
+[[package]]
+name = "cli"
+path = "crates/cli"
+type = "cargo"
+```
+
+Version writes use `toml_edit` to preserve comments and formatting.
+
+## npm
+
+Reads `name` and `version` from `package.json`. Writes preserve the file's original indentation (2-space, 4-space, or tab) and trailing newline.
+
+## Python
+
+Supports two layouts:
+
+**PEP 621** (standard):
+```toml
+[project]
+name = "mylib"
+version = "1.0.0"
+```
+
+**Poetry**:
+```toml
+[tool.poetry]
+name = "mylib"
+version = "1.0.0"
+```
+
+PEP 621 is checked first. If `project.version` is missing, falls back to `tool.poetry.version`. Version writes use `toml_edit` to preserve structure.
+
+## .NET
+
+Detects `*.csproj` files. Reads `<Version>` from the first `<PropertyGroup>` that contains it. Package name comes from `<AssemblyName>`, falling back to the `.csproj` filename stem.
+
+Version writes use targeted string replacement to preserve XML comments, conditional PropertyGroups, and formatting. Files without a `<Version>` element are skipped.
+
+## Helm
+
+Reads `name` and `version` from `Chart.yaml`. Version writes replace only the `version:` line, preserving field ordering and other fields like `appVersion`.
+
+## Detection
+
+Detection uses `git ls-files` to scan only tracked files, avoiding `node_modules/`, `target/`, `vendor/`, and other gitignored directories. Falls back to a filesystem walk with a hardcoded exclude list if not in a git repo.
+
+To override auto-detection, list packages explicitly in `changesetter.toml`. Config-defined packages are merged with auto-detected ones. Use the `ignore` list to exclude auto-detected packages you don't want versioned.

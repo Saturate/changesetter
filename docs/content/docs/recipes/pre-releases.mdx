@@ -1,0 +1,96 @@
+---
+title: Pre-releases
+description: Release candidate, beta, and snapshot workflows.
+---
+
+## Pre-release mode
+
+Pre-releases use a mode-based workflow. The repo enters and exits pre-release mode explicitly.
+
+### Enter pre mode
+
+```bash
+changesetter pre enter rc
+```
+
+This creates `.changeset/pre.json` tracking the mode, tag, and per-package release counters.
+
+### Add changesets normally
+
+Changesets use standard bump levels. The pre mode wraps the version:
+
+```markdown
+---
+mylib: minor
+---
+
+#### New batch processing endpoint
+```
+
+If `mylib` is at `0.5.0`, releasing in `rc` mode produces `0.6.0-rc.0`.
+
+### Release
+
+```bash
+changesetter release
+```
+
+Each release in pre mode increments the counter: `0.6.0-rc.0`, `0.6.0-rc.1`, `0.6.0-rc.2`.
+
+Changesets are consumed normally (deleted after release).
+
+### Go stable
+
+```bash
+changesetter pre exit
+changesetter release
+```
+
+After exiting pre mode, the next release strips the pre-release suffix. `0.6.0-rc.2` becomes `0.6.0`.
+
+### Switch tags
+
+To go from `rc` to `beta` or another tag:
+
+```bash
+changesetter pre exit
+changesetter pre enter beta
+```
+
+### Check status
+
+```bash
+changesetter pre status
+```
+
+Shows the current tag and how many pre-releases each package has had.
+
+## Snapshots
+
+Snapshot releases are temporary versions for CI builds and preview deploys. They work independently of pre-release mode.
+
+```bash
+changesetter version --snapshot canary
+```
+
+This produces versions like `0.0.0-canary-20260801T120000` (tag + timestamp).
+
+Snapshots:
+- Don't consume changesets (they stay for the real release)
+- Don't update CHANGELOG.md
+- Don't create git tags
+- Do update manifest files (so you can build and publish a preview)
+
+### CI usage
+
+Run snapshots on feature branches to publish preview packages:
+
+```yaml
+- name: Snapshot version
+  run: changesetter version --snapshot canary
+
+- name: Publish preview
+  run: cargo publish --dry-run  # or npm publish --tag canary
+```
+
+Snapshot versions ignore pre-release mode entirely. Running `--snapshot` while in pre mode produces a snapshot, not a pre-release.

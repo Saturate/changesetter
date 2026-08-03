@@ -1,0 +1,171 @@
+---
+title: Configuration
+description: changesetter.toml reference with all options.
+---
+
+Configuration lives in `changesetter.toml` at the repo root. The entire file is optional; changesetter auto-detects packages and uses sensible defaults.
+
+## Packages
+
+Override or supplement auto-detected packages:
+
+```toml
+[[package]]
+name = "mylib"
+path = "crates/mylib"
+type = "cargo"
+
+[[package]]
+name = "my-frontend"
+path = "apps/web"
+type = "npm"
+```
+
+| Field | Description |
+|---|---|
+| `name` | Package name (used in changeset frontmatter) |
+| `path` | Path to the package directory, relative to repo root |
+| `type` | Ecosystem type: `cargo`, `cargo-workspace`, `npm`, `python`, `dotnet`, `helm` |
+| `members` | For workspace types: `"all"` to bump all members together |
+
+## Ignore
+
+Packages that are auto-detected but should never be versioned:
+
+```toml
+ignore = ["examples", "internal-tools", "test-fixtures"]
+```
+
+Ignored packages are excluded from the release plan, changelogs, and tagging.
+
+## Groups
+
+### Fixed groups
+
+Packages in a fixed group always bump together. If any member has a changeset, all members bump to the highest level in the group.
+
+```toml
+[groups.core]
+fixed = ["core-lib", "core-macros"]
+```
+
+### Linked groups
+
+Packages in a linked group share version numbers but only bump when individually changed. When multiple linked members bump in the same release, they coordinate to the highest bump level.
+
+```toml
+[groups.utils]
+linked = ["util-a", "util-b"]
+```
+
+A package can only belong to one group.
+
+## Dependency cascading
+
+When package A bumps and package B depends on A, optionally cascade a bump to B:
+
+```toml
+update_internal_dependencies = "patch"
+```
+
+| Value | Behavior |
+|---|---|
+| `"patch"` | Always bump dependents by at least patch |
+| `"minor"` | Only bump if the dependency range breaks (treated as `"patch"` in current version) |
+| `"none"` | Don't cascade (default) |
+
+Dependencies are detected from manifest files: `[dependencies]` in Cargo.toml, `dependencies`/`devDependencies` in package.json, `dependencies` in Chart.yaml.
+
+## Changelog
+
+```toml
+[changelog]
+file = "CHANGELOG.md"
+per_package = true
+none_bump = "section"
+none_bump_heading = "Internal"
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `file` | `"CHANGELOG.md"` | Changelog filename |
+| `per_package` | `false` | When `true`, each package gets its own CHANGELOG.md in its directory |
+| `none_bump` | `"section"` | How to handle none-bump entries: `"section"` (under a heading), `"omit"` (exclude) |
+| `none_bump_heading` | `"Internal"` | Heading for none-bump entries when `none_bump = "section"` |
+
+Single-package repos always use a single root CHANGELOG.md regardless of `per_package`.
+
+## Tag format
+
+```toml
+[tag]
+format = "v{version}"
+```
+
+| Placeholder | Value |
+|---|---|
+| `{version}` | The new version number (e.g. `0.2.0`) |
+| `{name}` | The package name |
+
+Defaults: `v{version}` for single-package repos, `{name}@v{version}` for monorepos.
+
+## Release
+
+```toml
+[release]
+commit_message = "chore: release {versions}"
+tag_annotated = true
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `commit_message` | `"chore: release {versions}"` | Commit message template. `{versions}` expands to `name@version, ...` |
+| `tag_annotated` | `true` | Use annotated tags with changelog as the message. Set `false` for lightweight tags |
+
+## Hooks
+
+Commands to run after version bumps, before committing:
+
+```toml
+[hooks]
+post_bump = ["cargo check", "cargo fmt"]
+```
+
+Hooks run in order, from the repo root. If any hook exits non-zero, the release aborts.
+
+## Full example
+
+```toml
+[[package]]
+name = "core"
+path = "crates/core"
+type = "cargo"
+
+[[package]]
+name = "web"
+path = "apps/web"
+type = "npm"
+
+[groups.core]
+fixed = ["core", "core-macros"]
+
+ignore = ["examples"]
+
+update_internal_dependencies = "patch"
+
+[changelog]
+file = "CHANGELOG.md"
+per_package = true
+none_bump = "section"
+none_bump_heading = "Internal"
+
+[tag]
+format = "{name}@v{version}"
+
+[release]
+commit_message = "chore: release {versions}"
+tag_annotated = true
+
+[hooks]
+post_bump = ["cargo check"]
+```

@@ -1,0 +1,98 @@
+---
+title: Monorepo Setup
+description: Configure changesetter for repos with multiple packages.
+---
+
+changesetter auto-detects multiple packages from manifest files. A repo with both `Cargo.toml` and `apps/web/package.json` automatically becomes a monorepo.
+
+## Auto-detection
+
+No config needed. changesetter scans tracked files via `git ls-files` and finds all manifest files:
+
+```
+my-repo/
+  Cargo.toml          -> detected as "mylib" (Cargo)
+  apps/web/package.json  -> detected as "my-frontend" (npm)
+  services/api/pyproject.toml -> detected as "my-api" (Python)
+```
+
+Verify detection with:
+
+```bash
+changesetter status
+```
+
+## Changesets reference packages by name
+
+```markdown
+---
+mylib: patch
+my-frontend: minor
+---
+
+#### Updated shared types
+
+Changed the response format in the backend, updated the frontend to match.
+```
+
+## Per-package changelogs
+
+By default, monorepos get a single root CHANGELOG.md with entries grouped by package. To give each package its own changelog:
+
+```toml
+[changelog]
+per_package = true
+```
+
+This writes `CHANGELOG.md` into each package's directory.
+
+## Fixed groups
+
+For tightly coupled packages that should always release together:
+
+```toml
+[groups.core]
+fixed = ["core-lib", "core-macros"]
+```
+
+If `core-lib` gets a `minor` changeset and `core-macros` has no changeset, both bump to the same minor version.
+
+## Linked groups
+
+For packages that share version numbers but can skip releases independently:
+
+```toml
+[groups.utils]
+linked = ["util-a", "util-b"]
+```
+
+When only `util-a` has a changeset, only `util-a` bumps. When both have changesets, they coordinate to the highest bump level.
+
+## Dependency cascading
+
+When internal packages depend on each other, a bump in one can cascade to its dependents:
+
+```toml
+update_internal_dependencies = "patch"
+```
+
+If `core-lib` bumps from `1.0.0` to `1.1.0` and `my-api` depends on `core-lib`, then `my-api` gets at least a patch bump automatically.
+
+## Ignoring packages
+
+Exclude auto-detected packages from versioning:
+
+```toml
+ignore = ["examples", "test-fixtures"]
+```
+
+Ignored packages are detected but never versioned, tagged, or included in changelogs.
+
+## Tag format
+
+Monorepos default to `{name}@v{version}` tags (e.g. `mylib@v1.1.0`). Override:
+
+```toml
+[tag]
+format = "{name}/v{version}"
+```
