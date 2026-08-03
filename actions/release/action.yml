@@ -48,7 +48,7 @@ runs:
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
 
-    # ── Direct release mode (version-pr: false) ──────────────────────
+    # Direct release mode (version-pr: false)
     - name: Direct release
       id: direct-release
       if: inputs.version-pr == 'false'
@@ -110,7 +110,7 @@ runs:
             --verify-tag || true
         done
 
-    # ── Version PR mode (version-pr: true) ───────────────────────────
+    # Version PR mode (version-pr: true)
     - name: Check for merged version PR
       id: check-merged
       if: inputs.version-pr == 'true'
