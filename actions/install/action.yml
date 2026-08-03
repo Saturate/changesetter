@@ -15,7 +15,9 @@ runs:
       shell: bash
       run: |
         if [ "${{ inputs.version }}" = "latest" ]; then
-          VERSION=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/')
+          TAG=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | jq -r '.tag_name // empty')
+          # Handle both v0.2.0 and changesetter@v0.2.0 tag formats
+          VERSION=$(echo "$TAG" | sed 's/.*v//')
         else
           VERSION="${{ inputs.version }}"
         fi
@@ -51,9 +53,13 @@ runs:
       run: |
         VERSION="${{ steps.version.outputs.version }}"
         TARGET="${{ steps.platform.outputs.target }}"
-        URL="https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${TARGET}.tar.gz"
         mkdir -p ~/.changesetter/bin
-        curl -sL "$URL" | tar xz -C ~/.changesetter/bin
+        # Try v{version} tag first, fall back to changesetter@v{version}
+        URL="https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${TARGET}.tar.gz"
+        if ! curl -sfL "$URL" | tar xz -C ~/.changesetter/bin 2>/dev/null; then
+          URL="https://github.com/saturate/changesetter/releases/download/changesetter%40v${VERSION}/changesetter-${TARGET}.tar.gz"
+          curl -sfL "$URL" | tar xz -C ~/.changesetter/bin
+        fi
 
     - name: Add to PATH
       shell: bash
