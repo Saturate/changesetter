@@ -222,7 +222,7 @@ fn commit_version_changes(
 
     paths_to_stage.push(".changeset/".to_string());
 
-    let manifest_names = ["Cargo.toml", "package.json"];
+    let manifest_names = ["Cargo.toml", "package.json", "pyproject.toml", "Chart.yaml"];
     for release in &plan.releases {
         let rel_path = release
             .path
@@ -232,6 +232,16 @@ fn commit_version_changes(
             let full = repo_root.join(rel_path).join(name);
             if full.exists() {
                 paths_to_stage.push(rel_path.join(name).to_string_lossy().to_string());
+            }
+        }
+
+        // .csproj files have variable names
+        if let Ok(entries) = std::fs::read_dir(repo_root.join(rel_path)) {
+            for entry in entries.flatten() {
+                if entry.path().extension().is_some_and(|ext| ext == "csproj") {
+                    let csproj_rel = rel_path.join(entry.file_name());
+                    paths_to_stage.push(csproj_rel.to_string_lossy().to_string());
+                }
             }
         }
 

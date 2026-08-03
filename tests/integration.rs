@@ -4,11 +4,16 @@ use std::process::Command;
 use changesetter::cli::add::AddArgs;
 use changesetter::cli::check::CheckArgs;
 use changesetter::cli::init::InitArgs;
+use changesetter::cli::pre::{PreArgs, PreCommand};
 use changesetter::cli::release::ReleaseArgs;
 use changesetter::package::adapter::Adapter;
 use changesetter::package::cargo::CargoAdapter;
+use changesetter::package::dotnet::DotnetAdapter;
+use changesetter::package::helm::HelmAdapter;
 use changesetter::package::npm::NpmAdapter;
+use changesetter::package::python::PythonAdapter;
 use changesetter::package::types::Version;
+use changesetter::release::pre;
 
 fn setup_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -608,5 +613,436 @@ fn changelog_prepends_to_existing() {
     assert!(
         new_pos < old_pos,
         "new version should appear before old version"
+    );
+}
+
+// ========== v0.2 integration tests ==========
+
+// ---------- Python adapter round-trip ----------
+
+#[test]
+fn roundtrip_python() {
+    let dir = setup_repo();
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname = \"mypy\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    git_add_commit(dir.path(), "add pyproject.toml");
+
+    let changeset_dir = dir.path().join(".changeset");
+    std::fs::create_dir_all(&changeset_dir).unwrap();
+    std::fs::write(
+        changeset_dir.join("test.md"),
+        "---\nmypy: patch\n---\n\n#### Fix\n",
+    )
+    .unwrap();
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: true,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    let v = PythonAdapter.read_version(dir.path()).unwrap();
+    assert_eq!(v, Version::new(1, 0, 1));
+    assert_eq!(count_changeset_files(dir.path()), 0);
+}
+
+// ---------- .NET adapter round-trip ----------
+
+#[test]
+fn roundtrip_dotnet() {
+    let dir = setup_repo();
+    std::fs::write(
+        dir.path().join("MyLib.csproj"),
+        r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Version>1.0.0</Version>
+    <AssemblyName>MyLib</AssemblyName>
+  </PropertyGroup>
+</Project>"#,
+    )
+    .unwrap();
+    git_add_commit(dir.path(), "add csproj");
+
+    let changeset_dir = dir.path().join(".changeset");
+    std::fs::create_dir_all(&changeset_dir).unwrap();
+    std::fs::write(
+        changeset_dir.join("test.md"),
+        "---\nMyLib: minor\n---\n\n#### Feature\n",
+    )
+    .unwrap();
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: true,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    let v = DotnetAdapter.read_version(dir.path()).unwrap();
+    assert_eq!(v, Version::new(1, 1, 0));
+    assert_eq!(count_changeset_files(dir.path()), 0);
+}
+
+// ---------- Helm adapter round-trip ----------
+
+#[test]
+fn roundtrip_helm() {
+    let dir = setup_repo();
+    std::fs::write(
+        dir.path().join("Chart.yaml"),
+        "apiVersion: v2\nname: mychart\nversion: 1.0.0\nappVersion: \"1.0\"\n",
+    )
+    .unwrap();
+    git_add_commit(dir.path(), "add Chart.yaml");
+
+    let changeset_dir = dir.path().join(".changeset");
+    std::fs::create_dir_all(&changeset_dir).unwrap();
+    std::fs::write(
+        changeset_dir.join("test.md"),
+        "---\nmychart: patch\n---\n\n#### Fix\n",
+    )
+    .unwrap();
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: true,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    let v = HelmAdapter.read_version(dir.path()).unwrap();
+    assert_eq!(v, Version::new(1, 0, 1));
+
+    let content = std::fs::read_to_string(dir.path().join("Chart.yaml")).unwrap();
+    assert!(
+        content.contains("appVersion: \"1.0\""),
+        "appVersion should not be touched"
+    );
+    assert_eq!(count_changeset_files(dir.path()), 0);
+}
+
+// ---------- Fixed group release ----------
+
+#[test]
+fn fixed_group_bumps_all_members() {
+    let dir = setup_repo();
+
+    std::fs::create_dir_all(dir.path().join("crates/lib-a")).unwrap();
+    std::fs::write(
+        dir.path().join("crates/lib-a/Cargo.toml"),
+        "[package]\nname = \"lib-a\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("crates/lib-b")).unwrap();
+    std::fs::write(
+        dir.path().join("crates/lib-b/Cargo.toml"),
+        "[package]\nname = \"lib-b\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.path().join("changesetter.toml"),
+        "[groups.core]\nfixed = [\"lib-a\", \"lib-b\"]\n",
+    )
+    .unwrap();
+
+    git_add_commit(dir.path(), "add packages and config");
+
+    let changeset_dir = dir.path().join(".changeset");
+    std::fs::create_dir_all(&changeset_dir).unwrap();
+    std::fs::write(
+        changeset_dir.join("test.md"),
+        "---\nlib-a: minor\n---\n\n#### Feature in lib-a\n",
+    )
+    .unwrap();
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: true,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    let v_a = CargoAdapter
+        .read_version(&dir.path().join("crates/lib-a"))
+        .unwrap();
+    let v_b = CargoAdapter
+        .read_version(&dir.path().join("crates/lib-b"))
+        .unwrap();
+    assert_eq!(v_a, Version::new(1, 1, 0));
+    assert_eq!(
+        v_b,
+        Version::new(1, 1, 0),
+        "lib-b should bump with fixed group"
+    );
+}
+
+// ---------- Linked group release ----------
+
+#[test]
+fn linked_group_only_changed_bumps() {
+    let dir = setup_repo();
+
+    std::fs::create_dir_all(dir.path().join("crates/util-a")).unwrap();
+    std::fs::write(
+        dir.path().join("crates/util-a/Cargo.toml"),
+        "[package]\nname = \"util-a\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("crates/util-b")).unwrap();
+    std::fs::write(
+        dir.path().join("crates/util-b/Cargo.toml"),
+        "[package]\nname = \"util-b\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.path().join("changesetter.toml"),
+        "[groups.utils]\nlinked = [\"util-a\", \"util-b\"]\n",
+    )
+    .unwrap();
+
+    git_add_commit(dir.path(), "add packages and config");
+
+    let changeset_dir = dir.path().join(".changeset");
+    std::fs::create_dir_all(&changeset_dir).unwrap();
+    std::fs::write(
+        changeset_dir.join("test.md"),
+        "---\nutil-a: patch\n---\n\n#### Fix in util-a\n",
+    )
+    .unwrap();
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: true,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    let v_a = CargoAdapter
+        .read_version(&dir.path().join("crates/util-a"))
+        .unwrap();
+    let v_b = CargoAdapter
+        .read_version(&dir.path().join("crates/util-b"))
+        .unwrap();
+    assert_eq!(v_a, Version::new(1, 0, 1));
+    assert_eq!(
+        v_b,
+        Version::new(1, 0, 0),
+        "util-b should NOT bump in linked group"
+    );
+}
+
+// ---------- Pre-release cycle ----------
+
+#[test]
+fn pre_release_cycle() {
+    let dir = setup_cargo_repo();
+
+    // Enter pre-release mode
+    changesetter::cli::pre::run_in(
+        dir.path(),
+        &PreArgs {
+            command: PreCommand::Enter {
+                tag: "rc".to_string(),
+            },
+        },
+    )
+    .unwrap();
+
+    let pre_json = dir.path().join(".changeset/pre.json");
+    assert!(pre_json.exists());
+
+    // First pre-release
+    let changeset_dir = dir.path().join(".changeset");
+    std::fs::write(
+        changeset_dir.join("feat1.md"),
+        "---\ntestpkg: minor\n---\n\n#### Feature one\n",
+    )
+    .unwrap();
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: true,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    let v = CargoAdapter.read_version(dir.path()).unwrap();
+    assert_eq!(v.major, 1);
+    assert_eq!(v.minor, 1);
+    assert_eq!(v.patch, 0);
+    assert!(
+        v.pre.as_ref().unwrap().starts_with("rc."),
+        "expected rc.N pre-release suffix, got: {}",
+        v
+    );
+
+    // Verify counter incremented in pre.json
+    let state = pre::read_pre_state(&changeset_dir).unwrap();
+    assert_eq!(state.mode, "pre");
+    assert!(
+        state.packages_released.get("testpkg").copied().unwrap_or(0) >= 1,
+        "counter should be incremented"
+    );
+
+    // Second pre-release: write version back to 1.0.0 to simulate fresh state,
+    // then release again with a new changeset
+    CargoAdapter
+        .write_version(dir.path(), &Version::new(1, 0, 0))
+        .unwrap();
+    std::fs::write(
+        changeset_dir.join("feat2.md"),
+        "---\ntestpkg: minor\n---\n\n#### Feature two\n",
+    )
+    .unwrap();
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: true,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    let v2 = CargoAdapter.read_version(dir.path()).unwrap();
+    let pre_str = v2.pre.as_ref().unwrap();
+    assert!(
+        pre_str.starts_with("rc."),
+        "second release should still have rc prefix, got: {v2}"
+    );
+    let counter: u64 = pre_str.strip_prefix("rc.").unwrap().parse().unwrap();
+    assert!(
+        counter >= 1,
+        "counter should have incremented, got: {counter}"
+    );
+
+    // Exit pre-release mode
+    changesetter::cli::pre::run_in(
+        dir.path(),
+        &PreArgs {
+            command: PreCommand::Exit,
+        },
+    )
+    .unwrap();
+
+    // Reset version and add another changeset for stable release
+    CargoAdapter
+        .write_version(dir.path(), &Version::new(1, 0, 0))
+        .unwrap();
+    std::fs::write(
+        changeset_dir.join("feat3.md"),
+        "---\ntestpkg: minor\n---\n\n#### Feature three\n",
+    )
+    .unwrap();
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: true,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    let v3 = CargoAdapter.read_version(dir.path()).unwrap();
+    assert_eq!(v3.pre, None, "stable release should have no pre suffix");
+    assert_eq!(v3, Version::new(1, 1, 0));
+
+    // pre.json should be removed after exit-mode release
+    assert!(
+        !pre_json.exists(),
+        "pre.json should be removed after stable release"
+    );
+}
+
+// ---------- Dependency cascading ----------
+
+#[test]
+fn dependency_cascade_bumps_dependent() {
+    let dir = setup_repo();
+
+    // Package A
+    std::fs::create_dir_all(dir.path().join("crates/a")).unwrap();
+    std::fs::write(
+        dir.path().join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+
+    // Package B depends on A
+    std::fs::create_dir_all(dir.path().join("crates/b")).unwrap();
+    std::fs::write(
+        dir.path().join("crates/b/Cargo.toml"),
+        "[package]\nname = \"b\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n[dependencies]\na = { path = \"../a\" }\n",
+    )
+    .unwrap();
+
+    // Config enabling cascading
+    std::fs::write(
+        dir.path().join("changesetter.toml"),
+        "update_internal_dependencies = \"patch\"\n",
+    )
+    .unwrap();
+
+    git_add_commit(dir.path(), "add packages with dependency");
+
+    // Only changeset for A
+    let changeset_dir = dir.path().join(".changeset");
+    std::fs::create_dir_all(&changeset_dir).unwrap();
+    std::fs::write(
+        changeset_dir.join("test.md"),
+        "---\na: minor\n---\n\n#### Feature in A\n",
+    )
+    .unwrap();
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: true,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    let v_a = CargoAdapter
+        .read_version(&dir.path().join("crates/a"))
+        .unwrap();
+    let v_b = CargoAdapter
+        .read_version(&dir.path().join("crates/b"))
+        .unwrap();
+
+    assert_eq!(v_a, Version::new(1, 1, 0));
+    assert_eq!(
+        v_b,
+        Version::new(1, 0, 1),
+        "b should get a cascaded patch bump"
     );
 }

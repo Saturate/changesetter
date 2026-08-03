@@ -28,6 +28,8 @@ changesetter add                     # interactive: pick packages, bump level, w
 changesetter check                   # CI: fails if no changeset on the branch
 changesetter status                  # preview: what would release look like?
 changesetter release                 # bump versions, update CHANGELOG.md, commit, tag
+changesetter pre enter rc            # enter pre-release mode
+changesetter pre exit                # exit pre-release mode
 ```
 
 Non-interactive mode for CI scripts:
@@ -71,8 +73,9 @@ changesetter walks the repo (via `git ls-files`) and detects packages from manif
 |---|---|---|
 | `Cargo.toml` | Rust | `package.version` or `workspace.package.version` |
 | `package.json` | Node | `version` |
-
-Python (`pyproject.toml`), .NET (`.csproj`), and Helm (`Chart.yaml`) adapters are planned for v0.2.
+| `pyproject.toml` | Python | `project.version` or `tool.poetry.version` |
+| `*.csproj` | .NET | `<Version>` in `<PropertyGroup>` |
+| `Chart.yaml` | Helm | `version` |
 
 No config needed for single-package repos. For monorepos, auto-detection finds all packages. Override with `changesetter.toml` if needed:
 
@@ -88,6 +91,36 @@ ignore = ["examples", "internal-tools"]
 per_package = true
 none_bump_heading = "Internal"
 ```
+
+## Pre-release mode
+
+Enter pre-release mode to publish release candidates before a stable release:
+
+```bash
+changesetter pre enter rc            # enter pre mode with "rc" tag
+# add changesets as normal
+changesetter release                 # produces 1.0.0-rc.0, 1.0.0-rc.1, etc.
+changesetter pre exit                # next release will be stable
+changesetter release                 # produces 1.0.0
+```
+
+State is tracked in `.changeset/pre.json`. Changesets use normal bump levels (`patch`, `minor`, `major`); the pre mode wraps the version output. Snapshot releases (`--snapshot`) ignore pre mode.
+
+## Package groups
+
+For monorepos, packages can be grouped to coordinate their releases:
+
+```toml
+# Fixed: always bump together, even if only one has a changeset
+[groups.core]
+fixed = ["core-lib", "core-macros"]
+
+# Linked: share version numbers, but only bump when individually changed
+[groups.utils]
+linked = ["util-a", "util-b"]
+```
+
+With `update_internal_dependencies = "patch"` in config, bumping a package cascades at least a patch bump to packages that depend on it.
 
 ## GitHub Actions
 
@@ -142,6 +175,16 @@ The release action runs `changesetter release --output json`, pushes the release
 `changesetter.toml` at the repo root. Entirely optional.
 
 ```toml
+# Package groups
+[groups.core]
+fixed = ["core-lib", "core-macros"]
+
+[groups.utils]
+linked = ["util-a", "util-b"]
+
+# Dependency cascading
+update_internal_dependencies = "patch"  # "patch" | "minor" | "none"
+
 # Changelog
 [changelog]
 file = "CHANGELOG.md"
@@ -174,9 +217,11 @@ post_bump = ["cargo check", "cargo fmt"]
 
 ## Roadmap
 
-**v0.1** (current): `init`, `add`, `check`, `status`, `version`, `release`. Cargo + npm adapters. Changelog generation. GitHub Actions. Changesets format compatibility.
+**v0.1**: `init`, `add`, `check`, `status`, `version`, `release`. Cargo + npm adapters. Changelog generation. GitHub Actions. Changesets format compatibility.
 
-**v0.2**: Pre-release mode (`pre enter`/`exit`). Snapshot releases. Fixed and linked package groups. Internal dependency cascading. Version-PR mode. Python, .NET, and Helm adapters. Documentation site.
+**v0.2** (current): Pre-release mode (`pre enter`/`exit`). Snapshot releases. Fixed and linked package groups. Internal dependency cascading. Version-PR mode in release action. Python, .NET, and Helm adapters. Documentation site.
+
+**Later**: Additional adapters on request. GitHub App for richer PR integration. Config migration tool (`changesets config.json` -> `changesetter.toml`).
 
 ## License
 
