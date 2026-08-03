@@ -248,13 +248,14 @@ runs:
           --json number \
           --jq '.[0].number // empty' 2>/dev/null || true)
 
-        PR_BODY="This PR was opened by changesetter. Merging it will release the following packages.
+        PR_BODY=$(cat <<PREOF
+        This PR was opened by changesetter. Merging it will release the following packages.
 
----
-
-\`\`\`
-${STATUS}
-\`\`\`"
+        \`\`\`
+        ${STATUS}
+        \`\`\`
+        PREOF
+        )
 
         if [ -n "$EXISTING_PR" ]; then
           gh pr edit "$EXISTING_PR" --body "$PR_BODY"
