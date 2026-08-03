@@ -138,6 +138,8 @@ runs:
       id: merged-release
       if: inputs.version-pr == 'true' && steps.check-merged.outputs.merged == 'true'
       shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
       run: |
         if ls .changeset/*.md 1>/dev/null 2>&1; then
           echo "Changesets still present, not a version PR merge."
@@ -145,28 +147,45 @@ runs:
           exit 0
         fi
 
-        OUTPUT=$(changesetter release --output json) || EXIT_CODE=$?
+        # Version PR already bumped versions and consumed changesets.
+        # Read the current version from the status output or manifest.
+        VERSION=$(changesetter status 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1 || true)
 
-        if [ "${EXIT_CODE:-0}" -ne 0 ] || [ -z "$OUTPUT" ]; then
+        if [ -z "$VERSION" ]; then
+          # Fallback: read from Cargo.toml or package.json
+          VERSION=$(grep '^version' Cargo.toml 2>/dev/null | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
+        fi
+        if [ -z "$VERSION" ]; then
+          VERSION=$(jq -r '.version // empty' package.json 2>/dev/null || true)
+        fi
+
+        if [ -z "$VERSION" ]; then
+          echo "Could not determine version after version PR merge"
           echo "released=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
-        if ! echo "$OUTPUT" | jq -e '.releases' > /dev/null 2>&1; then
-          echo "released=false" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
+        TAG="v${VERSION}"
 
-        RELEASES=$(echo "$OUTPUT" | jq -c '.releases')
-        COUNT=$(echo "$RELEASES" | jq 'length')
+        # Extract changelog for this version
+        CHANGELOG=$(sed -n "/^## ${VERSION}/,/^## [0-9]/p" CHANGELOG.md 2>/dev/null | sed '1d;$d' || true)
 
-        if [ "$COUNT" = "0" ]; then
-          echo "released=false" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
+        # Create tag
+        git tag -a "$TAG" -m "${CHANGELOG:-Release ${VERSION}}" --cleanup=verbatim
+        git push origin "$TAG"
+
+        # Create GitHub Release
+        gh release create "$TAG" \
+          --title "$TAG" \
+          --notes "${CHANGELOG:-Release ${VERSION}}" \
+          || true
+
+        # Build release JSON for outputs
+        RELEASES=$(jq -nc "[{\"name\":\"$(basename $(pwd))\",\"version\":\"${VERSION}\",\"tag\":\"${TAG}\",\"changelog\":$(echo "$CHANGELOG" | jq -Rs .)}]")
 
         echo "released=true" >> "$GITHUB_OUTPUT"
         echo "releases=$RELEASES" >> "$GITHUB_OUTPUT"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
     - name: Push tags (version PR)
       if: inputs.version-pr == 'true' && steps.merged-release.outputs.released == 'true'
