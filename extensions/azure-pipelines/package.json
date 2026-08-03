@@ -1,0 +1,9 @@
+{
+  "name": "changesetter-azure-pipelines",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Changesetter Azure Pipelines extension",
+  "scripts": {
+    "build": "tfx extension create --manifest-globs vss-extension.json"
+  }
+}

@@ -6,6 +6,7 @@
     "changeset-format",
     "adapters",
     "github-actions",
+    "azure-devops",
     "recipes"
   ]
 }

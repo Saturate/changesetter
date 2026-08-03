@@ -1,0 +1,43 @@
+{
+  "manifestVersion": 1,
+  "id": "changesetter",
+  "publisher": "saturate",
+  "version": "0.1.0",
+  "name": "Changesetter",
+  "description": "Polyglot changeset management for Azure Pipelines",
+  "categories": ["Azure Pipelines"],
+  "targets": [
+    { "id": "Microsoft.VisualStudio.Services" }
+  ],
+  "contributions": [
+    {
+      "id": "ChangsetterCheck",
+      "type": "ms.vss-distributed-task.task",
+      "targets": ["ms.vss-distributed-task.tasks"],
+      "properties": {
+        "name": "tasks/ChangsetterCheck"
+      }
+    },
+    {
+      "id": "ChangsetterRelease",
+      "type": "ms.vss-distributed-task.task",
+      "targets": ["ms.vss-distributed-task.tasks"],
+      "properties": {
+        "name": "tasks/ChangsetterRelease"
+      }
+    }
+  ],
+  "files": [
+    { "path": "tasks/ChangsetterCheck" },
+    { "path": "tasks/ChangsetterRelease" }
+  ],
+  "repository": {
+    "type": "git",
+    "uri": "https://github.com/Saturate/changesetter"
+  },
+  "links": {
+    "home": { "uri": "https://github.com/Saturate/changesetter" },
+    "repository": { "uri": "https://github.com/Saturate/changesetter" },
+    "issues": { "uri": "https://github.com/Saturate/changesetter/issues" }
+  }
+}

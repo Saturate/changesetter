@@ -1,0 +1,269 @@
+---
+title: Azure DevOps
+description: Azure Pipelines setup for changeset checking and automated releases.
+---
+
+changesetter works with Azure Pipelines the same way it works anywhere: download the binary, run the commands. These pipeline templates cover the common patterns.
+
+## Install changesetter
+
+Download the binary and make it available to subsequent pipeline steps:
+
+```yaml
+- script: |
+    VERSION=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | jq -r '.tag_name' | sed 's/.*v//')
+    ARCH=$(uname -m)
+    case "$ARCH" in
+      x86_64) ARCH="x86_64" ;;
+      aarch64|arm64) ARCH="aarch64" ;;
+    esac
+    curl -sL "https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${ARCH}-unknown-linux-gnu.tar.gz" | tar xz
+    chmod +x changesetter
+    mkdir -p $(Pipeline.Workspace)/tools
+    mv changesetter $(Pipeline.Workspace)/tools/changesetter
+    echo "##vso[task.prependpath]$(Pipeline.Workspace)/tools"
+  displayName: Install changesetter
+```
+
+To pin a specific version, replace the first line with `VERSION="0.2.0"`.
+
+## Changeset check on PRs
+
+Verify that every PR includes a changeset. Runs on pull request triggers only.
+
+```yaml
+trigger: none
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+
+  - script: |
+      VERSION=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | jq -r '.tag_name' | sed 's/.*v//')
+      ARCH=$(uname -m)
+      case "$ARCH" in x86_64) ARCH="x86_64" ;; aarch64|arm64) ARCH="aarch64" ;; esac
+      curl -sL "https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${ARCH}-unknown-linux-gnu.tar.gz" | tar xz
+      chmod +x changesetter
+      mkdir -p $(Pipeline.Workspace)/tools
+      mv changesetter $(Pipeline.Workspace)/tools/changesetter
+      echo "##vso[task.prependpath]$(Pipeline.Workspace)/tools"
+    displayName: Install changesetter
+
+  - script: |
+      changesetter check --base origin/$(System.PullRequest.TargetBranch)
+    displayName: Check changeset
+```
+
+### PR comments
+
+To post a comment on the PR with the changeset summary, add a step after the check:
+
+```yaml
+  - script: |
+      OUTPUT=$(changesetter check --base origin/$(System.PullRequest.TargetBranch) 2>&1) || true
+      EXIT_CODE=$?
+
+      if [ "$EXIT_CODE" -eq 0 ]; then
+        COMMENT="### Changeset Check: Passed\n\n\`\`\`\n${OUTPUT}\n\`\`\`"
+      else
+        COMMENT="### Changeset Check: Missing\n\nNo changeset found. Run \`changesetter add\` to create one."
+      fi
+
+      PR_ID=$(System.PullRequest.PullRequestId)
+      ORG_URL=$(System.CollectionUri)
+      PROJECT=$(System.TeamProject)
+      REPO=$(Build.Repository.Name)
+
+      curl -s -X POST \
+        "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullRequests/${PR_ID}/threads?api-version=7.1" \
+        -H "Authorization: Bearer $(System.AccessToken)" \
+        -H "Content-Type: application/json" \
+        -d "{\"comments\":[{\"content\":\"${COMMENT}\",\"commentType\":1}],\"status\":1}"
+    displayName: Post PR comment
+    condition: always()
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+```
+
+## Release on merge to main
+
+### Direct release
+
+Run `changesetter release` on every push to main. The pipeline bumps versions, updates the changelog, commits, tags, and pushes.
+
+```yaml
+trigger:
+  branches:
+    include:
+      - main
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+    persistCredentials: true
+
+  - script: |
+      VERSION=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | jq -r '.tag_name' | sed 's/.*v//')
+      ARCH=$(uname -m)
+      case "$ARCH" in x86_64) ARCH="x86_64" ;; aarch64|arm64) ARCH="aarch64" ;; esac
+      curl -sL "https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${ARCH}-unknown-linux-gnu.tar.gz" | tar xz
+      chmod +x changesetter
+      mkdir -p $(Pipeline.Workspace)/tools
+      mv changesetter $(Pipeline.Workspace)/tools/changesetter
+      echo "##vso[task.prependpath]$(Pipeline.Workspace)/tools"
+    displayName: Install changesetter
+
+  - script: |
+      git config user.name "Azure Pipelines"
+      git config user.email "pipelines@dev.azure.com"
+    displayName: Configure git
+
+  - script: |
+      OUTPUT=$(changesetter release --output json 2>&1) || EXIT_CODE=$?
+
+      if [ "${EXIT_CODE:-0}" -ne 0 ]; then
+        echo "changesetter release failed"
+        exit 0
+      fi
+
+      if [ -z "$OUTPUT" ] || ! echo "$OUTPUT" | jq -e '.releases' > /dev/null 2>&1; then
+        echo "No releases to create."
+        exit 0
+      fi
+
+      echo "$OUTPUT" | jq .
+      git push origin main --follow-tags
+    displayName: Release
+```
+
+Azure DevOps doesn't have a "GitHub Releases" equivalent. The release is the git tag itself. Use Azure Artifacts or your own distribution mechanism for binaries.
+
+### Version-PR pattern
+
+Instead of releasing on every merge, create a PR that batches pending changesets. Merging that PR triggers the release.
+
+```yaml
+trigger:
+  branches:
+    include:
+      - main
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+    persistCredentials: true
+
+  - script: |
+      VERSION=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | jq -r '.tag_name' | sed 's/.*v//')
+      ARCH=$(uname -m)
+      case "$ARCH" in x86_64) ARCH="x86_64" ;; aarch64|arm64) ARCH="aarch64" ;; esac
+      curl -sL "https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${ARCH}-unknown-linux-gnu.tar.gz" | tar xz
+      chmod +x changesetter
+      mkdir -p $(Pipeline.Workspace)/tools
+      mv changesetter $(Pipeline.Workspace)/tools/changesetter
+      echo "##vso[task.prependpath]$(Pipeline.Workspace)/tools"
+    displayName: Install changesetter
+
+  - script: |
+      git config user.name "Azure Pipelines"
+      git config user.email "pipelines@dev.azure.com"
+    displayName: Configure git
+
+  - script: |
+      BRANCH="changesetter/version-packages"
+      ORG_URL=$(System.CollectionUri)
+      PROJECT=$(System.TeamProject)
+      REPO=$(Build.Repository.Name)
+
+      # Check for pending changesets
+      if ! ls .changeset/*.md 1>/dev/null 2>&1; then
+        echo "No pending changesets"
+
+        # Check if this push is a version-PR merge
+        COMMIT_MSG=$(git log -1 --format=%s)
+        if echo "$COMMIT_MSG" | grep -q "chore: version packages"; then
+          echo "Version PR merge detected, creating tags"
+          changesetter release --output json || true
+          git push origin main --follow-tags
+        fi
+        exit 0
+      fi
+
+      # Compute status
+      STATUS=$(changesetter status 2>&1 || true)
+
+      # Create version branch and apply changes
+      git checkout -B "$BRANCH"
+      changesetter version --no-commit || true
+      git add -A
+      git commit -m "chore: version packages" --allow-empty
+      git push origin "$BRANCH" --force
+      git checkout -
+
+      # Create or update PR via Azure DevOps REST API
+      PR_BODY="This PR was opened by changesetter. Merging it will release the following packages.\n\n\`\`\`\n${STATUS}\n\`\`\`"
+
+      # Check for existing PR
+      EXISTING=$(curl -s \
+        "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequests?searchCriteria.sourceRefName=refs/heads/${BRANCH}&searchCriteria.status=active&api-version=7.1" \
+        -H "Authorization: Bearer $(System.AccessToken)" \
+        | jq -r '.value[0].pullRequestId // empty')
+
+      if [ -n "$EXISTING" ]; then
+        curl -s -X PATCH \
+          "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequests/${EXISTING}?api-version=7.1" \
+          -H "Authorization: Bearer $(System.AccessToken)" \
+          -H "Content-Type: application/json" \
+          -d "{\"description\":\"${PR_BODY}\"}"
+        echo "Updated PR #${EXISTING}"
+      else
+        curl -s -X POST \
+          "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequests?api-version=7.1" \
+          -H "Authorization: Bearer $(System.AccessToken)" \
+          -H "Content-Type: application/json" \
+          -d "{\"sourceRefName\":\"refs/heads/${BRANCH}\",\"targetRefName\":\"refs/heads/main\",\"title\":\"Next Release\",\"description\":\"${PR_BODY}\"}"
+        echo "Created version PR"
+      fi
+    displayName: Create version PR or release
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+```
+
+## Azure Pipelines extension
+
+For a more integrated experience, changesetter provides an Azure Pipelines extension with custom tasks for checking and releasing. See `extensions/azure-pipelines/` in the changesetter repository.
+
+The extension wraps the same CLI commands with native Azure DevOps integration: PR comment threads, work item linking, and pipeline variables.
+
+## Permissions
+
+The Build Service identity needs the following permissions on the repository:
+
+| Permission | Required for |
+|---|---|
+| Contribute | Pushing release commits |
+| Create tag | Creating version tags |
+| Contribute to pull requests | Posting PR comments, creating version PRs |
+| Create branch | Creating the `changesetter/version-packages` branch |
+
+Set these under **Project Settings > Repositories > Security**. Find your build service account (usually `{Project Name} Build Service ({org})`) and grant the permissions listed above.
+
+If using `persistCredentials: true` in the checkout step, the pipeline's access token inherits permissions from the Build Service identity. No extra token management needed for most setups.
