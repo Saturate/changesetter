@@ -20,7 +20,10 @@ export default async function Page(props: {
   const MDX = data.body;
 
   return (
-    <DocsPage toc={data.toc ?? []}>
+    <DocsPage
+      toc={data.toc ?? []}
+      tableOfContent={{ style: 'clerk' }}
+    >
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>

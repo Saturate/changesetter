@@ -1,0 +1,13 @@
+:root {
+  --fd-primary: 250 80% 55%;
+  --fd-background: 0 0% 100%;
+  --fd-muted: 210 15% 96%;
+  --fd-border: 220 10% 90%;
+}
+
+.dark {
+  --fd-primary: 250 80% 65%;
+  --fd-background: 224 15% 8%;
+  --fd-muted: 224 10% 14%;
+  --fd-border: 224 10% 18%;
+}
