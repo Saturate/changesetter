@@ -80,6 +80,9 @@ pub enum PackageType {
     Cargo,
     CargoWorkspace,
     Npm,
+    Python,
+    Helm,
+    Dotnet,
 }
 
 impl fmt::Display for PackageType {
@@ -88,6 +91,9 @@ impl fmt::Display for PackageType {
             PackageType::Cargo => write!(f, "cargo"),
             PackageType::CargoWorkspace => write!(f, "cargo-workspace"),
             PackageType::Npm => write!(f, "npm"),
+            PackageType::Python => write!(f, "python"),
+            PackageType::Helm => write!(f, "helm"),
+            PackageType::Dotnet => write!(f, "dotnet"),
         }
     }
 }

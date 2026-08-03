@@ -6,7 +6,10 @@ use crate::config::Config;
 use crate::errors::ChangesetterError;
 use crate::package::adapter::Adapter;
 use crate::package::cargo::CargoAdapter;
+use crate::package::dotnet::DotnetAdapter;
+use crate::package::helm::HelmAdapter;
 use crate::package::npm::NpmAdapter;
+use crate::package::python::PythonAdapter;
 use crate::package::types::Version;
 use crate::release::plan::{self, ReleasePlan};
 
@@ -154,6 +157,9 @@ fn apply_version_bump(
         crate::package::types::PackageType::Cargo
         | crate::package::types::PackageType::CargoWorkspace => Box::new(CargoAdapter),
         crate::package::types::PackageType::Npm => Box::new(NpmAdapter),
+        crate::package::types::PackageType::Python => Box::new(PythonAdapter),
+        crate::package::types::PackageType::Helm => Box::new(HelmAdapter),
+        crate::package::types::PackageType::Dotnet => Box::new(DotnetAdapter),
     };
 
     adapter.write_version(&pkg.path, new_version)?;

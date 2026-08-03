@@ -5,7 +5,10 @@ use std::process::Command;
 use crate::config::Config;
 use crate::package::adapter::Adapter;
 use crate::package::cargo::CargoAdapter;
+use crate::package::dotnet::DotnetAdapter;
+use crate::package::helm::HelmAdapter;
 use crate::package::npm::NpmAdapter;
+use crate::package::python::PythonAdapter;
 use crate::package::types::Package;
 
 const EXCLUDED_DIRS: &[&str] = &["node_modules", "target", ".git", "vendor", "dist", "build"];
@@ -13,7 +16,13 @@ const EXCLUDED_DIRS: &[&str] = &["node_modules", "target", ".git", "vendor", "di
 pub fn detect_packages(repo_root: &Path, config: &Config) -> anyhow::Result<Vec<Package>> {
     let manifest_dirs = find_manifest_dirs(repo_root)?;
 
-    let adapters: Vec<Box<dyn Adapter>> = vec![Box::new(CargoAdapter), Box::new(NpmAdapter)];
+    let adapters: Vec<Box<dyn Adapter>> = vec![
+        Box::new(CargoAdapter),
+        Box::new(NpmAdapter),
+        Box::new(PythonAdapter),
+        Box::new(HelmAdapter),
+        Box::new(DotnetAdapter),
+    ];
 
     let mut packages: BTreeMap<String, Package> = BTreeMap::new();
 
@@ -117,7 +126,10 @@ fn walk_dir(current: &Path, dirs: &mut Vec<PathBuf>) {
 }
 
 fn is_manifest(filename: &str) -> bool {
-    matches!(filename, "Cargo.toml" | "package.json")
+    matches!(
+        filename,
+        "Cargo.toml" | "package.json" | "pyproject.toml" | "Chart.yaml"
+    ) || filename.ends_with(".csproj")
 }
 
 #[cfg(test)]
