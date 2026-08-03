@@ -232,6 +232,9 @@ runs:
         # Run version (no commit, we'll commit ourselves)
         changesetter version --no-commit || true
 
+        # Extract the changelog diff (new entries added by version)
+        CHANGELOG_DIFF=$(git diff -- CHANGELOG.md | grep "^+" | grep -v "^+++" | sed 's/^+//' || true)
+
         # Stage and commit
         git add -A
         git commit -m "chore: version packages" --allow-empty
@@ -253,11 +256,13 @@ runs:
           --jq '.[0].number // empty' 2>/dev/null || true)
 
         PR_BODY=$(cat <<PREOF
-        This PR was opened by changesetter. Merging it will release the following packages.
+        This PR was opened by [changesetter](https://github.com/Saturate/changesetter). Merging it will release the following packages.
 
-        \`\`\`
         ${STATUS}
-        \`\`\`
+
+        ## Changelog preview
+
+        ${CHANGELOG_DIFF}
         PREOF
         )
 
