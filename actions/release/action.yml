@@ -18,6 +18,10 @@ inputs:
     description: Title for the version PR
     required: false
     default: "Version Packages"
+  token:
+    description: GitHub token for creating releases and PRs. Pass a GitHub App token or PAT for repos with branch protection.
+    required: false
+    default: ${{ github.token }}
   version:
     description: changesetter version to install
     required: false
@@ -89,7 +93,7 @@ runs:
       if: inputs.version-pr == 'false' && steps.direct-release.outputs.released == 'true' && inputs.github-release == 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ env.GITHUB_TOKEN || github.token }}
+        GH_TOKEN: ${{ inputs.token }}
         RELEASES: ${{ steps.direct-release.outputs.releases }}
       run: |
         DRAFT_FLAG=""
@@ -116,7 +120,7 @@ runs:
       if: inputs.version-pr == 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ env.GITHUB_TOKEN || github.token }}
+        GH_TOKEN: ${{ inputs.token }}
       run: |
         MERGED_PR=$(gh pr list \
           --state merged \
@@ -173,7 +177,7 @@ runs:
       if: inputs.version-pr == 'true' && steps.merged-release.outputs.released == 'true' && inputs.github-release == 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ env.GITHUB_TOKEN || github.token }}
+        GH_TOKEN: ${{ inputs.token }}
         RELEASES: ${{ steps.merged-release.outputs.releases }}
       run: |
         DRAFT_FLAG=""
@@ -213,7 +217,7 @@ runs:
       if: inputs.version-pr == 'true' && steps.check-pending.outputs.pending == 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ env.GITHUB_TOKEN || github.token }}
+        GH_TOKEN: ${{ inputs.token }}
         PR_TITLE: ${{ inputs.version-pr-title }}
       run: |
         BRANCH="changesetter/version-packages"
