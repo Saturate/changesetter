@@ -1,5 +1,13 @@
 # Changelog
 
+
+## 0.2.0 - 2026-08-03
+
+### changesetter
+
+#### Add Python, .NET, and Helm adapters, pre-release mode, fixed/linked package groups, dependency cascading, version-PR action, and documentation site
+
+
 ## 0.1.1 - 2026-07-31
 
 #### Initial release
