@@ -26,7 +26,8 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
     }
 
     let packages = detector::detect_packages(repo_root, &config)?;
-    let release_plan = plan::assemble(&changesets, &packages, &config);
+    let pre_state = crate::release::pre::read_pre_state(&changeset_dir);
+    let release_plan = plan::assemble(&changesets, &packages, &config, pre_state.as_ref());
 
     println!("{} changeset(s) pending\n", changesets.len());
 

@@ -126,6 +126,28 @@ impl Adapter for NpmAdapter {
 
         Ok(())
     }
+
+    fn dependencies(&self, path: &Path) -> anyhow::Result<Vec<String>> {
+        let pkg_json = if path.is_file() {
+            path.to_path_buf()
+        } else {
+            path.join("package.json")
+        };
+        if !pkg_json.exists() {
+            return Ok(vec![]);
+        }
+        let content = std::fs::read_to_string(&pkg_json)?;
+        let json: serde_json::Value = serde_json::from_str(&content)?;
+        let mut deps = Vec::new();
+        for key in ["dependencies", "devDependencies"] {
+            if let Some(obj) = json.get(key).and_then(|v| v.as_object()) {
+                for name in obj.keys() {
+                    deps.push(name.clone());
+                }
+            }
+        }
+        Ok(deps)
+    }
 }
 
 fn detect_indent(content: &str) -> String {

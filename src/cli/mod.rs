@@ -1,6 +1,7 @@
 pub mod add;
 pub mod check;
 pub mod init;
+pub mod pre;
 pub mod release;
 pub mod status;
 pub mod version;
@@ -10,6 +11,7 @@ use clap::{Parser, Subcommand};
 pub use add::AddArgs;
 pub use check::CheckArgs;
 pub use init::InitArgs;
+pub use pre::PreArgs;
 pub use release::ReleaseArgs;
 pub use status::StatusArgs;
 pub use version::VersionArgs;
@@ -39,4 +41,6 @@ pub enum Command {
     Version(VersionArgs),
     /// Run the full release pipeline
     Release(ReleaseArgs),
+    /// Enter or exit pre-release mode
+    Pre(PreArgs),
 }

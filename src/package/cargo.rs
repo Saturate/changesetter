@@ -145,6 +145,25 @@ impl Adapter for CargoAdapter {
 
         Ok(())
     }
+
+    fn dependencies(&self, path: &Path) -> anyhow::Result<Vec<String>> {
+        let cargo_toml = if path.is_file() {
+            path.to_path_buf()
+        } else {
+            path.join("Cargo.toml")
+        };
+        if !cargo_toml.exists() {
+            return Ok(vec![]);
+        }
+        let doc = Self::read_document(&cargo_toml)?;
+        let mut deps = Vec::new();
+        if let Some(table) = doc.get("dependencies").and_then(|d| d.as_table_like()) {
+            for (key, _) in table.iter() {
+                deps.push(key.to_string());
+            }
+        }
+        Ok(deps)
+    }
 }
 
 #[cfg(test)]

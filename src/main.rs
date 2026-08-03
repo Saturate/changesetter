@@ -13,6 +13,7 @@ fn main() {
         Command::Status(args) => changesetter::cli::status::run(args),
         Command::Version(args) => changesetter::cli::version::run(args),
         Command::Release(args) => changesetter::cli::release::run(args),
+        Command::Pre(args) => changesetter::cli::pre::run(args),
     };
 
     if let Err(e) = result {

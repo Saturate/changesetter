@@ -112,6 +112,28 @@ impl Adapter for HelmAdapter {
 
         Ok(())
     }
+
+    fn dependencies(&self, path: &Path) -> anyhow::Result<Vec<String>> {
+        let chart_yaml = if path.is_file() {
+            path.to_path_buf()
+        } else {
+            path.join("Chart.yaml")
+        };
+        if !chart_yaml.exists() {
+            return Ok(vec![]);
+        }
+        let content = std::fs::read_to_string(&chart_yaml)?;
+        let doc: serde_yaml::Value = serde_yaml::from_str(&content)?;
+        let mut deps = Vec::new();
+        if let Some(dep_list) = doc.get("dependencies").and_then(|d| d.as_sequence()) {
+            for dep in dep_list {
+                if let Some(name) = dep.get("name").and_then(|n| n.as_str()) {
+                    deps.push(name.to_string());
+                }
+            }
+        }
+        Ok(deps)
+    }
 }
 
 #[cfg(test)]

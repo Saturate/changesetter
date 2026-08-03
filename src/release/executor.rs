@@ -46,7 +46,14 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
 
     let packages = crate::package::detector::detect_packages(repo_root, &config)?;
     let is_monorepo = packages.len() > 1;
-    let release_plan = plan::assemble(&changesets, &packages, &config);
+    let changeset_dir_for_pre = changeset_dir.clone();
+    let pre_state = crate::release::pre::read_pre_state(&changeset_dir_for_pre);
+    let pre_ref = if opts.snapshot.is_some() {
+        None
+    } else {
+        pre_state.as_ref()
+    };
+    let release_plan = plan::assemble(&changesets, &packages, &config, pre_ref);
 
     if release_plan.releases.is_empty() && release_plan.none_entries.is_empty() {
         eprintln!("No pending changesets, nothing to release.");
@@ -120,6 +127,22 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
             if path.exists() {
                 std::fs::remove_file(&path)?;
             }
+        }
+    }
+
+    if let Some(state) = &pre_state {
+        if state.mode == "pre" {
+            let mut updated = state.clone();
+            for release in &release_plan.releases {
+                let counter = updated
+                    .packages_released
+                    .entry(release.name.clone())
+                    .or_insert(0);
+                *counter += 1;
+            }
+            crate::release::pre::write_pre_state(&changeset_dir, &updated)?;
+        } else if state.mode == "exit" {
+            crate::release::pre::remove_pre_state(&changeset_dir)?;
         }
     }
 
