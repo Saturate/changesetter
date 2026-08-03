@@ -46,7 +46,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
 
     let packages = crate::package::detector::detect_packages(repo_root, &config)?;
     let is_monorepo = packages.len() > 1;
-    let release_plan = plan::assemble(&changesets, &packages);
+    let release_plan = plan::assemble(&changesets, &packages, &config);
 
     if release_plan.releases.is_empty() && release_plan.none_entries.is_empty() {
         eprintln!("No pending changesets, nothing to release.");

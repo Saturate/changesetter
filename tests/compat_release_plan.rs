@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use changesetter::changeset::types::{BumpLevel, Changeset};
 use changesetter::package::types::{Package, PackageType, Version};
+use changesetter::config::Config;
 use changesetter::release::plan;
 
 fn make_pkg(name: &str, version: &str) -> Package {
@@ -28,7 +29,7 @@ fn compat_bump_precedence_patch_minor() {
         make_cs(&[("mylib", BumpLevel::Patch)], "#### Fix", "cs1"),
         make_cs(&[("mylib", BumpLevel::Minor)], "#### Feature", "cs2"),
     ];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert_eq!(plan.releases.len(), 1);
     assert_eq!(plan.releases[0].version, Version::new(1, 1, 0));
     assert_eq!(plan.releases[0].bump, BumpLevel::Minor);
@@ -41,7 +42,7 @@ fn compat_bump_precedence_minor_major() {
         make_cs(&[("mylib", BumpLevel::Minor)], "#### Feature", "cs1"),
         make_cs(&[("mylib", BumpLevel::Major)], "#### Breaking", "cs2"),
     ];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert_eq!(plan.releases.len(), 1);
     assert_eq!(plan.releases[0].version, Version::new(2, 0, 0));
     assert_eq!(plan.releases[0].bump, BumpLevel::Major);
@@ -54,7 +55,7 @@ fn compat_none_plus_patch_equals_patch() {
         make_cs(&[("mylib", BumpLevel::None)], "#### CI", "cs1"),
         make_cs(&[("mylib", BumpLevel::Patch)], "#### Fix", "cs2"),
     ];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert_eq!(plan.releases.len(), 1);
     assert_eq!(plan.releases[0].version, Version::new(1, 0, 1));
     assert!(plan.none_entries.is_empty());
@@ -68,7 +69,7 @@ fn compat_none_only_no_version_change() {
         "#### CI update",
         "cs1",
     )];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert!(plan.releases.is_empty());
     assert_eq!(plan.none_entries.len(), 1);
 }
@@ -77,7 +78,7 @@ fn compat_none_only_no_version_change() {
 fn compat_default_maps_to_single_package() {
     let pkgs = vec![make_pkg("my-crate", "0.5.0")];
     let css = vec![make_cs(&[("default", BumpLevel::Patch)], "#### Fix", "cs1")];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert_eq!(plan.releases.len(), 1);
     assert_eq!(plan.releases[0].name, "my-crate");
     assert_eq!(plan.releases[0].version, Version::new(0, 5, 1));
@@ -90,7 +91,7 @@ fn compat_monorepo_independent_bumps() {
         make_cs(&[("backend", BumpLevel::Minor)], "#### API", "cs1"),
         make_cs(&[("frontend", BumpLevel::Patch)], "#### UI fix", "cs2"),
     ];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert_eq!(plan.releases.len(), 2);
 
     let backend = plan.releases.iter().find(|r| r.name == "backend").unwrap();
@@ -110,7 +111,7 @@ fn compat_multi_package_changeset() {
         "#### Shared change",
         "cs1",
     )];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert_eq!(plan.releases.len(), 2);
 
     let mylib = plan.releases.iter().find(|r| r.name == "mylib").unwrap();
@@ -130,7 +131,7 @@ fn compat_major_resets_minor_and_patch() {
         "#### Breaking",
         "cs1",
     )];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert_eq!(plan.releases[0].version, Version::new(2, 0, 0));
 }
 
@@ -142,14 +143,14 @@ fn compat_minor_resets_patch() {
         "#### Feature",
         "cs1",
     )];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert_eq!(plan.releases[0].version, Version::new(1, 6, 0));
 }
 
 #[test]
 fn compat_empty_changesets_empty_plan() {
     let pkgs = vec![make_pkg("mylib", "1.0.0")];
-    let plan = plan::assemble(&[], &pkgs);
+    let plan = plan::assemble(&[], &pkgs, &Config::default());
     assert!(plan.releases.is_empty());
     assert!(plan.none_entries.is_empty());
 }
@@ -161,7 +162,7 @@ fn compat_changelog_bodies_combined() {
         make_cs(&[("mylib", BumpLevel::Patch)], "#### Fix one", "cs1"),
         make_cs(&[("mylib", BumpLevel::Patch)], "#### Fix two", "cs2"),
     ];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert_eq!(plan.releases.len(), 1);
     assert!(plan.releases[0].changelog.contains("Fix one"));
     assert!(plan.releases[0].changelog.contains("Fix two"));
@@ -174,7 +175,7 @@ fn compat_changesets_tracked_in_release() {
         make_cs(&[("mylib", BumpLevel::Patch)], "#### Fix", "cool-dogs"),
         make_cs(&[("mylib", BumpLevel::Patch)], "#### Fix 2", "red-lions"),
     ];
-    let plan = plan::assemble(&css, &pkgs);
+    let plan = plan::assemble(&css, &pkgs, &Config::default());
     assert!(
         plan.releases[0]
             .changesets

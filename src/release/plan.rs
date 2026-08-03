@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::changeset::types::{BumpLevel, Changeset};
+use crate::config::Config;
 use crate::package::types::{Package, Version};
 
 #[derive(Debug, Clone)]
@@ -28,9 +29,10 @@ pub struct NoneEntry {
     pub changesets: Vec<String>,
 }
 
-pub fn assemble(changesets: &[Changeset], packages: &[Package]) -> ReleasePlan {
-    let mut bumps_per_package: BTreeMap<String, (BumpLevel, Vec<(String, String)>)> =
-        BTreeMap::new();
+type BumpMap = BTreeMap<String, (BumpLevel, Vec<(String, String)>)>;
+
+pub fn assemble(changesets: &[Changeset], packages: &[Package], config: &Config) -> ReleasePlan {
+    let mut bumps_per_package: BumpMap = BTreeMap::new();
 
     let is_single_package = packages.len() <= 1;
 
@@ -58,6 +60,9 @@ pub fn assemble(changesets: &[Changeset], packages: &[Package]) -> ReleasePlan {
             entry.1.push((cs_name.clone(), cs.body.clone()));
         }
     }
+
+    apply_fixed_groups(&mut bumps_per_package, packages, config);
+    apply_linked_groups(&mut bumps_per_package, config);
 
     let mut releases = Vec::new();
     let mut none_entries = Vec::new();
@@ -110,6 +115,74 @@ pub fn assemble(changesets: &[Changeset], packages: &[Package]) -> ReleasePlan {
     }
 }
 
+fn apply_fixed_groups(bumps: &mut BumpMap, packages: &[Package], config: &Config) {
+    for group in config.groups.values() {
+        if group.fixed.is_empty() {
+            continue;
+        }
+
+        let highest_bump = group
+            .fixed
+            .iter()
+            .filter_map(|name| bumps.get(name).map(|(b, _)| *b))
+            .filter(|b| *b > BumpLevel::None)
+            .max();
+
+        let Some(highest_bump) = highest_bump else {
+            continue;
+        };
+
+        for member in &group.fixed {
+            let entry = bumps
+                .entry(member.clone())
+                .or_insert((BumpLevel::None, Vec::new()));
+
+            if entry.0 < highest_bump {
+                entry.0 = highest_bump;
+            }
+
+            if entry.1.is_empty() {
+                let pkg_version = packages
+                    .iter()
+                    .find(|p| &p.name == member)
+                    .map(|p| p.version.to_string())
+                    .unwrap_or_default();
+                entry.1.push((
+                    "fixed-group".to_string(),
+                    format!("#### Bumped as part of fixed group (was {pkg_version})"),
+                ));
+            }
+        }
+    }
+}
+
+fn apply_linked_groups(bumps: &mut BumpMap, config: &Config) {
+    for group in config.groups.values() {
+        if group.linked.is_empty() {
+            continue;
+        }
+
+        let highest_bump = group
+            .linked
+            .iter()
+            .filter_map(|name| bumps.get(name).map(|(b, _)| *b))
+            .filter(|b| *b > BumpLevel::None)
+            .max();
+
+        let Some(highest_bump) = highest_bump else {
+            continue;
+        };
+
+        for member in &group.linked {
+            if let Some(entry) = bumps.get_mut(member) {
+                if entry.0 > BumpLevel::None && entry.0 < highest_bump {
+                    entry.0 = highest_bump;
+                }
+            }
+        }
+    }
+}
+
 fn apply_bump(version: &Version, bump: BumpLevel) -> Version {
     match bump {
         BumpLevel::Major => version.bump_major(),
@@ -154,7 +227,7 @@ mod tests {
         let packages = vec![make_pkg("mylib", "1.0.0")];
         let changesets = vec![make_cs(&[("mylib", BumpLevel::Patch)], "#### Fix", "cs1")];
 
-        let plan = assemble(&changesets, &packages);
+        let plan = assemble(&changesets, &packages, &Config::default());
         assert_eq!(plan.releases.len(), 1);
         assert_eq!(plan.releases[0].name, "mylib");
         assert_eq!(plan.releases[0].version, Version::new(1, 0, 1));
@@ -169,7 +242,7 @@ mod tests {
             make_cs(&[("mylib", BumpLevel::Minor)], "#### Feature", "cs2"),
         ];
 
-        let plan = assemble(&changesets, &packages);
+        let plan = assemble(&changesets, &packages, &Config::default());
         assert_eq!(plan.releases.len(), 1);
         assert_eq!(plan.releases[0].version, Version::new(1, 1, 0));
         assert_eq!(plan.releases[0].bump, BumpLevel::Minor);
@@ -184,7 +257,7 @@ mod tests {
             "cs1",
         )];
 
-        let plan = assemble(&changesets, &packages);
+        let plan = assemble(&changesets, &packages, &Config::default());
         assert!(plan.releases.is_empty());
         assert_eq!(plan.none_entries.len(), 1);
         assert_eq!(plan.none_entries[0].title, "CI update");
@@ -198,7 +271,7 @@ mod tests {
             make_cs(&[("mylib", BumpLevel::Patch)], "#### Fix", "cs2"),
         ];
 
-        let plan = assemble(&changesets, &packages);
+        let plan = assemble(&changesets, &packages, &Config::default());
         assert_eq!(plan.releases.len(), 1);
         assert_eq!(plan.releases[0].version, Version::new(1, 0, 1));
         assert!(plan.none_entries.is_empty());
@@ -209,7 +282,7 @@ mod tests {
         let packages = vec![make_pkg("mylib", "1.0.0")];
         let changesets = vec![make_cs(&[("default", BumpLevel::Patch)], "#### Fix", "cs1")];
 
-        let plan = assemble(&changesets, &packages);
+        let plan = assemble(&changesets, &packages, &Config::default());
         assert_eq!(plan.releases.len(), 1);
         assert_eq!(plan.releases[0].name, "mylib");
     }
@@ -222,7 +295,7 @@ mod tests {
             make_cs(&[("frontend", BumpLevel::Patch)], "#### UI fix", "cs2"),
         ];
 
-        let plan = assemble(&changesets, &packages);
+        let plan = assemble(&changesets, &packages, &Config::default());
         assert_eq!(plan.releases.len(), 2);
 
         let backend = plan.releases.iter().find(|r| r.name == "backend").unwrap();
@@ -241,7 +314,7 @@ mod tests {
             "cs1",
         )];
 
-        let plan = assemble(&changesets, &packages);
+        let plan = assemble(&changesets, &packages, &Config::default());
         assert_eq!(plan.releases.len(), 2);
     }
 
@@ -253,7 +326,7 @@ mod tests {
             make_cs(&[("mylib", BumpLevel::Patch)], "#### Fix two", "cs2"),
         ];
 
-        let plan = assemble(&changesets, &packages);
+        let plan = assemble(&changesets, &packages, &Config::default());
         assert!(plan.releases[0].changelog.contains("Fix one"));
         assert!(plan.releases[0].changelog.contains("Fix two"));
     }
@@ -267,15 +340,136 @@ mod tests {
             "cs1",
         )];
 
-        let plan = assemble(&changesets, &packages);
+        let plan = assemble(&changesets, &packages, &Config::default());
         assert_eq!(plan.releases[0].version, Version::new(2, 0, 0));
     }
 
     #[test]
     fn empty_changesets() {
         let packages = vec![make_pkg("mylib", "1.0.0")];
-        let plan = assemble(&[], &packages);
+        let plan = assemble(&[], &packages, &Config::default());
         assert!(plan.releases.is_empty());
         assert!(plan.none_entries.is_empty());
+    }
+
+    fn make_config_with_fixed(group_name: &str, members: &[&str]) -> Config {
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            group_name.to_string(),
+            crate::config::GroupConfig {
+                fixed: members.iter().map(|s| s.to_string()).collect(),
+                linked: vec![],
+            },
+        );
+        Config {
+            groups,
+            ..Default::default()
+        }
+    }
+
+    fn make_config_with_linked(group_name: &str, members: &[&str]) -> Config {
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            group_name.to_string(),
+            crate::config::GroupConfig {
+                fixed: vec![],
+                linked: members.iter().map(|s| s.to_string()).collect(),
+            },
+        );
+        Config {
+            groups,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fixed_group_all_members_bump() {
+        let packages = vec![make_pkg("core-lib", "1.0.0"), make_pkg("core-macros", "1.0.0")];
+        let changesets = vec![make_cs(
+            &[("core-lib", BumpLevel::Minor)],
+            "#### Feature",
+            "cs1",
+        )];
+        let config = make_config_with_fixed("core", &["core-lib", "core-macros"]);
+
+        let plan = assemble(&changesets, &packages, &config);
+        assert_eq!(plan.releases.len(), 2);
+
+        let lib = plan.releases.iter().find(|r| r.name == "core-lib").unwrap();
+        assert_eq!(lib.version, Version::new(1, 1, 0));
+        assert_eq!(lib.bump, BumpLevel::Minor);
+
+        let macros = plan.releases.iter().find(|r| r.name == "core-macros").unwrap();
+        assert_eq!(macros.version, Version::new(1, 1, 0));
+        assert_eq!(macros.bump, BumpLevel::Minor);
+    }
+
+    #[test]
+    fn fixed_group_highest_bump_wins() {
+        let packages = vec![make_pkg("a", "1.0.0"), make_pkg("b", "1.0.0")];
+        let changesets = vec![
+            make_cs(&[("a", BumpLevel::Patch)], "#### Fix", "cs1"),
+            make_cs(&[("b", BumpLevel::Minor)], "#### Feature", "cs2"),
+        ];
+        let config = make_config_with_fixed("group", &["a", "b"]);
+
+        let plan = assemble(&changesets, &packages, &config);
+        assert_eq!(plan.releases.len(), 2);
+
+        let a = plan.releases.iter().find(|r| r.name == "a").unwrap();
+        assert_eq!(a.bump, BumpLevel::Minor);
+        let b = plan.releases.iter().find(|r| r.name == "b").unwrap();
+        assert_eq!(b.bump, BumpLevel::Minor);
+    }
+
+    #[test]
+    fn fixed_group_no_changesets_no_bump() {
+        let packages = vec![make_pkg("a", "1.0.0"), make_pkg("b", "1.0.0")];
+        let config = make_config_with_fixed("group", &["a", "b"]);
+
+        let plan = assemble(&[], &packages, &config);
+        assert!(plan.releases.is_empty());
+    }
+
+    #[test]
+    fn linked_group_only_changed_members_bump() {
+        let packages = vec![make_pkg("util-a", "1.0.0"), make_pkg("util-b", "1.0.0")];
+        let changesets = vec![make_cs(
+            &[("util-a", BumpLevel::Patch)],
+            "#### Fix",
+            "cs1",
+        )];
+        let config = make_config_with_linked("utils", &["util-a", "util-b"]);
+
+        let plan = assemble(&changesets, &packages, &config);
+        assert_eq!(plan.releases.len(), 1);
+        assert_eq!(plan.releases[0].name, "util-a");
+    }
+
+    #[test]
+    fn linked_group_both_bump_to_highest() {
+        let packages = vec![make_pkg("util-a", "1.0.0"), make_pkg("util-b", "1.0.0")];
+        let changesets = vec![
+            make_cs(&[("util-a", BumpLevel::Patch)], "#### Fix", "cs1"),
+            make_cs(&[("util-b", BumpLevel::Minor)], "#### Feature", "cs2"),
+        ];
+        let config = make_config_with_linked("utils", &["util-a", "util-b"]);
+
+        let plan = assemble(&changesets, &packages, &config);
+        assert_eq!(plan.releases.len(), 2);
+
+        let a = plan.releases.iter().find(|r| r.name == "util-a").unwrap();
+        assert_eq!(a.bump, BumpLevel::Minor);
+        let b = plan.releases.iter().find(|r| r.name == "util-b").unwrap();
+        assert_eq!(b.bump, BumpLevel::Minor);
+    }
+
+    #[test]
+    fn linked_group_no_changesets_no_bump() {
+        let packages = vec![make_pkg("a", "1.0.0"), make_pkg("b", "1.0.0")];
+        let config = make_config_with_linked("group", &["a", "b"]);
+
+        let plan = assemble(&[], &packages, &config);
+        assert!(plan.releases.is_empty());
     }
 }

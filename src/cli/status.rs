@@ -26,7 +26,7 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
     }
 
     let packages = detector::detect_packages(repo_root, &config)?;
-    let release_plan = plan::assemble(&changesets, &packages);
+    let release_plan = plan::assemble(&changesets, &packages, &config);
 
     println!("{} changeset(s) pending\n", changesets.len());
 
