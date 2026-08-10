@@ -223,12 +223,27 @@ fn commit_version_changes(
     paths_to_stage.push(format!("{}/", config.changeset_dir_relative()));
 
     let manifest_names = ["Cargo.toml", "package.json", "pyproject.toml", "Chart.yaml"];
+    let lock_names = [
+        "Cargo.lock",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lockb",
+        "bun.lock",
+    ];
     for release in &plan.releases {
         let rel_path = release
             .path
             .strip_prefix(repo_root)
             .unwrap_or(&release.path);
         for name in &manifest_names {
+            let full = repo_root.join(rel_path).join(name);
+            if full.exists() {
+                paths_to_stage.push(rel_path.join(name).to_string_lossy().to_string());
+            }
+        }
+
+        for name in &lock_names {
             let full = repo_root.join(rel_path).join(name);
             if full.exists() {
                 paths_to_stage.push(rel_path.join(name).to_string_lossy().to_string());
