@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::changeset::parser;
 use crate::changeset::types::Changeset;
@@ -10,15 +10,33 @@ pub fn read_changesets(changeset_dir: &Path) -> anyhow::Result<Vec<Changeset>> {
         return Ok(Vec::new());
     }
 
+    let mut paths = Vec::new();
+    collect_md_files(changeset_dir, changeset_dir, &mut paths)?;
+    paths.sort();
+
     let mut changesets = Vec::new();
+    for (rel_stem, full_path) in paths {
+        let content = std::fs::read_to_string(&full_path)?;
+        let changeset = parser::parse(&content, Some(rel_stem))?;
+        changesets.push(changeset);
+    }
 
-    let mut entries: Vec<_> = std::fs::read_dir(changeset_dir)?
-        .filter_map(|e| e.ok())
-        .collect();
-    entries.sort_by_key(|e| e.file_name());
+    Ok(changesets)
+}
 
-    for entry in entries {
+fn collect_md_files(
+    base: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
         let path = entry.path();
+
+        if path.is_dir() {
+            collect_md_files(base, &path, out)?;
+            continue;
+        }
 
         if !path.is_file() {
             continue;
@@ -37,18 +55,12 @@ pub fn read_changesets(changeset_dir: &Path) -> anyhow::Result<Vec<Changeset>> {
             continue;
         }
 
-        let content = std::fs::read_to_string(&path)?;
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_string();
+        let rel = path.strip_prefix(base).unwrap_or(&path).with_extension("");
+        let rel_stem = rel.to_string_lossy().to_string();
 
-        let changeset = parser::parse(&content, Some(stem))?;
-        changesets.push(changeset);
+        out.push((rel_stem, path));
     }
-
-    Ok(changesets)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -143,6 +155,33 @@ mod tests {
 
         let result = read_changesets(&changeset_dir);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_nested_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        let changeset_dir = dir.path().join(".changeset");
+        let sub_dir = changeset_dir.join("changesets");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        std::fs::write(
+            sub_dir.join("cool-dogs-dance.md"),
+            "---\nmylib: patch\n---\n\n#### Fix\n",
+        )
+        .unwrap();
+        std::fs::write(
+            changeset_dir.join("red-lions-run.md"),
+            "---\nmylib: minor\n---\n\n#### Feature\n",
+        )
+        .unwrap();
+
+        let result = read_changesets(&changeset_dir).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            result[0].filename.as_deref(),
+            Some("changesets/cool-dogs-dance")
+        );
+        assert_eq!(result[1].filename.as_deref(), Some("red-lions-run"));
     }
 
     #[test]
