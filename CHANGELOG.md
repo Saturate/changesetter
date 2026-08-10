@@ -1,6 +1,16 @@
 # Changelog
 
 
+
+## 0.3.0 - 2026-08-10
+
+### changesetter
+
+#### Publish to crates.io on version tags
+
+#### Support custom changeset directory and recursive reading
+
+
 ## 0.2.0 - 2026-08-03
 
 ### changesetter
