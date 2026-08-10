@@ -28,7 +28,7 @@ pub struct ExecuteResult {
 
 pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Result<ExecuteResult> {
     let config = Config::load(repo_root)?;
-    let changeset_dir = repo_root.join(".changeset");
+    let changeset_dir = config.changeset_dir(repo_root);
     let changesets = reader::read_changesets(&changeset_dir)?;
 
     if changesets.is_empty() {
@@ -220,7 +220,7 @@ fn commit_version_changes(
 ) -> anyhow::Result<()> {
     let mut paths_to_stage: Vec<String> = Vec::new();
 
-    paths_to_stage.push(".changeset/".to_string());
+    paths_to_stage.push(format!("{}/", config.changeset_dir_relative()));
 
     let manifest_names = ["Cargo.toml", "package.json", "pyproject.toml", "Chart.yaml"];
     for release in &plan.releases {

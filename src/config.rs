@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -12,6 +12,7 @@ pub struct Config {
     pub groups: BTreeMap<String, GroupConfig>,
     pub ignore: Vec<String>,
     pub update_internal_dependencies: Option<String>,
+    pub changeset_dir: Option<String>,
     pub changelog: ChangelogConfig,
     pub tag: TagConfig,
     pub release: ReleaseConfig,
@@ -108,6 +109,20 @@ impl Config {
         let config: Config = toml_edit::de::from_str(&content)?;
         Ok(config)
     }
+
+    pub fn changeset_dir(&self, repo_root: &Path) -> PathBuf {
+        match &self.changeset_dir {
+            Some(dir) => repo_root.join(dir),
+            None => repo_root.join(".changeset"),
+        }
+    }
+
+    pub fn changeset_dir_relative(&self) -> &str {
+        match &self.changeset_dir {
+            Some(dir) => dir.as_str(),
+            None => ".changeset",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -119,6 +134,8 @@ mod tests {
         let config = Config::default();
         assert!(config.packages.is_empty());
         assert!(config.ignore.is_empty());
+        assert!(config.changeset_dir.is_none());
+        assert_eq!(config.changeset_dir_relative(), ".changeset");
         assert_eq!(config.changelog.file, "CHANGELOG.md");
         assert!(!config.changelog.per_package);
         assert_eq!(config.changelog.none_bump, "section");
@@ -200,6 +217,23 @@ post_bump = ["cargo check", "cargo fmt"]
         let config = Config::load(dir.path()).unwrap();
         assert_eq!(config.ignore, vec!["test-fixtures"]);
         assert_eq!(config.changelog.file, "CHANGELOG.md");
+    }
+
+    #[test]
+    fn custom_changeset_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("changesetter.toml"),
+            "changeset_dir = \".changeset/changesets\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load(dir.path()).unwrap();
+        assert_eq!(config.changeset_dir_relative(), ".changeset/changesets");
+        assert_eq!(
+            config.changeset_dir(dir.path()),
+            dir.path().join(".changeset/changesets")
+        );
     }
 
     #[test]

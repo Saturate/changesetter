@@ -35,7 +35,7 @@ pub fn run(args: &AddArgs) -> anyhow::Result<()> {
 
 pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
     let config = Config::load(repo_root)?;
-    let changeset_dir = repo_root.join(".changeset");
+    let changeset_dir = config.changeset_dir(repo_root);
 
     if !changeset_dir.exists() {
         std::fs::create_dir_all(&changeset_dir)?;
@@ -68,7 +68,7 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
     };
 
     let name = writer::write_changeset(&changeset_dir, &packages, &body)?;
-    eprintln!("Created .changeset/{name}.md");
+    eprintln!("Created {}/{name}.md", config.changeset_dir_relative());
 
     Ok(())
 }

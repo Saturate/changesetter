@@ -27,14 +27,19 @@ pub fn is_working_tree_clean(repo_root: &Path) -> anyhow::Result<bool> {
     Ok(output.stdout.is_empty())
 }
 
-pub fn diff_changeset_files(repo_root: &Path, base: &str) -> anyhow::Result<Vec<String>> {
+pub fn diff_changeset_files(
+    repo_root: &Path,
+    base: &str,
+    changeset_dir: &str,
+) -> anyhow::Result<Vec<String>> {
+    let dir_arg = format!("{changeset_dir}/");
     let output = Command::new("git")
         .args([
             "diff",
             "--name-only",
             &format!("{base}...HEAD"),
             "--",
-            ".changeset/",
+            &dir_arg,
         ])
         .current_dir(repo_root)
         .output()
