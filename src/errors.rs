@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ChangesetterError {
-    #[error("no changeset files found in .changeset/")]
+    #[error("no changeset files found")]
     NoChangesets,
 
     #[error("invalid changeset frontmatter in {path}: {reason}")]

@@ -18,10 +18,11 @@ pub fn run(args: &CheckArgs) -> anyhow::Result<()> {
 }
 
 pub fn run_in(repo_root: &Path, args: &CheckArgs) -> anyhow::Result<()> {
-    let changeset_dir = repo_root.join(".changeset");
+    let config = crate::config::Config::load(repo_root)?;
+    let changeset_dir = config.changeset_dir(repo_root);
 
     if let Some(base) = &args.base {
-        check_with_base(repo_root, base)
+        check_with_base(repo_root, &config, base)
     } else {
         check_without_base(&changeset_dir)
     }
@@ -39,8 +40,13 @@ fn check_without_base(changeset_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn check_with_base(repo_root: &Path, base: &str) -> anyhow::Result<()> {
-    let files = crate::git::diff_changeset_files(repo_root, base)?;
+fn check_with_base(
+    repo_root: &Path,
+    config: &crate::config::Config,
+    base: &str,
+) -> anyhow::Result<()> {
+    let changeset_rel = config.changeset_dir_relative();
+    let files = crate::git::diff_changeset_files(repo_root, base, changeset_rel)?;
 
     let added: Vec<&str> = files
         .iter()

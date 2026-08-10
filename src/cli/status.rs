@@ -17,7 +17,7 @@ pub fn run(_args: &StatusArgs) -> anyhow::Result<()> {
 
 pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
     let config = Config::load(repo_root)?;
-    let changeset_dir = repo_root.join(".changeset");
+    let changeset_dir = config.changeset_dir(repo_root);
     let changesets = reader::read_changesets(&changeset_dir)?;
 
     if changesets.is_empty() {

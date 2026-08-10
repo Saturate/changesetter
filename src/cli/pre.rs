@@ -30,7 +30,8 @@ pub fn run(args: &PreArgs) -> anyhow::Result<()> {
 }
 
 pub fn run_in(repo_root: &Path, args: &PreArgs) -> anyhow::Result<()> {
-    let changeset_dir = repo_root.join(".changeset");
+    let config = crate::config::Config::load(repo_root)?;
+    let changeset_dir = config.changeset_dir(repo_root);
     if !changeset_dir.exists() {
         std::fs::create_dir_all(&changeset_dir)?;
     }

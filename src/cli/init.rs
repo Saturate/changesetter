@@ -13,13 +13,15 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
 }
 
 pub fn run_in(repo_root: &std::path::Path, args: &InitArgs) -> anyhow::Result<()> {
-    let changeset_dir = repo_root.join(".changeset");
+    let config = crate::config::Config::load(repo_root)?;
+    let changeset_dir = config.changeset_dir(repo_root);
+    let changeset_rel = config.changeset_dir_relative();
 
     if changeset_dir.exists() {
-        eprintln!(".changeset/ directory already exists");
+        eprintln!("{changeset_rel}/ directory already exists");
     } else {
         std::fs::create_dir_all(&changeset_dir)?;
-        eprintln!("Created .changeset/ directory");
+        eprintln!("Created {changeset_rel}/ directory");
     }
 
     if args.config {
@@ -37,6 +39,9 @@ pub fn run_in(repo_root: &std::path::Path, args: &InitArgs) -> anyhow::Result<()
 
 const STARTER_CONFIG: &str = r#"# changesetter.toml
 # See https://github.com/saturate/changesetter for documentation
+
+# Directory where changeset files are stored (default: ".changeset")
+# changeset_dir = ".changeset"
 
 # Override auto-detected packages (optional)
 # [[package]]
