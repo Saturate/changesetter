@@ -122,16 +122,21 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token }}
       run: |
+        # Check if HEAD was a version PR merge by looking up the PR
+        # associated with the current commit, not any historically merged PR.
+        HEAD_SHA=$(git rev-parse HEAD)
         MERGED_PR=$(gh pr list \
           --state merged \
           --label "changesetter:version" \
-          --json number,mergedAt,headRefName \
-          --jq '.[0] // empty' 2>/dev/null || true)
+          --json number,mergeCommit \
+          --jq ".[] | select(.mergeCommit.oid == \"${HEAD_SHA}\") | .number" 2>/dev/null || true)
 
         if [ -n "$MERGED_PR" ]; then
           echo "merged=true" >> "$GITHUB_OUTPUT"
+          echo "HEAD commit is version PR #${MERGED_PR} merge"
         else
           echo "merged=false" >> "$GITHUB_OUTPUT"
+          echo "HEAD commit is not a version PR merge"
         fi
 
     - name: Release after version PR merge
