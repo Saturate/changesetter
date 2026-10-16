@@ -41,11 +41,18 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
         .map(|p| {
             let version = p.version.to_string();
             let tag = config.tag.format_tag(&p.name, &version, is_monorepo);
-            let path = p.path.strip_prefix(repo_root).unwrap_or(&p.path);
+            let path = repo_relative(repo_root, &p.path);
+            // Same rule the executor uses when it writes changelogs.
+            let changelog = if is_monorepo && config.changelog.per_package {
+                format!("{path}/{}", config.changelog.file)
+            } else {
+                config.changelog.file.clone()
+            };
             Ok(serde_json::json!({
                 "name": p.name,
                 "version": version,
-                "path": path.to_string_lossy(),
+                "path": path,
+                "changelog": changelog,
                 "tagged": crate::git::tag_exists(repo_root, &tag)?,
                 "tag": tag,
             }))
@@ -126,6 +133,24 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+// "." rather than "" for the root, so `"$path/CHANGELOG.md"` in a shell
+// stays relative, and `/` on every platform so the JSON reads the same.
+fn repo_relative(repo_root: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(repo_root).unwrap_or(path);
+    let parts: Vec<_> = rel
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(p) => Some(p.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    }
 }
 
 #[cfg(test)]
@@ -211,7 +236,8 @@ mod tests {
             serde_json::json!([{
                 "name": "testpkg",
                 "version": "1.0.0",
-                "path": "",
+                "path": ".",
+                "changelog": "CHANGELOG.md",
                 "tag": "v1.0.0",
                 "tagged": false,
             }])
@@ -248,5 +274,111 @@ mod tests {
                 "tag": "v1.1.0",
             }])
         );
+    }
+
+    fn write(dir: &Path, rel: &str, content: &str) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    // The action trusts these tags to match what `release` creates, so check
+    // the monorepo, custom format and ignore paths against the real thing.
+    #[test]
+    fn json_tags_match_release_in_a_monorepo() {
+        let dir = setup_repo();
+        std::fs::remove_file(dir.path().join("Cargo.toml")).unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+        );
+        for (name, version) in [("a", "1.0.0"), ("b", "2.0.0"), ("c", "0.1.0")] {
+            write(
+                dir.path(),
+                &format!("packages/{name}/package.json"),
+                &format!(r#"{{"name":"@s/{name}","version":"{version}"}}"#),
+            );
+        }
+        write(
+            dir.path(),
+            "changesetter.toml",
+            "ignore = [\"@s/c\"]\n\n[tag]\nformat = \"{name}-{version}\"\n\n[changelog]\nper_package = true\n",
+        );
+        write(
+            dir.path(),
+            ".changeset/x.md",
+            "---\n\"@s/a\": minor\n\"@s/b\": patch\n---\n\nChange.\n",
+        );
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "monorepo"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let status = json_status(dir.path()).unwrap();
+        let packages = status["packages"].as_array().unwrap();
+        let a = packages.iter().find(|p| p["name"] == "@s/a").unwrap();
+        assert_eq!(a["tag"], "@s/a-1.0.0");
+        assert_eq!(a["path"], "packages/a");
+        assert_eq!(a["changelog"], "packages/a/CHANGELOG.md");
+        assert!(packages.iter().all(|p| p["name"] != "@s/c"));
+
+        let mut status_tags: Vec<String> = status["releases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["tag"].as_str().unwrap().to_string())
+            .collect();
+        status_tags.sort();
+
+        let result = crate::release::executor::execute_version(
+            dir.path(),
+            &crate::release::executor::ExecuteOptions {
+                dry_run: true,
+                no_commit: true,
+                snapshot: None,
+            },
+        )
+        .unwrap();
+        let mut release_tags: Vec<String> = result
+            .plan
+            .releases
+            .iter()
+            .map(|r| {
+                result
+                    .config
+                    .tag
+                    .format_tag(&r.name, &r.version.to_string(), result.is_monorepo)
+            })
+            .collect();
+        release_tags.sort();
+
+        assert_eq!(status_tags, release_tags);
+        assert_eq!(status_tags, ["@s/a-1.1.0", "@s/b-2.0.1"]);
+    }
+
+    #[test]
+    fn json_keeps_pre_release_versions() {
+        let dir = setup_repo();
+        write(
+            dir.path(),
+            ".changeset/pre.json",
+            r#"{"mode":"pre","tag":"rc"}"#,
+        );
+        write(
+            dir.path(),
+            ".changeset/x.md",
+            "---\ntestpkg: minor\n---\n\nChange.\n",
+        );
+
+        let status = json_status(dir.path()).unwrap();
+        assert_eq!(status["releases"][0]["version"], "1.1.0-rc.0");
+        assert_eq!(status["releases"][0]["tag"], "v1.1.0-rc.0");
     }
 }

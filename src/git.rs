@@ -97,8 +97,18 @@ pub fn tag_exists(repo_root: &Path, tag: &str) -> anyhow::Result<bool> {
     let output = Command::new("git")
         .args(["rev-parse", "-q", "--verify", &format!("refs/tags/{tag}")])
         .current_dir(repo_root)
-        .output()?;
-    Ok(output.status.success())
+        .output()
+        .map_err(|_| ChangesetterError::GitNotFound)?;
+    // 1 is "no such ref"; anything else (128) is git failing, which must not
+    // read as "untagged" to a caller deciding whether to release.
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => anyhow::bail!(
+            "git rev-parse failed for tag {tag}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    }
 }
 
 pub fn git_tag(repo_root: &Path, tag: &str, message: Option<&str>) -> anyhow::Result<()> {
