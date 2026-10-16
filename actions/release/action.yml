@@ -167,8 +167,7 @@ runs:
 
         TAG="v${VERSION}"
 
-        # Extract changelog for this version
-        CHANGELOG=$(sed -n "/^## ${VERSION}/,/^## [0-9]/p" CHANGELOG.md 2>/dev/null | sed '1d;$d' || true)
+        CHANGELOG=$("${GITHUB_ACTION_PATH}/release-notes.sh" "$VERSION")
 
         # Create tag
         git tag -a "$TAG" -m "${CHANGELOG:-Release ${VERSION}}" --cleanup=verbatim
@@ -248,8 +247,10 @@ runs:
         # Create or reset the version branch
         git checkout -B "$BRANCH"
 
-        # Run version (no commit, we'll commit ourselves)
-        changesetter version --no-commit || true
+        # No commit, we'll commit ourselves. A failure here (say a post_bump
+        # hook) must stop the job: the tree is half bumped, and pushing it
+        # would open a version PR that releases nothing when merged.
+        changesetter version --no-commit
 
         # Extract the changelog diff (new entries added by version)
         CHANGELOG_DIFF=$(git diff -- CHANGELOG.md | grep "^+" | grep -v "^+++" | sed 's/^+//' || true)
