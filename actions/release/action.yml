@@ -146,14 +146,11 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token }}
       run: |
-        # Version PR already bumped versions and consumed changesets.
-        # Read the current version from the status output or manifest.
-        VERSION=$(changesetter status 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1 || true)
-
-        if [ -z "$VERSION" ]; then
-          # Fallback: read from Cargo.toml or package.json
-          VERSION=$(grep '^version' Cargo.toml 2>/dev/null | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
-        fi
+        # The version PR already bumped the manifest, so it holds the version
+        # being released. Not `changesetter status`: changesets merged while
+        # the version PR was open would make it report the wrong package's
+        # version, and its X.Y.Z grep drops pre-release suffixes.
+        VERSION=$(grep '^version' Cargo.toml 2>/dev/null | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
         if [ -z "$VERSION" ]; then
           VERSION=$(jq -r '.version // empty' package.json 2>/dev/null || true)
         fi

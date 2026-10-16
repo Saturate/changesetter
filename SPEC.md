@@ -490,14 +490,13 @@ The action runs on every push to main and follows this flow:
 ```
 Push to main
   │
+  ├── Is this push the merge of a version PR? → Yes: create tags + GitHub Releases
+  │     (then continue below: changesets merged while the version PR was open
+  │     still need a new one)
+  │
   ├── Are there pending changesets in .changeset/?
   │     │
-  │     ├── No  → Is this push the merge of a version PR?
-  │     │          │
-  │     │          ├── Yes → Run `changesetter release`, create tags + GitHub Releases
-  │     │          │         (changesets were already consumed by the version PR)
-  │     │          │
-  │     │          └── No  → Nothing to do. Exit.
+  │     ├── No  → Nothing more to do. Exit.
   │     │
   │     └── Yes → Run `changesetter version --no-commit` (dry run to compute changes)
   │               │

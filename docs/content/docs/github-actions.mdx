@@ -123,6 +123,8 @@ The flow:
 2. Push to main whose HEAD is the merge commit of a version PR: runs the release
 3. Any other push without pending changesets: does nothing
 
+A version PR merge that also brings in changesets merged while it was open does both: it releases, then opens a new version PR for those changesets.
+
 The `pull-requests: write` permission is required to create PRs. The `concurrency` group prevents races when multiple pushes arrive in quick succession. Keep `cancel-in-progress: false`: only the run for the version PR's merge commit releases, so cancelling it in favour of a later push skips that release.
 
 ## Permissions
