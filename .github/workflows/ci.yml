@@ -15,5 +15,20 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      # --locked: a Cargo.lock that doesn't match Cargo.toml makes the release
+      # job and `cargo publish` fail on a dirty tree, so catch it here.
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  lint-workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
+      # actionlint only reads .github/workflows; the composite actions ship
+      # their own scripts, which run on every consumer's runner.
+      - name: shellcheck action scripts
+        run: shellcheck actions/*/*.sh
