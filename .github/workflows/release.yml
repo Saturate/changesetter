@@ -4,9 +4,11 @@ on:
   push:
     branches: [main]
 
+# Not cancel-in-progress: a push landing mid-run would cancel the binaries
+# job too and leave the release with nothing to download.
 concurrency:
   group: changesetter-release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -14,6 +16,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      cli-tags: ${{ steps.release.outputs.cli-tags }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,6 +61,7 @@ jobs:
 
           echo "released=true" >> "$GITHUB_OUTPUT"
           echo "releases=$RELEASES" >> "$GITHUB_OUTPUT"
+          echo "cli-tags=$(echo "$RELEASES" | jq -c '[.[] | select(.name == "changesetter") | .tag]')" >> "$GITHUB_OUTPUT"
 
       - name: Push release commit and tags
         if: steps.release.outputs.released == 'true'
@@ -77,5 +83,21 @@ jobs:
             gh release create "$TAG" \
               --title "${NAME} v${VERSION}" \
               --notes "$CHANGELOG" \
+              --latest=false \
               --verify-tag || true
           done
+
+  # The tags above are pushed with GITHUB_TOKEN, which never triggers
+  # build-binaries.yml on its own. Without binaries, the "latest" release has
+  # nothing for actions/install to download.
+  binaries:
+    needs: release
+    if: needs.release.outputs.released == 'true' && needs.release.outputs.cli-tags != '[]'
+    strategy:
+      matrix:
+        tag: ${{ fromJSON(needs.release.outputs.cli-tags) }}
+    uses: ./.github/workflows/build-binaries.yml
+    with:
+      tag: ${{ matrix.tag }}
+      make-latest: true
+    secrets: inherit

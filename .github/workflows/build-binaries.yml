@@ -1,13 +1,34 @@
 name: Build Binaries
 
+# Plain vX.Y.Z tags belong to the GitHub Actions now, so only CLI tags build.
+# Tags pushed by release.yml use GITHUB_TOKEN, which doesn't trigger other
+# workflows; release.yml calls this one directly instead.
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
       - "changesetter@v[0-9]+.[0-9]+.[0-9]+"
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      # Releases are created as not-latest so actions/install never resolves
+      # to one before its binaries are attached.
+      make-latest:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: CLI release tag to build, e.g. changesetter@v0.3.1
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -27,6 +48,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -68,9 +91,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo publish
+      - name: Check crates.io
+        id: published
+        # A manual re-run for a tag must not fail just because the crate
+        # version is already up.
+        run: |
+          VERSION=$(cargo pkgid | sed 's/.*[#@]//')
+          if curl -sf -A "changesetter-ci" "https://crates.io/api/v1/crates/changesetter/${VERSION}" >/dev/null; then
+            echo "changesetter ${VERSION} is already on crates.io"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.published.outputs.skip != 'true'
+        run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -86,7 +122,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ github.ref_name }}" \
+          gh release upload "$TAG" \
             --repo "${{ github.repository }}" \
             --clobber \
             changesetter-*.tar.gz changesetter-*.zip
+
+      - name: Mark as latest release
+        if: inputs.make-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --repo "${{ github.repository }}" --latest

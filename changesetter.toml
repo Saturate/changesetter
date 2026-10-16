@@ -1,1 +1,6 @@
 ignore = ["changesetter-docs", "my-chart"]
+
+# Release commits stage Cargo.lock, but nothing else rewrites it after the
+# version bump, and a stale lock makes `cargo publish` refuse the dirty tree.
+[hooks]
+post_bump = ["cargo update --workspace"]
