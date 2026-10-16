@@ -5,6 +5,18 @@ description: CI/CD setup for changeset checking and automated releases.
 
 changesetter ships composite GitHub Actions for checking changesets on PRs and running releases on merge to main.
 
+## Versions
+
+The actions are versioned separately from the CLI, with the tags GitHub recommends for actions:
+
+| Ref | What you get |
+|---|---|
+| `@v1` | The latest v1.x release. Moved forward on every compatible release, so you get fixes without editing your workflow. |
+| `@v1.1.0` | Exactly that release. Never moves. |
+| `@<commit sha>` | Fully pinned, if your security policy requires it. |
+
+A change that breaks inputs, outputs or required permissions ships as `v2`, so `@v1` will not break your workflow. Release notes are on the [releases page](https://github.com/saturate/changesetter/releases) under the `v1.x.y` tags. The CLI's own releases are tagged `changesetter@v<version>`, and the actions always install the latest CLI unless you pin `version`.
+
 ## Changeset check
 
 Runs `changesetter check` on pull requests and posts a comment with the result.
