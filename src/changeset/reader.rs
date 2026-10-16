@@ -32,8 +32,12 @@ fn collect_md_files(
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        let file_type = entry.file_type()?;
 
-        if path.is_dir() {
+        // Directory symlinks are skipped so a link like `loop -> ..` can't
+        // recurse forever; git stores them as links, so `check --base` never
+        // sees files behind them either.
+        if file_type.is_dir() {
             collect_md_files(base, &path, out)?;
             continue;
         }
@@ -182,6 +186,48 @@ mod tests {
             Some("changesets/cool-dogs-dance")
         );
         assert_eq!(result[1].filename.as_deref(), Some("red-lions-run"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_symlinked_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let changeset_dir = dir.path().join(".changeset");
+        let sub_dir = changeset_dir.join("nested");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        std::fs::write(
+            sub_dir.join("cool-dogs-dance.md"),
+            "---\nmylib: patch\n---\n\n#### Fix\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("..", changeset_dir.join("loop")).unwrap();
+        std::os::unix::fs::symlink("..", sub_dir.join("loop")).unwrap();
+
+        let result = read_changesets(&changeset_dir).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].filename.as_deref(),
+            Some("nested/cool-dogs-dance")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follows_symlinked_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let changeset_dir = dir.path().join(".changeset");
+        std::fs::create_dir(&changeset_dir).unwrap();
+
+        let target = dir.path().join("elsewhere.md");
+        std::fs::write(&target, "---\nmylib: minor\n---\n\n#### Feature\n").unwrap();
+        std::os::unix::fs::symlink(&target, changeset_dir.join("linked.md")).unwrap();
+        std::os::unix::fs::symlink("missing.md", changeset_dir.join("dangling.md")).unwrap();
+
+        let result = read_changesets(&changeset_dir).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].filename.as_deref(), Some("linked"));
+        assert_eq!(result[0].packages["mylib"], BumpLevel::Minor);
     }
 
     #[test]

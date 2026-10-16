@@ -28,6 +28,9 @@ pub enum ChangesetterError {
     )]
     BaseRefUnavailable { base: String },
 
+    #[error("invalid changeset_dir \"{dir}\" in changesetter.toml: {reason}")]
+    InvalidChangesetDir { dir: String, reason: String },
+
     #[error("failed to read manifest at {path}: {reason}")]
     ManifestRead { path: PathBuf, reason: String },
 
