@@ -1,0 +1,40 @@
+name: Actions smoke test
+
+# The composite actions ship to every consumer straight from this repo, so run
+# them for real on PRs that touch them instead of finding out after a release.
+on:
+  pull_request:
+    paths:
+      - "actions/**"
+      - ".github/workflows/actions-smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "actions/**"
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        version: [latest, "0.3.2"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/install
+        with:
+          version: ${{ matrix.version }}
+      - name: Run installed binary
+        env:
+          EXPECTED: ${{ matrix.version }}
+        run: |
+          OUT=$(changesetter --version)
+          echo "$OUT"
+          if [ "$EXPECTED" != "latest" ] && [ "$OUT" != "changesetter $EXPECTED" ]; then
+            echo "expected changesetter $EXPECTED" >&2
+            exit 1
+          fi
