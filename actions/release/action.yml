@@ -129,7 +129,7 @@ runs:
         # exactly like "not a version PR" and also skip the release.
         HEAD_SHA=$(git rev-parse HEAD)
         MERGED_PR=$(gh api "repos/{owner}/{repo}/commits/${HEAD_SHA}/pulls" \
-          --jq ".[] | select(.merge_commit_sha == \"${HEAD_SHA}\" and any(.labels[]; .name == \"changesetter:version\")) | .number" | head -1)
+          --jq "[.[] | select(.merge_commit_sha == \"${HEAD_SHA}\" and any(.labels[]; .name == \"changesetter:version\")) | .number] | first // empty")
 
         if [ -n "$MERGED_PR" ]; then
           echo "merged=true" >> "$GITHUB_OUTPUT"
@@ -146,12 +146,6 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token }}
       run: |
-        if ls .changeset/*.md 1>/dev/null 2>&1; then
-          echo "Changesets still present, not a version PR merge."
-          echo "released=false" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-
         # Version PR already bumped versions and consumed changesets.
         # Read the current version from the status output or manifest.
         VERSION=$(changesetter status 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1 || true)
@@ -223,7 +217,9 @@ runs:
 
     - name: Check for pending changesets
       id: check-pending
-      if: inputs.version-pr == 'true' && steps.check-merged.outputs.merged == 'false'
+      # Also after a release: changesets merged while the version PR was open
+      # are still in the tree and need a fresh version PR.
+      if: inputs.version-pr == 'true'
       shell: bash
       run: |
         if ls .changeset/*.md 1>/dev/null 2>&1; then

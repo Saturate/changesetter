@@ -517,11 +517,11 @@ Push to main
 
 **PR title**: "Version Packages" (configurable via `version-pr-title` input)
 
-**Merge detection**: the action queries the GitHub API for a PR labeled `changesetter:version` whose `merged_at` matches the current push. Branch name in the merge commit is unreliable (squash and rebase merges don't preserve it). If a matching merged PR is found, the action skips version computation and goes straight to tagging + GitHub Release creation.
+**Merge detection**: the action asks the GitHub API for the PRs associated with the pushed commit (`commits/{sha}/pulls`) and looks for one labeled `changesetter:version` whose merge commit is HEAD. Branch name in the merge commit is unreliable (squash and rebase merges don't preserve it). If a matching merged PR is found, the action skips version computation and goes straight to tagging + GitHub Release creation.
 
 **Conflict handling**: if the version branch has merge conflicts with main (e.g. someone manually edited CHANGELOG.md), the action force-pushes a fresh version branch computed from current main. The PR body notes that it was regenerated.
 
-**Concurrency**: the workflow should use `concurrency: { group: changesetter-release, cancel-in-progress: true }` to prevent races when multiple pushes arrive in quick succession.
+**Concurrency**: the workflow should use `concurrency: { group: changesetter-release, cancel-in-progress: false }` to prevent races when multiple pushes arrive in quick succession. Only the run for the version PR's merge commit releases, so it must not be cancelled by a later push.
 
 Outputs:
 - `released`: whether a release was created (`true`/`false`)
