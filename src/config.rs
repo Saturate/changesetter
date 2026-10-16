@@ -139,6 +139,12 @@ fn validate_changeset_dir(dir: &str) -> Result<String, ChangesetterError> {
         reason: reason.to_string(),
     };
 
+    // `\` is a separator on Windows and a plain character elsewhere, so the
+    // same config would point at different directories per platform.
+    if dir.contains('\\') {
+        return Err(invalid("must use `/` as the path separator"));
+    }
+
     let mut has_normal = false;
     for component in Path::new(dir).components() {
         match component {
@@ -288,6 +294,14 @@ post_bump = ["cargo check", "cargo fmt"]
 
         let config = load_changeset_dir("docs/changesets//").unwrap();
         assert_eq!(config.changeset_dir_relative(), "docs/changesets");
+    }
+
+    #[test]
+    fn changeset_dir_backslash_rejected() {
+        for value in [".changeset\\\\", "..\\\\x", "C:\\\\x"] {
+            let err = load_changeset_dir(value).unwrap_err();
+            assert!(err.to_string().contains("`/`"), "{value}: {err}");
+        }
     }
 
     #[test]

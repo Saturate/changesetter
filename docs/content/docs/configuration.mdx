@@ -38,6 +38,16 @@ ignore = ["examples", "internal-tools", "test-fixtures"]
 
 Ignored packages are excluded from the release plan, changelogs, and tagging.
 
+## Changeset directory
+
+Changesets live in `.changeset/` by default, including any subdirectories. To keep them elsewhere:
+
+```toml
+changeset_dir = ".changeset/changesets"
+```
+
+The path must be relative to the repository root, use `/` as the separator, and stay inside the repository (no `..`). It is also used as a git pathspec by `changesetter check --base`. Symlinked directories inside it are skipped.
+
 ## Groups
 
 ### Fixed groups

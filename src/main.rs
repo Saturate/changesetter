@@ -22,7 +22,8 @@ fn main() {
                 ChangesetterError::NoChangesets
                 | ChangesetterError::InvalidFrontmatter { .. }
                 | ChangesetterError::UnknownPackage { .. }
-                | ChangesetterError::UnknownBumpLevel { .. } => 1,
+                | ChangesetterError::UnknownBumpLevel { .. }
+                | ChangesetterError::InvalidChangesetDir { .. } => 1,
                 ChangesetterError::DirtyWorkingTree
                 | ChangesetterError::GitNotFound
                 | ChangesetterError::NotAGitRepo
