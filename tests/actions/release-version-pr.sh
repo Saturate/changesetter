@@ -149,6 +149,11 @@ M=$(git rev-parse HEAD); label_merge "$M"
 run_steps 1; check "only @s/a tagged, custom format" '[ "$(remote_tag_at @s/a-1.1.0)" = "$M" ] && [ -z "$(git ls-remote "$O" "refs/tags/@s/b*")" ]'
 check "notes from the per-package changelog" 'grep -q "a notes" <(git -C "$W" fetch -q --tags origin; git -C "$W" tag -l --format="%(contents)" "@s/a-1.1.0")'
 
+echo "I: [release] tag_annotated = false gives a lightweight tag"
+new_repo i; printf '[release]\ntag_annotated = false\n' > changesetter.toml; git add -A; git commit -qm config; git push -q origin main
+M=$(version_pr_merge 1.1.0); label_merge "$M"
+run_steps 1; check "v1.1.0 is lightweight at the merge" '[ "$(git -C "$W" ls-remote "$O" refs/tags/v1.1.0 | cut -f1)" = "$M" ] && [ -z "$(remote_tag_at v1.1.0)" ]'
+
 echo
 echo "passed $PASS, failed $FAIL (logs in $ROOT)"
 [ "$FAIL" -eq 0 ]

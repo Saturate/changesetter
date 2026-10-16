@@ -212,7 +212,12 @@ runs:
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null; then
             echo "${TAG} is already on origin"
           else
-            git tag -a -f "$TAG" "$RELEASE_SHA" -m "$NOTES" --cleanup=verbatim
+            # Tag the way `changesetter release` would ([release] tag_annotated).
+            if [ "$(jq -r '.tag_annotated' "$WORK/after.json")" = "true" ]; then
+              git tag -a -f "$TAG" "$RELEASE_SHA" -m "$NOTES" --cleanup=verbatim
+            else
+              git tag -f "$TAG" "$RELEASE_SHA"
+            fi
             git push origin "refs/tags/${TAG}"
             echo "Tagged ${TAG}"
             ACTED=true
