@@ -99,7 +99,7 @@ on:
 
 concurrency:
   group: changesetter-release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -120,10 +120,12 @@ jobs:
 
 The flow:
 1. Push to main with pending changesets: creates/updates a PR on `changesetter/version-packages` branch with label `changesetter:version`
-2. Push to main without pending changesets + a recently merged version PR: runs the release
-3. Push to main without pending changesets and no merged version PR: does nothing
+2. Push to main whose HEAD is the merge commit of a version PR: runs the release
+3. Any other push without pending changesets: does nothing
 
-The `pull-requests: write` permission is required to create PRs. The `concurrency` group prevents races when multiple pushes arrive in quick succession.
+A version PR merge that also brings in changesets merged while it was open does both: it releases, then opens a new version PR for those changesets.
+
+The `pull-requests: write` permission is required to create PRs. The `concurrency` group prevents races when multiple pushes arrive in quick succession. Keep `cancel-in-progress: false`: only the run for the version PR's merge commit releases, so cancelling it in favour of a later push skips that release.
 
 ## Permissions
 
