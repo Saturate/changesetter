@@ -3,9 +3,10 @@
 # repos (a bare origin and a clone per scenario) with a fake `gh`, since the
 # flow can't be exercised by PR CI without merging a real version PR.
 # Usage: tests/actions/release-version-pr.sh <changesetter binary>
-set -uo pipefail
+#
 # The check expressions are single-quoted on purpose: `check` evals them later.
 # shellcheck disable=SC2016
+set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 CLI=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
