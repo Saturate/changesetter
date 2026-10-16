@@ -82,16 +82,20 @@ jobs:
             VERSION=$(echo "$release" | jq -r '.version')
             CHANGELOG=$(echo "$release" | jq -r '.changelog')
 
+            FLAGS=(--latest=false)
+            # Pre mode versions (1.0.0-rc.1) must never become the latest
+            # release, which the README's quick install downloads from.
+            case "$VERSION" in *-*) FLAGS+=(--prerelease) ;; esac
             gh release create "$TAG" \
               --title "${NAME} v${VERSION}" \
               --notes "$CHANGELOG" \
-              --latest=false \
+              "${FLAGS[@]}" \
               --verify-tag || true
           done
 
   # The tags above are pushed with GITHUB_TOKEN, which never triggers
-  # build-binaries.yml on its own. Without binaries, the "latest" release has
-  # nothing for actions/install to download.
+  # build-binaries.yml on its own. Without this job a release has no
+  # binaries, and the README's quick install follows the "latest" release.
   binaries:
     needs: release
     if: needs.release.outputs.released == 'true' && needs.release.outputs.cli-tags != '[]'
