@@ -1,5 +1,6 @@
 ---
-changesetter: patch
+changesetter-release-task: patch
+changesetter-azure-pipelines: patch
 ---
 
 Fix the Azure Pipelines release task treating every push after the first
