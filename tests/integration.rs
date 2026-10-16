@@ -1103,6 +1103,11 @@ fn release_notes_find_a_shared_monorepo_heading() {
 fn release_notes_read_crlf_changelogs() {
     let changelog = "## 0.2.0\r\n\r\n- New\r\n";
     assert_eq!(release_notes("0.2.0", changelog), "- New\n");
+    assert_eq!(release_notes("0.2.0", "## 0.2.0 \t\n\n- New\n"), "- New\n");
+    assert_eq!(
+        release_notes("2.0.0-rc.1", "## 1.0.0, 2.0.0-rc.1\n\n- Rc\n"),
+        "- Rc\n"
+    );
 }
 
 #[test]

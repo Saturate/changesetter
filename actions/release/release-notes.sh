@@ -15,7 +15,7 @@ changelog="${2:-CHANGELOG.md}"
 # "## " headings of their own ("## 2FA support"), so only a semver-looking
 # heading counts as a version heading.
 awk -v version="$version" '
-  { sub(/\r$/, "") }
+  { sub(/[ \t\r]+$/, "") }
   /^## [0-9]+\.[0-9]+\.[0-9]+/ {
     # The section ends at the next version heading, even a duplicate of ours.
     if (found) exit
