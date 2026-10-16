@@ -1,6 +1,6 @@
 const tl = require("azure-pipelines-task-lib/task");
 const https = require("https");
-const { execSync } = require("child_process");
+const { execSync, execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const { install } = require("../../shared/install");
@@ -124,6 +124,12 @@ function exec(cmd) {
   return execSync(cmd, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 }
 
+// No shell: the version comes from Cargo.toml or package.json, and a value
+// like `$(...)` must reach git as a literal argument.
+function git(...args) {
+  return execFileSync("git", args, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+}
+
 function hasChangesets() {
   try {
     const files = fs.readdirSync(".changeset");
@@ -195,7 +201,7 @@ function readManifestVersion() {
 // Asks origin directly: a self-hosted agent can keep a local tag from an
 // earlier run that never got pushed.
 function remoteTagCommit(tag) {
-  const out = exec(`git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}"`).trim();
+  const out = git("ls-remote", "--tags", "origin", `refs/tags/${tag}`, `refs/tags/${tag}^{}`).trim();
   if (!out) return "";
   const lines = out.split("\n").map((l) => l.split(/\s+/));
   const peeled = lines.find(([, ref]) => ref.endsWith("^{}"));
@@ -205,15 +211,20 @@ function remoteTagCommit(tag) {
 function tagRelease(version, commitId) {
   const tag = `v${version}`;
   const existing = remoteTagCommit(tag);
+  if (existing && existing !== commitId) {
+    // Another commit already shipped as this version. Reporting a release
+    // here would let downstream steps publish this commit under that version.
+    throw new Error(
+      `Version collision: tag ${tag} already exists on origin at ${existing}, not at ${commitId}. ` +
+        "Bump the version in a new version PR, or move the tag if it is wrong."
+    );
+  }
   if (existing) {
-    if (existing !== commitId) {
-      tl.warning(`Tag ${tag} already exists on origin at ${existing}, not at ${commitId}. Leaving it as is.`);
-    }
-    console.log(`Tag ${tag} already exists on origin, skipping tag creation`);
+    console.log(`Tag ${tag} already exists on origin at ${commitId}, skipping tag creation`);
   } else {
     // -f replaces a stale local tag that a previous run created but never pushed.
-    exec(`git tag -a -f "${tag}" -m "Release ${version}" --cleanup=verbatim`);
-    exec(`git push origin "refs/tags/${tag}"`);
+    git("tag", "-a", "-f", tag, "-m", `Release ${version}`, "--cleanup=verbatim", commitId);
+    git("push", "origin", `refs/tags/${tag}`);
     console.log(`Tagged ${tag}`);
   }
 
@@ -259,9 +270,8 @@ async function versionPrRelease(binDir, prTitle) {
 
   exec("git checkout -B changesetter/version-packages");
 
-  try {
-    exec(`"${bin}" version --no-commit`);
-  } catch {}
+  // A failed bump can leave a half-edited tree, which must not become a version PR.
+  exec(`"${bin}" version --no-commit`);
 
   exec("git add -A");
   exec('git commit -m "chore: version packages" --allow-empty');
