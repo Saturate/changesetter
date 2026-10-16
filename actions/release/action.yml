@@ -150,7 +150,7 @@ runs:
         # being released. Not `changesetter status`: changesets merged while
         # the version PR was open would make it report the wrong package's
         # version, and its X.Y.Z grep drops pre-release suffixes.
-        VERSION=$(grep '^version' Cargo.toml 2>/dev/null | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
+        VERSION=$(grep -E '^version[[:space:]]*=[[:space:]]*"' Cargo.toml 2>/dev/null | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
         if [ -z "$VERSION" ]; then
           VERSION=$(jq -r '.version // empty' package.json 2>/dev/null || true)
         fi
