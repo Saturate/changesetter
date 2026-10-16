@@ -41,13 +41,15 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
         .map(|p| {
             let version = p.version.to_string();
             let tag = config.tag.format_tag(&p.name, &version, is_monorepo);
-            let path = repo_relative(repo_root, &p.path);
-            // Same rule the executor uses when it writes changelogs.
+            // Same rule and same join the executor uses when it writes
+            // changelogs, so the path points at the file it really writes.
             let changelog = if is_monorepo && config.changelog.per_package {
-                format!("{path}/{}", config.changelog.file)
+                p.path.join(&config.changelog.file)
             } else {
-                config.changelog.file.clone()
+                repo_root.join(&config.changelog.file)
             };
+            let path = repo_relative(repo_root, &p.path);
+            let changelog = repo_relative(repo_root, &changelog);
             Ok(serde_json::json!({
                 "name": p.name,
                 "version": version,
@@ -93,6 +95,7 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
 
     Ok(serde_json::json!({
         "pending": pending,
+        "tag_annotated": config.release.tag_annotated,
         "packages": package_entries,
         "releases": releases,
         "none_entries": none_entries,
@@ -137,12 +140,18 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
 
 // "." rather than "" for the root, so `"$path/CHANGELOG.md"` in a shell
 // stays relative, and `/` on every platform so the JSON reads the same.
+// `..` is kept (a package can live next to the repo), and a path that isn't
+// below the repo stays absolute rather than being mangled into a relative one.
 fn repo_relative(repo_root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(repo_root).unwrap_or(path);
-    let parts: Vec<_> = rel
+    if rel.has_root() {
+        return rel.to_string_lossy().replace('\\', "/");
+    }
+    let parts: Vec<String> = rel
         .components()
         .filter_map(|c| match c {
             std::path::Component::Normal(p) => Some(p.to_string_lossy().into_owned()),
+            std::path::Component::ParentDir => Some("..".to_string()),
             _ => None,
         })
         .collect();
@@ -380,5 +389,75 @@ mod tests {
         let status = json_status(dir.path()).unwrap();
         assert_eq!(status["releases"][0]["version"], "1.1.0-rc.0");
         assert_eq!(status["releases"][0]["tag"], "v1.1.0-rc.0");
+    }
+
+    // A custom format short-circuits `is_monorepo` in format_tag, so the
+    // default monorepo format needs its own check.
+    #[test]
+    fn json_uses_the_default_monorepo_tag_format() {
+        let dir = setup_repo();
+        std::fs::remove_file(dir.path().join("Cargo.toml")).unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+        );
+        write(
+            dir.path(),
+            "packages/a/package.json",
+            r#"{"name":"@s/a","version":"1.0.0"}"#,
+        );
+        write(
+            dir.path(),
+            "packages/b/package.json",
+            r#"{"name":"@s/b","version":"2.0.0"}"#,
+        );
+        write(
+            dir.path(),
+            ".changeset/x.md",
+            "---\n\"@s/a\": minor\n---\n\nChange.\n",
+        );
+        // Package detection reads `git ls-files`.
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "monorepo"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let status = json_status(dir.path()).unwrap();
+        let a = status["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "@s/a")
+            .unwrap();
+        assert_eq!(a["tag"], "@s/a@v1.0.0");
+        assert_eq!(a["changelog"], "CHANGELOG.md");
+        assert_eq!(status["releases"][0]["tag"], "@s/a@v1.1.0");
+        assert_eq!(status["tag_annotated"], true);
+    }
+
+    #[test]
+    fn repo_relative_paths() {
+        let root = Path::new("/repo");
+        assert_eq!(repo_relative(root, Path::new("/repo")), ".");
+        assert_eq!(
+            repo_relative(root, Path::new("/repo/./CHANGELOG.md")),
+            "CHANGELOG.md"
+        );
+        assert_eq!(
+            repo_relative(root, Path::new("/repo/packages/a")),
+            "packages/a"
+        );
+        assert_eq!(repo_relative(root, Path::new("/repo/../sib")), "../sib");
+        assert_eq!(
+            repo_relative(root, Path::new("/elsewhere/x")),
+            "/elsewhere/x"
+        );
     }
 }
