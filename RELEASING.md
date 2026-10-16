@@ -12,7 +12,7 @@ CLI releases are automatic. Merging a PR with a changeset to `main` runs `.githu
 
 `actions/install` downloads from whichever release is marked latest, so a release without binaries must never be latest. That is also why the release workflow doesn't cancel in-progress runs.
 
-If a release ends up without binaries or isn't on crates.io, run **Build Binaries** manually (Actions tab, "Run workflow") with the tag, e.g. `changesetter@v0.3.2`. It replaces existing assets and skips crates.io if that version is already published. Tick "make latest" if the release should become the one `actions/install` downloads. If the GitHub Release itself is missing, create it first with `gh release create <tag> --verify-tag --latest=false`; the build only uploads to an existing release.
+If a release ends up without binaries or isn't on crates.io, run **Build Binaries** manually (Actions tab, "Run workflow") with the tag, e.g. `changesetter@v0.3.2`. It replaces existing assets and skips crates.io if that version is already published. Tick "Mark the release as latest once binaries are attached" if the release should become the one `actions/install` downloads. If the GitHub Release itself is missing, create it first, since the build only uploads to an existing release: `gh release create <tag> --verify-tag --latest=false --notes-file <notes>`, with that version's section of `CHANGELOG.md` as the notes (`actions/release/release-notes.sh <version>` prints it).
 
 Tags up to `changesetter@v0.3.1` were cut before the `post_bump` hook existed, so their `Cargo.lock` is stale and `cargo publish` from them fails on a dirty tree. 0.3.1 is not on crates.io for that reason; it only changed the GitHub Actions, so the next release covers it.
 

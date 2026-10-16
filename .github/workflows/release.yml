@@ -59,9 +59,11 @@ jobs:
             exit 0
           fi
 
-          echo "released=true" >> "$GITHUB_OUTPUT"
-          echo "releases=$RELEASES" >> "$GITHUB_OUTPUT"
-          echo "cli-tags=$(echo "$RELEASES" | jq -c '[.[] | select(.name == "changesetter") | .tag]')" >> "$GITHUB_OUTPUT"
+          {
+            echo "released=true"
+            echo "releases=$RELEASES"
+            echo "cli-tags=$(echo "$RELEASES" | jq -c '[.[] | select(.name == "changesetter") | .tag]')"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Push release commit and tags
         if: steps.release.outputs.released == 'true'
