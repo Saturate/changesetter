@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
+
+use crate::errors::ChangesetterError;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -106,7 +108,11 @@ impl Config {
         }
 
         let content = std::fs::read_to_string(&config_path)?;
-        let config: Config = toml_edit::de::from_str(&content)?;
+        let mut config: Config = toml_edit::de::from_str(&content)?;
+        config.changeset_dir = config
+            .changeset_dir
+            .map(|dir| validate_changeset_dir(&dir))
+            .transpose()?;
         Ok(config)
     }
 
@@ -123,6 +129,41 @@ impl Config {
             None => ".changeset",
         }
     }
+}
+
+// The dir is used both as a filesystem path and as a git pathspec, so it has
+// to stay inside the repo and must not end in `/` (callers append their own).
+fn validate_changeset_dir(dir: &str) -> Result<String, ChangesetterError> {
+    let invalid = |reason: &str| ChangesetterError::InvalidChangesetDir {
+        dir: dir.to_string(),
+        reason: reason.to_string(),
+    };
+
+    // `\` is a separator on Windows and a plain character elsewhere, so the
+    // same config would point at different directories per platform.
+    if dir.contains('\\') {
+        return Err(invalid("must use `/` as the path separator"));
+    }
+
+    let mut has_normal = false;
+    for component in Path::new(dir).components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                return Err(invalid("must be a relative path inside the repository"));
+            }
+            Component::ParentDir => {
+                return Err(invalid("must not contain `..`"));
+            }
+            Component::Normal(_) => has_normal = true,
+            Component::CurDir => {}
+        }
+    }
+
+    if !has_normal {
+        return Err(invalid("must name a directory below the repository root"));
+    }
+
+    Ok(dir.trim_end_matches('/').to_string())
 }
 
 #[cfg(test)]
@@ -234,6 +275,54 @@ post_bump = ["cargo check", "cargo fmt"]
             config.changeset_dir(dir.path()),
             dir.path().join(".changeset/changesets")
         );
+    }
+
+    fn load_changeset_dir(value: &str) -> anyhow::Result<Config> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("changesetter.toml"),
+            format!("changeset_dir = {value:?}\n"),
+        )
+        .unwrap();
+        Config::load(dir.path())
+    }
+
+    #[test]
+    fn changeset_dir_trailing_slash_normalised() {
+        let config = load_changeset_dir(".changeset/").unwrap();
+        assert_eq!(config.changeset_dir_relative(), ".changeset");
+
+        let config = load_changeset_dir("docs/changesets//").unwrap();
+        assert_eq!(config.changeset_dir_relative(), "docs/changesets");
+    }
+
+    #[test]
+    fn changeset_dir_backslash_rejected() {
+        for value in [".changeset\\\\", "..\\\\x", "C:\\\\x"] {
+            let err = load_changeset_dir(value).unwrap_err();
+            assert!(err.to_string().contains("`/`"), "{value}: {err}");
+        }
+    }
+
+    #[test]
+    fn changeset_dir_absolute_rejected() {
+        let err = load_changeset_dir("/tmp/changesets").unwrap_err();
+        assert!(err.to_string().contains("relative path"), "{err}");
+    }
+
+    #[test]
+    fn changeset_dir_parent_rejected() {
+        for value in ["../changesets", ".changeset/../../x", ".."] {
+            let err = load_changeset_dir(value).unwrap_err();
+            assert!(err.to_string().contains("`..`"), "{value}: {err}");
+        }
+    }
+
+    #[test]
+    fn changeset_dir_repo_root_rejected() {
+        for value in ["", ".", "./"] {
+            assert!(load_changeset_dir(value).is_err(), "{value}");
+        }
     }
 
     #[test]
