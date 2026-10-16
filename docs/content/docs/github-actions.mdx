@@ -12,10 +12,10 @@ The actions are versioned separately from the CLI, with the tags GitHub recommen
 | Ref | What you get |
 |---|---|
 | `@v1` | The latest v1.x release. Moved forward on every compatible release, so you get fixes without editing your workflow. |
-| `@v1.1.0` | Exactly that release. Never moves. |
-| `@<commit sha>` | Fully pinned, if your security policy requires it. |
+| `@v1.1.0` | That release's action code. The tag never moves. |
+| `@<commit sha>` | The same, pinned by commit. |
 
-A change that breaks inputs, outputs or required permissions ships as `v2`, so `@v1` will not break your workflow. Release notes are on the [releases page](https://github.com/saturate/changesetter/releases) under the `v1.x.y` tags. The CLI's own releases are tagged `changesetter@v<version>`, and the actions always install the latest CLI unless you pin `version`.
+The check and release actions install the CLI through `actions/install@v1`, so that step follows `v1` even when you pin a tag or SHA. A change that breaks inputs, outputs or required permissions ships as `v2`, so `@v1` will not break your workflow. Release notes from v1.1.0 on are on the [releases page](https://github.com/saturate/changesetter/releases) under the `v1.x.y` tags. The CLI's own releases are tagged `changesetter@v<version>`, and the actions always install the latest CLI unless you pin `version`.
 
 ## Changeset check
 

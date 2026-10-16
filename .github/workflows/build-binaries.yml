@@ -20,9 +20,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: CLI release tag to build, e.g. changesetter@v0.3.1
+        description: CLI release tag to build, e.g. changesetter@v0.3.2
         required: true
         type: string
+      make-latest:
+        description: Mark the release as latest once binaries are attached
+        type: boolean
+        default: false
 
 permissions:
   contents: write
