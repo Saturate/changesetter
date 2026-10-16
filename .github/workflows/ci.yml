@@ -20,6 +20,18 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
+  # The version-PR flow only really runs after a version PR merges, so run
+  # its steps here against scratch repos with a stubbed gh.
+  release-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Version-PR flow of actions/release
+        run: tests/actions/release-version-pr.sh target/release/changesetter
+
   lint-workflows:
     runs-on: ubuntu-latest
     steps:
@@ -31,4 +43,4 @@ jobs:
       # actionlint only reads .github/workflows; the composite actions ship
       # their own scripts, which run on every consumer's runner.
       - name: shellcheck action scripts
-        run: shellcheck actions/*/*.sh
+        run: shellcheck actions/*/*.sh tests/actions/*.sh
