@@ -7,13 +7,13 @@ This repo ships two things on separate version lines: the `changesetter` CLI and
 CLI releases are automatic. Merging a PR with a changeset to `main` runs `.github/workflows/release.yml`, which:
 
 1. Runs `changesetter release`: bumps `Cargo.toml`, runs the `post_bump` hook from `changesetter.toml` (`cargo update --workspace`, so `Cargo.lock` matches), writes `CHANGELOG.md`, commits and tags `changesetter@v<version>`.
-2. Creates the GitHub Release with `--latest=false`.
-3. Calls `build-binaries.yml`, which builds the binaries, attaches them to the release and then marks it as latest. Publishing to crates.io runs alongside; a failed publish doesn't hold back the binaries, since `actions/install` only needs those.
+2. Creates the GitHub Release with `--latest=false` (plus `--prerelease` for pre mode versions such as `1.0.0-rc.1`).
+3. Calls `build-binaries.yml`, which builds the binaries, attaches them to the release and then marks it as latest, unless it's a pre-release. Publishing to crates.io runs alongside; a failed publish doesn't hold back the binaries, since `actions/install` only needs those.
 
 Two things decide which binary people get:
 
 - `actions/install` picks the highest stable `changesetter@vX.Y.Z` release that already has the runner's binary, so a release whose build is still running is skipped until its upload lands. It ignores GitHub's "latest" flag.
-- The README's quick install (`releases/latest/download/...`) and the Azure DevOps snippets follow the "latest" flag. That flag must always sit on a stable CLI release with binaries, which is why releases start as not-latest and pre-releases are never promoted.
+- The README's quick install (`releases/latest/download/...`), the Azure DevOps docs snippets and the Azure Pipelines extension's install (`extensions/azure-pipelines/shared/install.js`) follow the "latest" flag. That flag must always sit on a stable CLI release with binaries, which is why releases start as not-latest and pre-releases are never promoted.
 
 The release workflow doesn't cancel in-progress runs, so a build is never cut off halfway.
 
