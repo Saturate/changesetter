@@ -73,7 +73,10 @@ function makeRepo(name, { version, changesets = [] }) {
   fs.writeFileSync(path.join(work, "Cargo.toml"), `[package]\nname = "demo"\nversion = "${version}"\n`);
   fs.mkdirSync(path.join(work, ".changeset"), { recursive: true });
   fs.writeFileSync(path.join(work, ".changeset/README.md"), "readme\n");
-  for (const c of changesets) fs.writeFileSync(path.join(work, `.changeset/${c}.md`), "---\ndemo: minor\n---\n\nLate change\n");
+  for (const c of changesets) {
+    fs.mkdirSync(path.dirname(path.join(work, `.changeset/${c}.md`)), { recursive: true });
+    fs.writeFileSync(path.join(work, `.changeset/${c}.md`), "---\ndemo: minor\n---\n\nLate change\n");
+  }
   sh(`git add -A && ${GIT_COMMIT} -q -m "Merged PR 7: Next Release" && git push -q origin main`, work);
   return { origin, work, head: sh("git rev-parse HEAD", work) };
 }
@@ -148,6 +151,15 @@ const methods = () => state.calls.map((c) => `${c.method} ${new URL(c.url).pathn
     assert.strictEqual(remoteTags(r), "");
     assert.match(remoteBranches(r), /refs\/heads\/changesetter\/version-packages/);
     assert.deepStrictEqual(methods(), ["POST pullrequestquery", "GET pullrequests", "POST pullrequests"]);
+  });
+
+  await scenario("changeset in a subdirectory: version PR flow", () => {
+    const r = makeRepo("nested", { version: "1.1.0", changesets: ["team/feat-y"] });
+    state.handler = handlerFor(r.head, { merged: false });
+    return r;
+  }, (r) => {
+    assert.strictEqual(state.result.r, 0, state.result.m);
+    assert.match(remoteBranches(r), /refs\/heads\/changesetter\/version-packages/);
   });
 
   await scenario("not a merge and no changesets: nothing happens", () => {

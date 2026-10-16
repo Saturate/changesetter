@@ -220,7 +220,9 @@ steps:
         # The peeled ^{} line, when present, sorts last and names the commit.
         TAG_COMMIT=$(git ls-remote --tags origin "refs/tags/v${VERSION}" "refs/tags/v${VERSION}^{}" | sort -k2 | tail -1 | cut -f1)
         if [ -z "$TAG_COMMIT" ]; then
-          git tag -a "v${VERSION}" -m "Release ${VERSION}" "$COMMIT"
+          # -f: a self-hosted agent can keep a local tag from a run that
+          # never pushed it.
+          git tag -a -f "v${VERSION}" -m "Release ${VERSION}" "$COMMIT"
           git push origin "refs/tags/v${VERSION}"
         elif [ "$TAG_COMMIT" = "$COMMIT" ]; then
           echo "Tag v${VERSION} already exists at this commit, skipping"
@@ -232,7 +234,8 @@ steps:
 
       # Changesets merged while the version PR was open still need a version
       # PR, even right after a release.
-      if ! ls .changeset/*.md 1>/dev/null 2>&1; then
+      # Nested dirs count, README.md doesn't, matching changesetter itself.
+      if ! find .changeset -name '*.md' ! -name README.md 2>/dev/null | grep -q .; then
         echo "No pending changesets"
         exit 0
       fi
