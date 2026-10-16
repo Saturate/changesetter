@@ -93,6 +93,14 @@ pub fn git_commit(repo_root: &Path, message: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn tag_exists(repo_root: &Path, tag: &str) -> anyhow::Result<bool> {
+    let output = Command::new("git")
+        .args(["rev-parse", "-q", "--verify", &format!("refs/tags/{tag}")])
+        .current_dir(repo_root)
+        .output()?;
+    Ok(output.status.success())
+}
+
 pub fn git_tag(repo_root: &Path, tag: &str, message: Option<&str>) -> anyhow::Result<()> {
     let output = if let Some(msg) = message {
         Command::new("git")
