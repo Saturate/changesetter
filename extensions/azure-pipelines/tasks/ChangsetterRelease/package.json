@@ -4,5 +4,8 @@
   "private": true,
   "dependencies": {
     "azure-pipelines-task-lib": "^4"
+  },
+  "scripts": {
+    "test": "node index.test.js"
   }
 }
