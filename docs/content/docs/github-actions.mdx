@@ -157,3 +157,8 @@ The check and release actions use the install action internally. If you need the
 ```
 
 This downloads the prebuilt binary from GitHub Releases and adds it to PATH. Results are cached by version and platform.
+
+| Input | Default | Description |
+|---|---|---|
+| `version` | `latest` | `latest`, or a version such as `0.3.3`, `v0.3.3` or `changesetter@v0.3.3`. `latest` is the newest stable release that has a binary for the runner. |
+| `cache` | `true` | Cache the binary between runs. Set to `false` to always download. |

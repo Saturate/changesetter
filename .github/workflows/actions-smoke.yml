@@ -1,0 +1,49 @@
+name: Actions smoke test
+
+# The composite actions ship to every consumer straight from this repo, so run
+# them for real on PRs that touch them instead of finding out after a release.
+on:
+  pull_request:
+    paths:
+      - "actions/**"
+      - ".github/workflows/actions-smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "actions/**"
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # 0.2.0 only has binaries under the old plain v tag.
+        version: [latest, "0.3.2", "v0.3.2", "changesetter@v0.3.2", "0.2.0"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/install
+        with:
+          version: ${{ matrix.version }}
+          # A cache hit would skip the download code this job is here to test.
+          cache: "false"
+      - name: Run installed binary
+        env:
+          EXPECTED: ${{ matrix.version }}
+        run: |
+          OUT=$(changesetter --version)
+          echo "$OUT"
+          if [ "$EXPECTED" = "latest" ]; then
+            WANT='^changesetter [0-9]+\.[0-9]+\.[0-9]+$'
+          else
+            V="${EXPECTED#changesetter@}"
+            WANT="^changesetter ${V#v}\$"
+          fi
+          if ! [[ "$OUT" =~ $WANT ]]; then
+            echo "expected output matching $WANT" >&2
+            exit 1
+          fi
