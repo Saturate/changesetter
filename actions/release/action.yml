@@ -128,8 +128,8 @@ runs:
         # No error swallowing either, since a failed lookup would look
         # exactly like "not a version PR" and also skip the release.
         HEAD_SHA=$(git rev-parse HEAD)
-        MERGED_PR=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" \
-          --jq ".[] | select(.merge_commit_sha == \"${HEAD_SHA}\" and any(.labels[]; .name == \"changesetter:version\")) | .number")
+        MERGED_PR=$(gh api "repos/{owner}/{repo}/commits/${HEAD_SHA}/pulls" \
+          --jq ".[] | select(.merge_commit_sha == \"${HEAD_SHA}\" and any(.labels[]; .name == \"changesetter:version\")) | .number" | head -1)
 
         if [ -n "$MERGED_PR" ]; then
           echo "merged=true" >> "$GITHUB_OUTPUT"
