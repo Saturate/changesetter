@@ -155,6 +155,8 @@ Azure DevOps doesn't have a "GitHub Releases" equivalent. The release is the git
 
 Instead of releasing on every merge, create a PR that batches pending changesets. Merging that PR triggers the release.
 
+Only the build for the version PR's merge commit releases, so leave `batch` off in the trigger. With `batch: true`, a push that lands while that build is queued folds the merge commit into a later build, and the release never happens.
+
 ```yaml
 trigger:
   branches:
@@ -188,22 +190,43 @@ steps:
     displayName: Configure git
 
   - script: |
+      set -eo pipefail
       BRANCH="changesetter/version-packages"
       ORG_URL=$(System.CollectionUri)
       PROJECT=$(System.TeamProject)
       REPO=$(Build.Repository.Name)
 
-      # Check for pending changesets
+      # Release only when this build's commit is a version PR's merge commit.
+      # Matching the newest completed version PR instead would make every
+      # later push look like a release. curl -f fails the step on API errors
+      # so a bad token does not quietly skip the release.
+      COMMIT=$(Build.SourceVersion)
+      MERGED_PR=$(curl -sf -X POST \
+        "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequestquery?api-version=7.1" \
+        -H "Authorization: Bearer $(System.AccessToken)" \
+        -H "Content-Type: application/json" \
+        -d "{\"queries\":[{\"type\":\"lastMergeCommit\",\"items\":[\"${COMMIT}\"]}]}" \
+        | jq -er --arg sha "$COMMIT" --arg ref "refs/heads/${BRANCH}" \
+          '[(.results // error("no results in response"))[0][$sha][]? | select(.sourceRefName == $ref and .lastMergeCommit.commitId == $sha) | .pullRequestId] | first // ""')
+
+      if [ -n "$MERGED_PR" ]; then
+        echo "Commit is the merge of version PR #${MERGED_PR}, tagging"
+        VERSION=$(grep -E '^version[[:space:]]*=[[:space:]]*"' Cargo.toml 2>/dev/null | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
+        [ -n "$VERSION" ] || VERSION=$(jq -r '.version // empty' package.json 2>/dev/null || true)
+        [ -n "$VERSION" ] || { echo "Could not determine version"; exit 1; }
+
+        if [ -n "$(git ls-remote --tags origin "refs/tags/v${VERSION}")" ]; then
+          echo "Tag v${VERSION} already exists, skipping"
+        else
+          git tag -a "v${VERSION}" -m "Release ${VERSION}"
+          git push origin "refs/tags/v${VERSION}"
+        fi
+      fi
+
+      # Changesets merged while the version PR was open still need a version
+      # PR, even right after a release.
       if ! ls .changeset/*.md 1>/dev/null 2>&1; then
         echo "No pending changesets"
-
-        # Check if this push is a version-PR merge
-        COMMIT_MSG=$(git log -1 --format=%s)
-        if echo "$COMMIT_MSG" | grep -q "chore: version packages"; then
-          echo "Version PR merge detected, creating tags"
-          changesetter release --output json || true
-          git push origin main --follow-tags
-        fi
         exit 0
       fi
 
@@ -252,6 +275,8 @@ steps:
 For a more integrated experience, changesetter provides an Azure Pipelines extension with custom tasks for checking and releasing. See `extensions/azure-pipelines/` in the changesetter repository.
 
 The extension wraps the same CLI commands with native Azure DevOps integration: PR comment threads, work item linking, and pipeline variables.
+
+In version-PR mode, the `ChangsetterRelease` task releases only when the commit being built (`Build.SourceVersion`) is the merge commit of a completed `changesetter/version-packages` PR. It reads the version from `Cargo.toml` or `package.json`, creates and pushes the `v<version>` tag, and skips the tag if it already exists on origin, so re-running a failed release build is safe. If changesets were merged while the version PR was open, the same run then opens or updates a new version PR for them. A failed Azure DevOps API call fails the task instead of skipping the release.
 
 ## Permissions
 
