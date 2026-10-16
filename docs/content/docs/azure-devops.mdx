@@ -235,7 +235,9 @@ steps:
       # Changesets merged while the version PR was open still need a version
       # PR, even right after a release.
       # Nested dirs count, README.md doesn't, matching changesetter itself.
-      if ! find .changeset -name '*.md' ! -name README.md 2>/dev/null | grep -q .; then
+      # -print -quit rather than `| grep -q`: with pipefail, a long listing
+      # makes find die of SIGPIPE and the check would read "none pending".
+      if [ -z "$(find .changeset -type f -name '*.md' ! -name README.md -print -quit 2>/dev/null)" ]; then
         echo "No pending changesets"
         exit 0
       fi

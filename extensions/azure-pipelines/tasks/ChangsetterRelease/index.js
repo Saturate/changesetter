@@ -133,8 +133,8 @@ function git(...args) {
 function hasChangesets() {
   try {
     // Changesets can sit in subdirectories; README.md is never one.
-    const files = fs.readdirSync(".changeset", { recursive: true });
-    return files.some((f) => f.endsWith(".md") && path.basename(f) !== "README.md");
+    const entries = fs.readdirSync(".changeset", { recursive: true, withFileTypes: true });
+    return entries.some((e) => e.isFile() && e.name.endsWith(".md") && e.name !== "README.md");
   } catch {
     return false;
   }
