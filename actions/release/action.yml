@@ -122,14 +122,14 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token }}
       run: |
-        # Check if HEAD was a version PR merge by looking up the PR
-        # associated with the current commit, not any historically merged PR.
+        # Ask for the PRs associated with HEAD rather than searching merged
+        # PRs: `gh pr list --label` goes through the search index, which can
+        # lag right after the merge and would silently skip the release.
+        # No error swallowing either, since a failed lookup would look
+        # exactly like "not a version PR" and also skip the release.
         HEAD_SHA=$(git rev-parse HEAD)
-        MERGED_PR=$(gh pr list \
-          --state merged \
-          --label "changesetter:version" \
-          --json number,mergeCommit \
-          --jq ".[] | select(.mergeCommit.oid == \"${HEAD_SHA}\") | .number" 2>/dev/null || true)
+        MERGED_PR=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" \
+          --jq ".[] | select(.merge_commit_sha == \"${HEAD_SHA}\" and any(.labels[]; .name == \"changesetter:version\")) | .number")
 
         if [ -n "$MERGED_PR" ]; then
           echo "merged=true" >> "$GITHUB_OUTPUT"
