@@ -10,9 +10,11 @@ CLI releases are automatic. Merging a PR with a changeset to `main` runs `.githu
 2. Creates the GitHub Release with `--latest=false`.
 3. Calls `build-binaries.yml`, which builds the binaries, attaches them to the release and then marks it as latest. Publishing to crates.io runs alongside; a failed publish doesn't hold back the binaries, since `actions/install` only needs those.
 
-`actions/install` downloads from whichever release is marked latest, so a release without binaries must never be latest. That is also why the release workflow doesn't cancel in-progress runs.
+`actions/install` doesn't use GitHub's "latest" flag. For `version: latest` it picks the highest stable `changesetter@vX.Y.Z` release that already has the runner's binary attached, so a release whose build is still running is skipped until its upload lands. The flag still matters for people browsing the releases page, which is why releases start as not-latest. The release workflow doesn't cancel in-progress runs, so a build is never cut off halfway.
 
-If a release ends up without binaries or isn't on crates.io, run **Build Binaries** manually (Actions tab, "Run workflow") with the tag, e.g. `changesetter@v0.3.2`. It replaces existing assets and skips crates.io if that version is already published. Tick "Mark the release as latest once binaries are attached" if the release should become the one `actions/install` downloads. If the GitHub Release itself is missing, create it first, since the build only uploads to an existing release: `gh release create <tag> --verify-tag --latest=false --notes-file <notes>`, with that version's section of `CHANGELOG.md` as the notes (`actions/release/release-notes.sh <version>` prints it).
+To pull a bad release back from `actions/install`, mark it as a pre-release or delete its assets; install then falls back to the previous version. Changing which release is marked latest has no effect on install.
+
+If a release ends up without binaries or isn't on crates.io, run **Build Binaries** manually (Actions tab, "Run workflow") with the tag, e.g. `changesetter@v0.3.2`. It replaces existing assets and skips crates.io if that version is already published. Tick "Mark the release as latest once binaries are attached" if it should be shown as the latest release on GitHub. If the GitHub Release itself is missing, create it first, since the build only uploads to an existing release: `gh release create <tag> --verify-tag --latest=false --notes-file <notes>`, with that version's section of `CHANGELOG.md` as the notes (`actions/release/release-notes.sh <version>` prints it).
 
 Tags up to `changesetter@v0.3.1` were cut before the `post_bump` hook existed, so their `Cargo.lock` is stale and `cargo publish` from them fails on a dirty tree. 0.3.1 is not on crates.io for that reason; it only changed the GitHub Actions, so the next release covers it.
 
@@ -32,6 +34,6 @@ gh release create v1.2.0 --verify-tag --latest=false --title "Actions v1.2.0" --
 
 - Bump the patch for fixes, the minor for new optional inputs or outputs. Changes outside `actions/` don't need an action release.
 - A change that removes or renames an input or output, changes required permissions, or otherwise breaks an existing workflow is `v2.0.0`. Tag `v2` for it and leave `v1` where it was.
-- Always pass `--latest=false`. An action release marked latest has no binaries, so it would break `actions/install` for everyone.
+- Always pass `--latest=false`, so the releases page keeps showing the CLI as latest. (`actions/install` ignores the flag and only looks at `changesetter@v*` releases.)
 - Plain `vX.Y.Z` tags don't trigger the binary build; only `changesetter@v*` tags do.
 - In the release notes, call out behaviour changes that make a job fail where it used to pass.

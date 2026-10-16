@@ -14,39 +14,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Determine version
-      id: version
-      shell: bash
-      env:
-        INPUT_VERSION: ${{ inputs.version }}
-        # Unauthenticated API calls share a 60/hour limit per IP, and hosted
-        # runners share IPs. Only github.com tokens work against
-        # api.github.com; a GHES or Gitea token there is a 401.
-        GH_TOKEN: ${{ github.server_url == 'https://github.com' && github.token || '' }}
-      run: |
-        if [ "$INPUT_VERSION" = "latest" ]; then
-          # Not /releases/latest: the GitHub Action releases (v1.x.y) live in
-          # this repo too and have no binaries, so only consider CLI releases
-          # that already have their assets attached.
-          AUTH=()
-          if [ -n "$GH_TOKEN" ]; then AUTH=(-H "Authorization: Bearer ${GH_TOKEN}"); fi
-          TAG=$(curl -sSfL --retry 3 "${AUTH[@]}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/saturate/changesetter/releases?per_page=100" \
-            | jq -r '[.[] | select((.draft or .prerelease) | not)
-                          | select(.tag_name | startswith("changesetter@v"))
-                          | select(.assets | length > 0)] | first | .tag_name // empty')
-          if [ -z "$TAG" ]; then
-            echo "Could not find a changesetter release with binaries" >&2
-            exit 1
-          fi
-          VERSION="${TAG#changesetter@v}"
-        else
-          VERSION="${INPUT_VERSION#changesetter@}"
-          VERSION="${VERSION#v}"
-        fi
-        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
     - name: Determine platform
       id: platform
       shell: bash
@@ -63,6 +30,45 @@ runs:
           *) echo "Unsupported OS: $OS"; exit 1 ;;
         esac
         echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+
+    - name: Determine version
+      id: version
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        TARGET: ${{ steps.platform.outputs.target }}
+        # Unauthenticated API calls share a 60/hour limit per IP, and hosted
+        # runners share IPs. Only github.com tokens work against
+        # api.github.com; a GHES or Gitea token there is a 401.
+        GH_TOKEN: ${{ github.server_url == 'https://github.com' && github.token || '' }}
+      run: |
+        if [ "$INPUT_VERSION" = "latest" ]; then
+          # Not /releases/latest: the GitHub Action releases (v1.x.y) live in
+          # this repo too and have no binaries. Take the highest stable CLI
+          # version that already has this runner's binary, so a release whose
+          # upload is still running (or failed halfway) is never picked. The
+          # API's ordering isn't documented, hence the explicit sort.
+          AUTH=()
+          if [ -n "$GH_TOKEN" ]; then AUTH=(-H "Authorization: Bearer ${GH_TOKEN}"); fi
+          TAG=$(curl -sSfL --retry 3 "${AUTH[@]}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/saturate/changesetter/releases?per_page=100" \
+            | jq -r --arg asset "changesetter-${TARGET}.tar.gz" '
+                [.[] | select((.draft or .prerelease) | not)
+                     | select(.tag_name | test("^changesetter@v[0-9]+[.][0-9]+[.][0-9]+$"))
+                     | select(any(.assets[]; .name == $asset))]
+                | sort_by(.tag_name | ltrimstr("changesetter@v") | split(".") | map(tonumber))
+                | last | .tag_name // empty')
+          if [ -z "$TAG" ]; then
+            echo "Could not find a changesetter release with a ${TARGET} binary" >&2
+            exit 1
+          fi
+          VERSION="${TAG#changesetter@v}"
+        else
+          VERSION="${INPUT_VERSION#changesetter@}"
+          VERSION="${VERSION#v}"
+        fi
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
     - name: Cache changesetter
       id: cache
