@@ -1113,3 +1113,41 @@ fn release_notes_keep_headings_from_changeset_bodies() {
         "Intro.\n\n## Migration\n\nDo X.\n\n"
     );
 }
+
+#[test]
+fn release_notes_find_any_version_in_a_shared_heading() {
+    let changelog =
+        "## 1.0.0, 2.0.0 - 2026-10-17\n\n### b\n\n- y\n\n## 0.9.0 - 2026-10-16\n\n- Old\n";
+    assert_eq!(release_notes("2.0.0", changelog), "### b\n\n- y\n\n");
+    assert_eq!(release_notes("0.0", changelog), "");
+}
+
+#[test]
+fn release_notes_keep_body_headings_that_start_with_a_digit() {
+    let changelog = "## 0.2.0 - d\n\nIntro.\n\n## 2FA support\n\nOn.\n\n## 0.1.0 - d\n\n- Old\n";
+    assert_eq!(
+        release_notes("0.2.0", changelog),
+        "Intro.\n\n## 2FA support\n\nOn.\n\n"
+    );
+}
+
+#[test]
+fn release_notes_take_only_the_first_of_duplicate_sections() {
+    let changelog = "## 0.2.0 - d\n\n- A\n\n## 0.2.0 - d\n\n- B\n";
+    assert_eq!(release_notes("0.2.0", changelog), "- A\n\n");
+}
+
+#[test]
+fn release_notes_are_empty_without_a_matching_section() {
+    assert_eq!(release_notes("0.3.0", "## 0.2.0 - d\n\n- A\n"), "");
+
+    let dir = tempfile::tempdir().unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("actions/release/release-notes.sh");
+    let out = Command::new(script)
+        .arg("0.1.0")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+}
