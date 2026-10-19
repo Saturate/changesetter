@@ -6,23 +6,14 @@ inputs:
     description: Version to install (e.g. "0.1.0" or "latest")
     required: false
     default: latest
+  cache:
+    description: Cache the binary between runs
+    required: false
+    default: "true"
 
 runs:
   using: composite
   steps:
-    - name: Determine version
-      id: version
-      shell: bash
-      run: |
-        if [ "${{ inputs.version }}" = "latest" ]; then
-          TAG=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | jq -r '.tag_name // empty')
-          # Handle both v0.2.0 and changesetter@v0.2.0 tag formats
-          VERSION=$(echo "$TAG" | sed 's/.*v//')
-        else
-          VERSION="${{ inputs.version }}"
-        fi
-        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
     - name: Determine platform
       id: platform
       shell: bash
@@ -40,8 +31,48 @@ runs:
         esac
         echo "target=$TARGET" >> "$GITHUB_OUTPUT"
 
+    - name: Determine version
+      id: version
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        TARGET: ${{ steps.platform.outputs.target }}
+        # Unauthenticated API calls share a 60/hour limit per IP, and hosted
+        # runners share IPs. Only github.com tokens work against
+        # api.github.com; a GHES or Gitea token there is a 401.
+        GH_TOKEN: ${{ github.server_url == 'https://github.com' && github.token || '' }}
+      run: |
+        if [ "$INPUT_VERSION" = "latest" ]; then
+          # Not /releases/latest: the GitHub Action releases (v1.x.y) live in
+          # this repo too and have no binaries. Take the highest stable CLI
+          # version that already has this runner's binary, so a release whose
+          # upload is still running (or failed halfway) is never picked. The
+          # API's ordering isn't documented, hence the explicit sort.
+          AUTH=()
+          if [ -n "$GH_TOKEN" ]; then AUTH=(-H "Authorization: Bearer ${GH_TOKEN}"); fi
+          TAG=$(curl -sSfL --retry 3 "${AUTH[@]}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/saturate/changesetter/releases?per_page=100" \
+            | jq -r --arg asset "changesetter-${TARGET}.tar.gz" '
+                [.[] | select((.draft or .prerelease) | not)
+                     | select(.tag_name | test("^changesetter@v[0-9]+[.][0-9]+[.][0-9]+$"))
+                     | select(any(.assets[]; .name == $asset))]
+                | sort_by(.tag_name | ltrimstr("changesetter@v") | split(".") | map(tonumber))
+                | last | .tag_name // empty')
+          if [ -z "$TAG" ]; then
+            echo "Could not find a changesetter release with a ${TARGET} binary" >&2
+            exit 1
+          fi
+          VERSION="${TAG#changesetter@v}"
+        else
+          VERSION="${INPUT_VERSION#changesetter@}"
+          VERSION="${VERSION#v}"
+        fi
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
     - name: Cache changesetter
       id: cache
+      if: inputs.cache == 'true'
       uses: actions/cache@v5
       with:
         path: ~/.changesetter/bin
@@ -50,16 +81,22 @@ runs:
     - name: Download changesetter
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+        TARGET: ${{ steps.platform.outputs.target }}
       run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        TARGET="${{ steps.platform.outputs.target }}"
         mkdir -p ~/.changesetter/bin
-        # Try v{version} tag first, fall back to changesetter@v{version}
-        URL="https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${TARGET}.tar.gz"
-        if ! curl -sfL "$URL" | tar xz -C ~/.changesetter/bin 2>/dev/null; then
-          URL="https://github.com/saturate/changesetter/releases/download/changesetter%40v${VERSION}/changesetter-${TARGET}.tar.gz"
-          curl -sfL "$URL" | tar xz -C ~/.changesetter/bin
+        BASE="https://github.com/saturate/changesetter/releases/download"
+        # CLI releases are tagged changesetter@v{version}; 0.2.0 and older
+        # used plain v{version}, which is now the GitHub Action tag format.
+        ARCHIVE="${RUNNER_TEMP:-/tmp}/changesetter-${TARGET}.tar.gz"
+        if ! curl -sfL --retry 3 -o "$ARCHIVE" "${BASE}/changesetter%40v${VERSION}/changesetter-${TARGET}.tar.gz"; then
+          if ! curl -sSfL --retry 3 -o "$ARCHIVE" "${BASE}/v${VERSION}/changesetter-${TARGET}.tar.gz"; then
+            echo "No changesetter ${VERSION} binary for ${TARGET}" >&2
+            exit 1
+          fi
         fi
+        tar xzf "$ARCHIVE" -C ~/.changesetter/bin
 
     - name: Add to PATH
       shell: bash

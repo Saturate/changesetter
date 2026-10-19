@@ -4,6 +4,40 @@
 
 
 
+
+
+## 0.4.0 - 2026-10-16
+
+### changesetter
+
+The install action now only picks CLI releases that have binaries when
+resolving `latest`, authenticates its API call to avoid shared rate limits,
+and reports a clear error when a version has no binary.
+
+#### `status --output json`
+
+`changesetter status --output json` prints pending changesets, each
+package's current version and tag (and whether that tag exists), and the
+releases that would be made. CI integrations use it instead of globbing
+`.changeset/` or building tag names by hand.
+
+
+## 0.3.3 - 2026-10-16
+
+### changesetter
+
+Reading the changeset directory no longer follows symlinked subdirectories, so
+a link like `.changeset/loop -> ..` can't crash changesetter with a stack
+overflow. Symlinked `.md` files are still read. `changeset_dir` in
+`changesetter.toml` must now be a relative path inside the repository:
+absolute paths and `..` are rejected at load with a clear error, and a
+trailing slash (`.changeset/`) is accepted and normalised.
+
+CI now fails a release run when `changesetter release` fails instead of
+reporting success, rejects a stale Cargo.lock, and lints workflows and
+action scripts.
+
+
 ## 0.3.2 - 2026-10-16
 
 ### changesetter

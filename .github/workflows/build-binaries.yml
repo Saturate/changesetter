@@ -12,8 +12,9 @@ on:
       tag:
         required: true
         type: string
-      # Releases are created as not-latest so actions/install never resolves
-      # to one before its binaries are attached.
+      # Releases are created as not-latest and promoted once their binaries
+      # are attached, so the releases page never shows one with nothing to
+      # download.
       make-latest:
         type: boolean
         default: false
@@ -135,4 +136,8 @@ jobs:
         if: inputs.make-latest
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$TAG" --repo "${{ github.repository }}" --latest
+        run: |
+          case "$TAG" in
+            *-*) echo "${TAG} is a pre-release; not marking it latest" ;;
+            *) gh release edit "$TAG" --repo "${{ github.repository }}" --latest ;;
+          esac

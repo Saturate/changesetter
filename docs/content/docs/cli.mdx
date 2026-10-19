@@ -38,6 +38,32 @@ Without `--base`, checks for any `.md` files in `.changeset/`. With `--base`, us
 
 Show pending changesets and a preview of what the next release would look like. Read-only, no side effects.
 
+| Flag | Description |
+|---|---|
+| `--output json` | Write structured JSON to stdout |
+
+The JSON has these keys:
+
+- `pending`: changeset file names, relative to the changeset directory and without `.md`.
+- `packages`: every detected package with its current `version`, its `path` (`.` for the repo root), the `changelog` file it writes to, the `tag` for that version (following the configured tag format) and `tagged`, whether that tag exists locally. Run `git fetch --tags` first in CI.
+- `tag_annotated`: whether `release` creates annotated tags (the `[release]` setting).
+- `releases`: what a release would do now: `name`, `previous_version`, `version`, `bump` and `tag`. A package named in a changeset but not detected shows up here with `previous_version` `0.0.0` and no `packages` entry.
+- `none_entries`: titles of changesets that document a change without bumping a version.
+
+```json
+{
+  "pending": ["brave-foxes-dance"],
+  "tag_annotated": true,
+  "packages": [
+    { "name": "mylib", "version": "1.0.0", "path": ".", "changelog": "CHANGELOG.md", "tagged": true, "tag": "v1.0.0" }
+  ],
+  "releases": [
+    { "name": "mylib", "previous_version": "1.0.0", "version": "1.1.0", "bump": "minor", "tag": "v1.1.0" }
+  ],
+  "none_entries": []
+}
+```
+
 ## `changesetter version`
 
 Bump versions in manifest files and update changelogs. Does not create git tags.

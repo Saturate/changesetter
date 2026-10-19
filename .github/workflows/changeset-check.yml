@@ -28,17 +28,21 @@ jobs:
         continue-on-error: true
         uses: actions/github-script@v7
         env:
-          CHECK_EXIT_CODE: ${{ steps.check.outcome == 'success' && '0' || '1' }}
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
         with:
           script: |
             const marker = '<!-- changesetter-check -->';
-            const passed = process.env.CHECK_EXIT_CODE === '0';
+            const outcome = process.env.CHECK_OUTCOME;
 
+            // "skipped" means an earlier step (the build) failed, which says
+            // nothing about whether the PR has a changeset.
             let body;
-            if (passed) {
+            if (outcome === 'success') {
               body = `${marker}\n### Changeset Check: Passed\n\nThis PR includes a changeset.`;
-            } else {
+            } else if (outcome === 'failure') {
               body = `${marker}\n### Changeset Check: Missing\n\nNo changeset found. Run \`changesetter add\` to create one.`;
+            } else {
+              body = `${marker}\n### Changeset Check: Not run\n\nThe check couldn't run; see the workflow logs.`;
             }
 
             const { data: comments } = await github.rest.issues.listComments({

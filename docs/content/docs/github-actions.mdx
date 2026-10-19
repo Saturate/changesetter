@@ -132,12 +132,19 @@ jobs:
 
 The flow:
 1. Push to main with pending changesets: creates/updates a PR on `changesetter/version-packages` branch with label `changesetter:version`
-2. Push to main whose HEAD is the merge commit of a version PR: runs the release
+2. Push to main whose HEAD is the merge commit of a version PR: releases every package whose version the PR changed. Each gets a tag in your configured tag format, at the merge commit, plus a GitHub Release with that version's changelog section as notes. Pre-release versions become pre-releases.
 3. Any other push without pending changesets: does nothing
 
 A version PR merge that also brings in changesets merged while it was open does both: it releases, then opens a new version PR for those changesets.
 
-The `pull-requests: write` permission is required to create PRs. The `concurrency` group prevents races when multiple pushes arrive in quick succession. Keep `cancel-in-progress: false`: only the run for the version PR's merge commit releases, so cancelling it in favour of a later push skips that release.
+Releasing is safe to repeat. Tags and GitHub Releases that already exist are left alone, and `released` is only `true` for what the run actually created. If the run for a merge was cancelled or failed partway, the next push to main finishes the release of the last merged version PR.
+
+Requirements:
+- `actions/checkout` with `fetch-depth: 0`. The action reads the merge's parent commit and the existing tags.
+- changesetter 0.4.0 or newer (`changesetter status --output json`). The default `version: latest` covers this.
+- `pull-requests: write` to create PRs.
+
+The `concurrency` group prevents races when multiple pushes arrive in quick succession. `cancel-in-progress: false` keeps the release run for a merge from being cancelled by the next push; if one is cancelled anyway, the next push picks it up.
 
 ## Permissions
 
@@ -157,3 +164,8 @@ The check and release actions use the install action internally. If you need the
 ```
 
 This downloads the prebuilt binary from GitHub Releases and adds it to PATH. Results are cached by version and platform.
+
+| Input | Default | Description |
+|---|---|---|
+| `version` | `latest` | `latest`, or a version such as `0.3.3`, `v0.3.3` or `changesetter@v0.3.3`. `latest` is the newest stable release that has a binary for the runner. |
+| `cache` | `true` | Cache the binary between runs. Set to `false` to always download. |
