@@ -19,7 +19,7 @@ The check and release actions install the CLI through `actions/install@v1`, so t
 
 ## Changeset check
 
-Runs `changesetter check` on pull requests and posts a comment with the result.
+Runs `changesetter check` on pull requests and posts a comment with the result. When the check passes, the comment has a collapsed section listing each changeset the PR adds, with its bumps and text.
 
 ```yaml
 # .github/workflows/changeset-check.yml
@@ -27,6 +27,10 @@ name: Changeset Check
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   check:
@@ -46,9 +50,11 @@ jobs:
 |---|---|---|
 | `base` | Auto-detect from PR | Base branch to compare against |
 | `comment` | `true` | Post/update a PR comment with the changeset summary |
-| `version` | `latest` | changesetter version to install |
+| `version` | `latest` | changesetter version to install, or `none` to use a `changesetter` already on `PATH` |
 
-The comment is updated on subsequent pushes rather than creating duplicates. It uses an HTML marker (`<!-- changesetter-check -->`) to find the existing comment.
+The comment is updated on subsequent pushes rather than creating duplicates. It uses an HTML marker (`<!-- changesetter-check -->`) to find the existing bot comment. If the token can't write to the PR (a pull request from a fork, or no `pull-requests: write`), the job logs a warning instead of the comment, and the check still passes or fails. A changeset that can't be parsed fails the check, and the comment shows the error.
+
+Requires changesetter 0.5.0 or newer (`changesetter check --output json`). The default `version: latest` covers this.
 
 `fetch-depth: 0` is required for the `--base` diff to work.
 

@@ -10,7 +10,7 @@ inputs:
     required: false
     default: "true"
   version:
-    description: changesetter version to install
+    description: changesetter version to install, or "none" to use the changesetter already on PATH
     required: false
     default: latest
 
@@ -18,74 +18,145 @@ runs:
   using: composite
   steps:
     - name: Install changesetter
+      if: inputs.version != 'none'
       uses: saturate/changesetter/actions/install@v1
       with:
         version: ${{ inputs.version }}
 
-    - name: Determine base
-      id: base
-      shell: bash
-      run: |
-        if [ -n "${{ inputs.base }}" ]; then
-          echo "ref=${{ inputs.base }}" >> "$GITHUB_OUTPUT"
-        elif [ -n "${{ github.event.pull_request.base.ref }}" ]; then
-          echo "ref=origin/${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
-        else
-          echo "ref=origin/main" >> "$GITHUB_OUTPUT"
-        fi
-
     - name: Run changeset check
       id: check
       shell: bash
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+        PR_BASE: ${{ github.event.pull_request.base.ref }}
       run: |
-        OUTPUT=$(changesetter check --base "${{ steps.base.outputs.ref }}" 2>&1) || EXIT_CODE=$?
-        echo "$OUTPUT" >&2
-        echo "output<<EOF" >> "$GITHUB_OUTPUT"
-        echo "$OUTPUT" >> "$GITHUB_OUTPUT"
-        echo "EOF" >> "$GITHUB_OUTPUT"
-        echo "exit_code=${EXIT_CODE:-0}" >> "$GITHUB_OUTPUT"
+        if [ -n "$INPUT_BASE" ]; then
+          BASE="$INPUT_BASE"
+        elif [ -n "$PR_BASE" ]; then
+          BASE="origin/$PR_BASE"
+        else
+          BASE="origin/main"
+        fi
+
+        # The report goes to a file rather than a step output: changeset text
+        # is free-form and could contain the heredoc delimiter.
+        REPORT="${RUNNER_TEMP:-/tmp}/changesetter-check.json"
+        ERRORS="${RUNNER_TEMP:-/tmp}/changesetter-check.err"
+        changesetter check --base "$BASE" --output json > "$REPORT" 2> "$ERRORS" || EXIT_CODE=$?
+        cat "$ERRORS" >&2
+        {
+          echo "report=$REPORT"
+          echo "errors=$ERRORS"
+          echo "exit_code=${EXIT_CODE:-0}"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Post PR comment
-      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      if: ${{ !cancelled() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
       uses: actions/github-script@v7
       env:
-        CHECK_OUTPUT: ${{ steps.check.outputs.output }}
+        CHECK_REPORT: ${{ steps.check.outputs.report }}
+        CHECK_ERRORS: ${{ steps.check.outputs.errors }}
         CHECK_EXIT_CODE: ${{ steps.check.outputs.exit_code }}
       with:
         script: |
+          const fs = require('fs');
           const marker = '<!-- changesetter-check -->';
-          const exitCode = parseInt(process.env.CHECK_EXIT_CODE);
-          const output = process.env.CHECK_OUTPUT;
+          // GitHub rejects comment bodies over 65536 characters.
+          const maxBody = 60000;
+
+          const read = (file) => {
+            try {
+              return fs.readFileSync(file, 'utf8');
+            } catch {
+              return '';
+            }
+          };
+
+          // No parseable report means the CLI stopped before it could say
+          // (a broken changeset, an unfetched base ref), which says nothing
+          // about whether the PR has one.
+          let report = null;
+          try {
+            report = JSON.parse(read(process.env.CHECK_REPORT));
+          } catch {}
+
+          const code = (s) => '`' + s.replace(/`/g, "'").replace(/\s/g, ' ') + '`';
+          const bumpList = (pkgs) =>
+            Object.entries(pkgs ?? {}).map(([pkg, bump]) => `${code(pkg)} ${bump}`).join(', ');
+          // Changeset text is the PR author's markdown; a stray <details> tag
+          // or an unclosed comment would swallow the layout around it.
+          const quote = (text) => text.replace(/<(\/?details|!--)/gi, '&lt;$1');
 
           let body;
-          if (exitCode === 0) {
-            body = `${marker}\n### Changeset Check: Passed\n\n\`\`\`\n${output}\n\`\`\``;
+          if (!report) {
+            const errors = read(process.env.CHECK_ERRORS).trim().split('\n').slice(-20).join('\n');
+            body = `${marker}\n### Changeset Check: Failed\n\nThe check couldn't finish; see the workflow logs.`;
+            if (errors) body += `\n\n\`\`\`\`\n${errors.slice(-4000)}\n\`\`\`\``;
+          } else if (process.env.CHECK_EXIT_CODE !== '0') {
+            body = `${marker}\n### Changeset Check: Missing\n\nNo changeset found. Run \`changesetter add\` to create one.`;
           } else {
-            body = `${marker}\n### Changeset Check: Missing\n\nNo changeset found for this PR. Run \`changesetter add\` to create one.\n\n\`\`\`\n${output}\n\`\`\``;
+            const changesets = report.changesets ?? [];
+            const added = changesets.filter((cs) => !cs.deleted).length;
+            const removed = changesets.length - added;
+            const counts = [];
+            if (added) counts.push(`${added} changeset${added === 1 ? '' : 's'}`);
+            if (removed) counts.push(`${removed} removed`);
+            const bumps = bumpList(report.bumps);
+            const summary = counts.join(', ') + (bumps ? `: ${bumps}` : '');
+
+            const head = `${marker}\n### Changeset Check: Passed\n\n<details>\n<summary>${summary}</summary>\n\n`;
+            const tail = '\n\n</details>';
+            const sections = [];
+            let size = head.length + tail.length;
+            for (const cs of changesets) {
+              const parts = [`#### ${code(cs.file)}${cs.deleted ? ' (removed)' : ''}`];
+              if (!cs.deleted) {
+                const pkgs = bumpList(cs.packages);
+                if (pkgs) parts.push(pkgs);
+                if (cs.summary) parts.push('', quote(cs.summary));
+              }
+              const section = parts.join('\n');
+              if (size + section.length + 200 > maxBody) {
+                sections.push(`_${changesets.length - sections.length} more not shown; see the changeset directory._`);
+                break;
+              }
+              sections.push(section);
+              size += section.length + 2;
+            }
+            body = head + sections.join('\n\n') + tail;
           }
 
-          const { data: comments } = await github.rest.issues.listComments({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            issue_number: context.issue.number,
-          });
-
-          const existing = comments.find(c => c.body.includes(marker));
-
-          if (existing) {
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: existing.id,
-              body,
-            });
-          } else {
-            await github.rest.issues.createComment({
+          try {
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body,
             });
+
+            // Only our own comment: the marker alone could be pasted by anyone.
+            const existing = comments.find(
+              (c) => c.user?.type === 'Bot' && c.body?.startsWith(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+          } catch (err) {
+            // A fork PR's token is read-only, and so is a repo's whose default
+            // token permissions are; neither decides the check.
+            core.warning(`Couldn't post the changeset comment (${err.message}); the job needs pull-requests: write.`);
           }
 
     - name: Fail if no changeset
