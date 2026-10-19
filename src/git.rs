@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use anyhow::Context;
+
 use crate::errors::ChangesetterError;
 
 pub fn find_repo_root() -> anyhow::Result<PathBuf> {
@@ -27,16 +29,28 @@ pub fn is_working_tree_clean(repo_root: &Path) -> anyhow::Result<bool> {
     Ok(output.stdout.is_empty())
 }
 
+/// A file under the changeset dir that differs between a base and HEAD.
+pub struct ChangedFile {
+    pub path: String,
+    pub deleted: bool,
+}
+
 pub fn diff_changeset_files(
     repo_root: &Path,
     base: &str,
     changeset_dir: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Vec<ChangedFile>> {
     let dir_arg = format!("{changeset_dir}/");
+    // -z, because without it git quotes any path with non-ASCII or `"` in
+    // it, and the quoted name no longer ends in `.md`. --no-renames turns a
+    // rename into a delete plus an add, so the new name is read like any
+    // other added file.
     let output = Command::new("git")
         .args([
             "diff",
-            "--name-only",
+            "--name-status",
+            "-z",
+            "--no-renames",
             &format!("{base}...HEAD"),
             "--",
             &dir_arg,
@@ -56,11 +70,34 @@ pub fn diff_changeset_files(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect())
+    let mut fields = stdout.split('\0').filter(|f| !f.is_empty());
+    let mut files = Vec::new();
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
+        files.push(ChangedFile {
+            path: path.to_string(),
+            deleted: status == "D",
+        });
+    }
+    Ok(files)
+}
+
+/// The content of `path` as committed at HEAD. Reading the commit rather
+/// than the working tree keeps it to what the diff compared, and a
+/// committed symlink comes back as its target path instead of being
+/// followed out of the repo.
+pub fn read_at_head(repo_root: &Path, path: &str) -> anyhow::Result<String> {
+    let output = Command::new("git")
+        .args(["show", &format!("HEAD:{path}")])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|_| ChangesetterError::GitNotFound)?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git show failed for {path}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    String::from_utf8(output.stdout).with_context(|| format!("{path} is not valid UTF-8"))
 }
 
 pub fn git_add(repo_root: &Path, paths: &[&str]) -> anyhow::Result<()> {
