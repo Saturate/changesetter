@@ -718,6 +718,110 @@ fn headings_in_a_release_body_keep_the_notes_whole() {
     );
 }
 
+fn tag_message(repo: &Path, tag: &str) -> String {
+    git_out(repo, &["tag", "-l", "--format=%(contents)", tag])
+        .trim_end()
+        .to_string()
+}
+
+/// Notes for `version` from release-notes.sh, which must match the tag
+/// message the Rust side wrote for it.
+fn notes_agree(repo: &Path, version: &str) -> String {
+    let notes = release_notes(version, &read(&repo.join("CHANGELOG.md")));
+    assert_eq!(
+        notes.trim_end(),
+        tag_message(repo, &format!("v{version}")),
+        "release-notes.sh and the tag disagree on {version}"
+    );
+    notes
+}
+
+#[test]
+fn an_unclosed_fence_in_a_release_body_stays_in_its_section() {
+    let dir = setup_cargo_repo();
+    for (name, body) in [
+        ("a", "---\ndefault: minor\n---\n\n#### First feature\n"),
+        (
+            "b",
+            "---\ndefault: patch\n---\n\nFix with sample\n\n```sh\necho unclosed\n",
+        ),
+        ("c", "---\ndefault: patch\n---\n\n#### Another fix\n"),
+    ] {
+        write_changeset(dir.path(), name, body);
+        git_add_commit(dir.path(), name);
+        release_commit(dir.path());
+    }
+
+    assert_eq!(notes_agree(dir.path(), "1.1.2"), "#### Another fix\n\n");
+    assert_eq!(
+        notes_agree(dir.path(), "1.1.1"),
+        "Fix with sample\n\n```sh\necho unclosed\n```\n\n"
+    );
+    assert_eq!(notes_agree(dir.path(), "1.1.0"), "#### First feature\n");
+}
+
+#[test]
+fn an_unclosed_fence_in_a_none_body_does_not_swallow_the_file() {
+    let dir = setup_cargo_repo();
+    for (name, body) in [
+        ("a", "---\ndefault: minor\n---\n\n#### Feature one\n"),
+        (
+            "b",
+            "---\ndefault: none\n---\n\nCI note\n\n```yaml\nkey: v\n",
+        ),
+        ("c", "---\ndefault: none\n---\n\n#### Second CI note\n"),
+        ("d", "---\ndefault: minor\n---\n\n#### Feature two\n"),
+    ] {
+        write_changeset(dir.path(), name, body);
+        git_add_commit(dir.path(), name);
+        release_commit(dir.path());
+    }
+
+    let changelog = read(&dir.path().join("CHANGELOG.md"));
+    assert!(!changelog.contains("Unreleased"), "{changelog}");
+    assert_eq!(
+        notes_agree(dir.path(), "1.2.0"),
+        "#### Feature two\n\n### Internal\n\nCI note\n\n```yaml\nkey: v\n```\n\n#### Second CI note\n\n"
+    );
+    assert_eq!(notes_agree(dir.path(), "1.1.0"), "#### Feature one\n");
+}
+
+#[test]
+fn a_legacy_unclosed_fence_reads_as_text() {
+    // Written before bodies got their fences closed.
+    let dir = setup_cargo_repo();
+    std::fs::write(
+        dir.path().join("CHANGELOG.md"),
+        "# Changelog\n\n## Unreleased\n\n### Internal\n\n- old note\n\n## 1.0.0 - d\n\nSample\n\n```sh\necho unclosed\n\n## 0.9.0 - d\n\n- Older\n",
+    )
+    .unwrap();
+    write_changeset(
+        dir.path(),
+        "a",
+        "---\ndefault: none\n---\n\n#### New note\n",
+    );
+    git_add_commit(dir.path(), "legacy");
+    release_commit(dir.path());
+    write_changeset(dir.path(), "b", "---\ndefault: patch\n---\n\n#### Fix\n");
+    git_add_commit(dir.path(), "fix");
+    release_commit(dir.path());
+
+    let changelog = read(&dir.path().join("CHANGELOG.md"));
+    assert_eq!(
+        release_notes("1.0.1", &changelog),
+        "#### Fix\n\n### Internal\n\n- old note\n\n#### New note\n\n"
+    );
+    assert_eq!(
+        notes_agree(dir.path(), "1.0.1"),
+        release_notes("1.0.1", &changelog)
+    );
+    assert_eq!(
+        release_notes("1.0.0", &changelog),
+        "Sample\n\n```sh\necho unclosed\n\n"
+    );
+    assert_eq!(release_notes("0.9.0", &changelog), "- Older\n");
+}
+
 // ---------- Release with tagging ----------
 
 #[test]
@@ -1607,5 +1711,24 @@ fn release_notes_end_at_other_tools_headings_and_links() {
     assert_eq!(
         release_notes("1.1.0", changelog),
         "See [docs].\n\n[docs]: https://example.com\n"
+    );
+}
+
+#[test]
+fn release_notes_follow_commonmark_fences() {
+    // Indented 4 spaces is not a fence, and a backtick fence's info string
+    // can't hold a backtick, so the "## 0.1.0" below them is a heading.
+    for open in ["    ```", "``` a`b"] {
+        let changelog = format!("## 0.2.0 - d\n\n{open}\n\n## 0.1.0 - d\n\n- Old\n");
+        assert_eq!(
+            release_notes("0.2.0", &changelog),
+            format!("{open}\n\n"),
+            "{open}"
+        );
+    }
+    let changelog = "## 0.2.0 - d\n\n~~~ a`b\n## 0.1.0\n~~~\n\n## 0.1.0 - d\n";
+    assert_eq!(
+        release_notes("0.2.0", changelog),
+        "~~~ a`b\n## 0.1.0\n~~~\n\n"
     );
 }

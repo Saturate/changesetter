@@ -319,8 +319,11 @@ runs:
           else
             KEYS+=("$KEY"); LABELS+=("${name}@${version}"); BODIES+=("$NOTES")
           fi
+        # A release with no matching package has no changelog of its own to
+        # read; release-notes.sh would fall back to the root CHANGELOG.md.
         done < <(jq -r '.packages as $p | .releases[] | . as $r
-          | [$r.name, $r.version, ([$p[] | select(.name == $r.name) | .changelog][0] // "")] | @tsv' <<<"$PLAN")
+          | ([$p[] | select(.name == $r.name) | .changelog][0]) as $c
+          | select($c != null) | [$r.name, $r.version, $c] | @tsv' <<<"$PLAN")
 
         CHANGELOG_PREVIEW=""
         for i in "${!KEYS[@]}"; do

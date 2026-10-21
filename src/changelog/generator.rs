@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::changelog::markdown::code_lines;
 use crate::config::ChangelogConfig;
 use crate::package::types::{Package, PackageType};
 use crate::release::plan::{NoneEntry, ReleasePlan};
@@ -159,14 +160,9 @@ fn split_unreleased<'a>(body: &'a str, heading: &str) -> (&'a str, Option<&'a st
     let marker = format!("### {heading}");
     let mut offset = 0;
     let mut internal_start = None;
-    let mut fences = FenceTracker::default();
-    for line in body.split_inclusive('\n') {
+    for (line, code) in body.split_inclusive('\n').zip(code_lines(body)) {
         // Fenced code is never a heading or a link reference.
-        let trimmed = if fences.is_code(line) {
-            ""
-        } else {
-            line.trim_end()
-        };
+        let trimmed = if code { "" } else { line.trim_end() };
         match internal_start {
             None if trimmed == marker => internal_start = Some((offset, offset + line.len())),
             Some((head, start)) if trimmed.starts_with("### ") || trimmed.starts_with("## ") => {
@@ -183,35 +179,6 @@ fn split_unreleased<'a>(body: &'a str, heading: &str) -> (&'a str, Option<&'a st
     match internal_start {
         Some((head, start)) => (body[..head].trim(), Some(body[start..].trim()), ""),
         None => (body.trim(), None, ""),
-    }
-}
-
-/// Follows fenced code blocks (``` or ~~~) line by line, so a "## " line in a
-/// code sample isn't taken for a heading. Same rule as release-notes.sh.
-#[derive(Debug, Default)]
-pub(crate) struct FenceTracker {
-    open: Option<(char, usize)>,
-}
-
-impl FenceTracker {
-    /// Whether `line` is code: a fence delimiter or a line inside a fence.
-    pub(crate) fn is_code(&mut self, line: &str) -> bool {
-        let trimmed = line.trim_start_matches(' ');
-        let marker = trimmed.chars().next().filter(|c| *c == '`' || *c == '~');
-        let run = marker.map_or(0, |c| trimmed.chars().take_while(|x| *x == c).count());
-        if let Some(c) = marker.filter(|_| run >= 3) {
-            match self.open {
-                None => self.open = Some((c, run)),
-                Some((open, len))
-                    if open == c && run >= len && trimmed[run..].trim().is_empty() =>
-                {
-                    self.open = None
-                }
-                Some(_) => {}
-            }
-            return true;
-        }
-        self.open.is_some()
     }
 }
 
@@ -289,14 +256,9 @@ fn take_unreleased(content: &str) -> Split {
     let mut found_heading = None;
     let mut bracketed_versions = false;
     let mut done = false;
-    let mut fences = FenceTracker::default();
-    for line in content.split_inclusive('\n') {
+    for (line, code) in content.split_inclusive('\n').zip(code_lines(content)) {
         // Fenced code is never a heading or a link reference.
-        let trimmed = if fences.is_code(line) {
-            ""
-        } else {
-            line.trim_end()
-        };
+        let trimmed = if code { "" } else { line.trim_end() };
         if !done {
             if is_any_version_heading(trimmed) {
                 bodies.extend(current.take());
@@ -382,14 +344,9 @@ pub fn write_changelog(
 fn insert_after_header(existing: &str, new_entry: &str) -> String {
     let mut offset = 0;
     let mut split_at = None;
-    let mut fences = FenceTracker::default();
-    for line in existing.split_inclusive('\n') {
+    for (line, code) in existing.split_inclusive('\n').zip(code_lines(existing)) {
         // Fenced code is never a heading or a link reference.
-        let trimmed = if fences.is_code(line) {
-            ""
-        } else {
-            line.trim_end()
-        };
+        let trimmed = if code { "" } else { line.trim_end() };
         if trimmed.starts_with("## ") || is_link_reference(trimmed) {
             split_at = Some(offset);
             break;

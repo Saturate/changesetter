@@ -193,6 +193,25 @@ git add -A; git commit -qm docs; git push -q origin main
 open_version_pr 1
 check "preview has the Unreleased lines" 'grep -qx "## Unreleased" "$FX/pr-body.md" && grep -qx "#### Docs" "$FX/pr-body.md"'
 
+echo "M: version PR preview skips a release no package matches"
+new_repo m; mkdir -p .changeset; printf -- '---\npkg: patch\n---\n\n#### Fix\n' > .changeset/fix.md
+git add -A; git commit -qm fix; git push -q origin main
+# Status reports a release for a name no package has, which the preview must
+# not read from the root CHANGELOG.md.
+WRAP="$ROOT/m-bin"; mkdir -p "$WRAP"
+cat > "$WRAP/changesetter" <<WRAPPER
+#!/usr/bin/env bash
+if [ "\$*" = "status --output json" ]; then
+  "$BIN/changesetter" status --output json | jq '.releases += [{"name": "ghost", "version": "9.9.9"}]'
+else
+  exec "$BIN/changesetter" "\$@"
+fi
+WRAPPER
+chmod +x "$WRAP/changesetter"
+PATH="$WRAP:$PATH" open_version_pr 1
+check "step ran" '! grep -q "version-pr failed" "$FX/log-pr-1"'
+check "preview has pkg but no ghost" 'grep -qx "### pkg@1.0.1" "$FX/pr-body.md" && ! grep -q ghost "$FX/pr-body.md"'
+
 echo
 echo "passed $PASS, failed $FAIL (logs in $ROOT)"
 [ "$FAIL" -eq 0 ]
