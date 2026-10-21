@@ -39,11 +39,26 @@ pub fn assemble(
     pre_state: Option<&PreState>,
 ) -> ReleasePlan {
     let mut bumps_per_package: BumpMap = BTreeMap::new();
+    let mut none_entries = Vec::new();
 
     let is_single_package = packages.len() <= 1;
 
     for cs in changesets {
         let cs_name = cs.filename.clone().unwrap_or_else(|| "unknown".to_string());
+
+        // A none-bump changeset goes under the none-bump heading even when the
+        // package is released for other changesets, so internal notes never mix
+        // into the release's changelog, tag message or release notes. When the
+        // same changeset also bumps a package, its body is already in that
+        // release, so it's not repeated as a none entry.
+        let has_real_bump = cs.packages.values().any(|b| *b > BumpLevel::None);
+        if !has_real_bump && !cs.packages.is_empty() {
+            none_entries.push(NoneEntry {
+                title: extract_title(&cs.body),
+                body: cs.body.clone(),
+                changesets: vec![cs_name.clone()],
+            });
+        }
 
         for (pkg_name, bump) in &cs.packages {
             let resolved_name = if pkg_name == "default" && is_single_package {
@@ -63,7 +78,9 @@ pub fn assemble(
                 entry.0 = *bump;
             }
 
-            entry.1.push((cs_name.clone(), cs.body.clone()));
+            if *bump > BumpLevel::None {
+                entry.1.push((cs_name.clone(), cs.body.clone()));
+            }
         }
     }
 
@@ -72,22 +89,13 @@ pub fn assemble(
     apply_dependency_cascading(&mut bumps_per_package, packages, config);
 
     let mut releases = Vec::new();
-    let mut none_entries = Vec::new();
 
     for (pkg_name, (bump, entries)) in &bumps_per_package {
-        let changesets_names: Vec<String> = entries.iter().map(|(n, _)| n.clone()).collect();
-
         if *bump == BumpLevel::None {
-            for (cs_name, body) in entries {
-                let title = extract_title(body);
-                none_entries.push(NoneEntry {
-                    title,
-                    body: body.clone(),
-                    changesets: vec![cs_name.clone()],
-                });
-            }
             continue;
         }
+
+        let changesets_names: Vec<String> = entries.iter().map(|(n, _)| n.clone()).collect();
 
         let pkg = packages.iter().find(|p| &p.name == pkg_name);
         let previous_version = pkg
@@ -352,6 +360,57 @@ mod tests {
         let plan = assemble(&changesets, &packages, &Config::default(), None);
         assert_eq!(plan.releases.len(), 1);
         assert_eq!(plan.releases[0].version, Version::new(1, 0, 1));
+        assert!(!plan.releases[0].changelog.contains("CI"));
+        assert_eq!(plan.releases[0].changesets, vec!["cs2".to_string()]);
+        assert_eq!(plan.none_entries.len(), 1);
+        assert_eq!(plan.none_entries[0].title, "CI");
+    }
+
+    #[test]
+    fn none_bump_on_default_package_stays_out_of_release() {
+        let packages = vec![make_pkg("mylib", "0.0.0")];
+        let changesets = vec![
+            make_cs(&[("default", BumpLevel::Minor)], "#### Feature", "cs1"),
+            make_cs(
+                &[("default", BumpLevel::None)],
+                "#### CI: fail PRs whose changesets don't parse",
+                "cs2",
+            ),
+        ];
+
+        let plan = assemble(&changesets, &packages, &Config::default(), None);
+        assert_eq!(plan.releases.len(), 1);
+        assert_eq!(plan.releases[0].changelog, "#### Feature");
+        assert_eq!(plan.none_entries.len(), 1);
+        assert_eq!(plan.none_entries[0].changesets, vec!["cs2".to_string()]);
+    }
+
+    #[test]
+    fn none_bump_listed_once_across_packages() {
+        let packages = vec![make_pkg("a", "1.0.0"), make_pkg("b", "1.0.0")];
+        let changesets = vec![make_cs(
+            &[("a", BumpLevel::None), ("b", BumpLevel::None)],
+            "#### CI",
+            "cs1",
+        )];
+
+        let plan = assemble(&changesets, &packages, &Config::default(), None);
+        assert!(plan.releases.is_empty());
+        assert_eq!(plan.none_entries.len(), 1);
+    }
+
+    #[test]
+    fn mixed_changeset_not_repeated_as_none_entry() {
+        let packages = vec![make_pkg("a", "1.0.0"), make_pkg("b", "1.0.0")];
+        let changesets = vec![make_cs(
+            &[("a", BumpLevel::Patch), ("b", BumpLevel::None)],
+            "#### Fix",
+            "cs1",
+        )];
+
+        let plan = assemble(&changesets, &packages, &Config::default(), None);
+        assert_eq!(plan.releases.len(), 1);
+        assert_eq!(plan.releases[0].name, "a");
         assert!(plan.none_entries.is_empty());
     }
 

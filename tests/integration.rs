@@ -300,6 +300,80 @@ fn roundtrip_none_bump() {
     assert_eq!(count_changeset_files(dir.path()), 0);
 }
 
+fn write_changeset(repo: &Path, name: &str, content: &str) {
+    let changeset_dir = repo.join(".changeset");
+    std::fs::create_dir_all(&changeset_dir).unwrap();
+    std::fs::write(changeset_dir.join(format!("{name}.md")), content).unwrap();
+}
+
+fn release_no_commit(repo: &Path) {
+    changesetter::cli::release::run_in(
+        repo,
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: true,
+            output: None,
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn none_bump_next_to_minor_goes_under_internal() {
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "a-feature",
+        "---\ndefault: minor\n---\n\n#### New feature\n\nDoes things.\n",
+    );
+    write_changeset(
+        dir.path(),
+        "b-ci",
+        "---\ndefault: none\n---\n\n#### CI: fail PRs whose changesets don't parse\n",
+    );
+    git_add_commit(dir.path(), "add changesets");
+
+    release_no_commit(dir.path());
+
+    let v = CargoAdapter.read_version(dir.path()).unwrap();
+    assert_eq!(v, Version::new(1, 1, 0));
+
+    let changelog = std::fs::read_to_string(dir.path().join("CHANGELOG.md")).unwrap();
+    let internal = changelog.find("### Internal").expect("internal heading");
+    let ci = changelog.find("#### CI: fail PRs").expect("ci entry");
+    assert!(changelog.find("#### New feature").unwrap() < internal);
+    assert!(internal < ci);
+}
+
+#[test]
+fn none_bump_omit_keeps_it_out_of_changelog() {
+    let dir = setup_cargo_repo();
+    std::fs::write(
+        dir.path().join("changesetter.toml"),
+        "[changelog]\nnone_bump = \"omit\"\n",
+    )
+    .unwrap();
+    write_changeset(
+        dir.path(),
+        "a-feature",
+        "---\ndefault: minor\n---\n\n#### New feature\n",
+    );
+    write_changeset(
+        dir.path(),
+        "b-ci",
+        "---\ndefault: none\n---\n\n#### CI: fail PRs whose changesets don't parse\n",
+    );
+    git_add_commit(dir.path(), "add changesets");
+
+    release_no_commit(dir.path());
+
+    let changelog = std::fs::read_to_string(dir.path().join("CHANGELOG.md")).unwrap();
+    assert!(changelog.contains("#### New feature"));
+    assert!(!changelog.contains("CI: fail PRs"));
+    assert!(!changelog.contains("### Internal"));
+    assert_eq!(count_changeset_files(dir.path()), 0);
+}
+
 // ---------- Release with tagging ----------
 
 #[test]
