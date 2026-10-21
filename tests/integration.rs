@@ -899,6 +899,52 @@ fn a_version_link_reference_in_a_body_keeps_the_notes_whole() {
 }
 
 #[test]
+fn a_none_body_keeps_its_leading_indent_when_absorbed() {
+    for (body, kept) in [
+        (
+            "[1.0.0]: https://x/1.0.0\n\nTail text\n",
+            "### Internal\n\n [1.0.0]: https://x/1.0.0\n\nTail text",
+        ),
+        (
+            "    let x = 1;\n\nTail text\n",
+            "### Internal\n\n    let x = 1;\n\nTail text",
+        ),
+    ] {
+        let dir = setup_cargo_repo();
+        write_changeset(
+            dir.path(),
+            "note",
+            &format!("---\ndefault: none\n---\n\n{body}"),
+        );
+        git_add_commit(dir.path(), "note");
+        release_commit(dir.path());
+        write_changeset(dir.path(), "fix", "---\ndefault: patch\n---\n\n#### Fix\n");
+        git_add_commit(dir.path(), "fix");
+        release_commit(dir.path());
+
+        let notes = notes_agree(dir.path(), "1.0.1");
+        assert_eq!(notes.trim_end(), format!("#### Fix\n\n{kept}"), "{body:?}");
+        let changelog = read(&dir.path().join("CHANGELOG.md"));
+        assert!(!changelog.contains("Unreleased"), "{changelog}");
+    }
+}
+
+#[test]
+fn a_release_body_starting_with_a_link_reference_keeps_its_indent() {
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "fix",
+        "---\ndefault: patch\n---\n\n[1.0.0]: https://x/1.0.0\n\nTail text\n",
+    );
+    git_add_commit(dir.path(), "fix");
+    release_commit(dir.path());
+    // The tag keeps the leading space too.
+    let notes = notes_agree(dir.path(), "1.0.1");
+    assert_eq!(notes, " [1.0.0]: https://x/1.0.0\n\nTail text\n");
+}
+
+#[test]
 fn a_legacy_unclosed_fence_reads_as_text() {
     // Written before bodies got their fences closed.
     let dir = setup_cargo_repo();

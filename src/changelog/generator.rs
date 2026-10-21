@@ -16,6 +16,21 @@ const UNRELEASED_HEADING_BRACKETED: &str = "## [Unreleased]";
 /// characters like U+00A0 that awk keeps.
 const WS: [char; 4] = [' ', '\t', '\r', '\n'];
 
+/// Trims a block of markdown: blank lines before it, removed whole, and
+/// whitespace at its end. The first line keeps its indent, which can mean
+/// something: indented code, or the space that keeps a version link
+/// reference from ending the entry's section.
+fn trim_block(text: &str) -> &str {
+    let mut start = 0;
+    for line in text.split_inclusive('\n') {
+        if !line.trim_matches(WS).is_empty() {
+            break;
+        }
+        start += line.len();
+    }
+    text[start..].trim_end_matches(WS)
+}
+
 /// The package name a changeset uses for the whole repo. A single-package
 /// repo resolves it to the real package; in a monorepo it stays as is.
 const REPO_WIDE_PACKAGE: &str = "default";
@@ -130,7 +145,7 @@ fn compose_section(
         Vec::new()
     } else {
         none.iter()
-            .map(|n| n.body.trim_matches(WS))
+            .map(|n| trim_block(&n.body))
             .filter(|body| !body.is_empty())
             .collect()
     };
@@ -171,9 +186,9 @@ fn split_unreleased<'a>(body: &'a str, heading: &str) -> (&'a str, Option<&'a st
             None if trimmed == marker => internal_start = Some((offset, offset + line.len())),
             Some((head, start)) if trimmed.starts_with("### ") || trimmed.starts_with("## ") => {
                 return (
-                    body[..head].trim_matches(WS),
-                    Some(body[start..offset].trim_matches(WS)),
-                    body[offset..].trim_matches(WS),
+                    trim_block(&body[..head]),
+                    Some(trim_block(&body[start..offset])),
+                    trim_block(&body[offset..]),
                 );
             }
             _ => {}
@@ -182,11 +197,11 @@ fn split_unreleased<'a>(body: &'a str, heading: &str) -> (&'a str, Option<&'a st
     }
     match internal_start {
         Some((head, start)) => (
-            body[..head].trim_matches(WS),
-            Some(body[start..].trim_matches(WS)),
+            trim_block(&body[..head]),
+            Some(trim_block(&body[start..])),
             "",
         ),
-        None => (body.trim_matches(WS), None, ""),
+        None => (trim_block(body), None, ""),
     }
 }
 
@@ -958,6 +973,24 @@ mod tests {
         assert_eq!(
             three,
             "## 1.1.0 - d\n\n#### Feature\n\n### Internal\n\n#### CI one\n\n#### CI two\n\n## 1.0.0 - d\n\n- A\n\n## 0.9.0 - d\n\n- B\n"
+        );
+    }
+
+    #[test]
+    fn blocks_keep_the_indent_of_their_first_line() {
+        assert_eq!(
+            trim_block("\n  \n [1.0.0]: x\n\nTail \n\n"),
+            " [1.0.0]: x\n\nTail"
+        );
+        assert_eq!(trim_block("    let x = 1;\n"), "    let x = 1;");
+        assert_eq!(trim_block(" \n\t\n"), "");
+        let (before, internal, after) = split_unreleased(
+            "\n### Internal\n\n [1.0.0]: x\n\n### Added\n\n    code\n",
+            "Internal",
+        );
+        assert_eq!(
+            (before, internal, after),
+            ("", Some(" [1.0.0]: x"), "### Added\n\n    code")
         );
     }
 

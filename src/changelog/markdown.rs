@@ -152,7 +152,9 @@ pub fn demote_headings(body: &str) -> String {
             // (CommonMark allows up to three) and no parser matches it.
             out.push(format!(" {line}"));
             first = false;
-            para = None;
+            // A link reference definition can't interrupt a paragraph, so
+            // right after paragraph text it's part of that paragraph, and a
+            // Setext underline below still makes the whole thing a heading.
         } else if let Some((indent, level, after)) = atx_heading(text) {
             let hashes = "#".repeat(demoted_level(level, first));
             out.push(format!("{indent}{hashes}{after}{eol}"));
@@ -275,6 +277,18 @@ mod tests {
         assert_eq!(
             demote_headings("```\n[1.0.0]: x\n```\n"),
             "```\n[1.0.0]: x\n```\n"
+        );
+    }
+
+    #[test]
+    fn a_link_reference_inside_a_paragraph_stays_in_it() {
+        assert_eq!(
+            demote_headings("Fix\n[1.0.0]: x\n---\n"),
+            "#### Fix [1.0.0]: x\n"
+        );
+        assert_eq!(
+            demote_headings("#### T\n\nFix\n[1.0.0]: x\n---\n"),
+            "#### T\n\n##### Fix [1.0.0]: x\n"
         );
     }
 
