@@ -111,10 +111,20 @@ pub fn write_per_package_changelogs(
 ) -> anyhow::Result<()> {
     for release in &plan.releases {
         let changelog_path = release_changelog_path(release, config);
-        let entry = format!(
+        let mut entry = format!(
             "## {} - {}\n\n{}\n",
             release.version, date, release.changelog
         );
+        let own: Vec<NoneEntry> = plan
+            .none_entries
+            .iter()
+            .filter(|n| n.packages.contains(&release.name))
+            .cloned()
+            .collect();
+        if !own.is_empty() {
+            entry.push('\n');
+        }
+        append_none_entries(&mut entry, &own, config);
         update_changelog_file(&changelog_path, &entry)?;
     }
     Ok(())
@@ -192,6 +202,7 @@ mod tests {
                 title: "Updated CI".to_string(),
                 body: "#### Updated CI\n\nSwitched runners.".to_string(),
                 changesets: vec!["cs2".to_string()],
+                packages: vec!["mylib".to_string()],
             }],
         );
         let config = ChangelogConfig::default();
@@ -209,6 +220,7 @@ mod tests {
                 title: "CI".to_string(),
                 body: "#### CI".to_string(),
                 changesets: vec![],
+                packages: vec!["mylib".to_string()],
             }],
         );
         let config = ChangelogConfig {
@@ -285,6 +297,57 @@ mod tests {
         assert!(content.contains("## 0.1.0"));
     }
 
+    fn per_package_plan(dir: &Path) -> ReleasePlan {
+        let mut release = make_release("a", "1.0.0", "1.1.0", BumpLevel::Minor, "#### Feature");
+        release.path = dir.to_path_buf();
+        make_plan(
+            vec![release],
+            vec![
+                NoneEntry {
+                    title: "CI for a".to_string(),
+                    body: "#### CI for a".to_string(),
+                    changesets: vec!["cs2".to_string()],
+                    packages: vec!["a".to_string()],
+                },
+                NoneEntry {
+                    title: "CI for b".to_string(),
+                    body: "#### CI for b".to_string(),
+                    changesets: vec!["cs3".to_string()],
+                    packages: vec!["b".to_string()],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn per_package_writes_own_none_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = per_package_plan(dir.path());
+        write_per_package_changelogs(&plan, &ChangelogConfig::default(), "2026-07-25").unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("CHANGELOG.md")).unwrap();
+        let internal = content.find("### Internal").expect("internal heading");
+        assert!(content.find("#### Feature").unwrap() < internal);
+        assert!(internal < content.find("#### CI for a").unwrap());
+        assert!(!content.contains("CI for b"));
+    }
+
+    #[test]
+    fn per_package_omits_none_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = per_package_plan(dir.path());
+        let config = ChangelogConfig {
+            none_bump: "omit".to_string(),
+            ..Default::default()
+        };
+        write_per_package_changelogs(&plan, &config, "2026-07-25").unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("CHANGELOG.md")).unwrap();
+        assert!(content.contains("#### Feature"));
+        assert!(!content.contains("Internal"));
+        assert!(!content.contains("CI for"));
+    }
+
     #[test]
     fn custom_none_heading() {
         let plan = make_plan(
@@ -293,6 +356,7 @@ mod tests {
                 title: "CI".to_string(),
                 body: "#### CI".to_string(),
                 changesets: vec![],
+                packages: vec!["mylib".to_string()],
             }],
         );
         let config = ChangelogConfig {

@@ -28,6 +28,9 @@ pub struct NoneEntry {
     pub title: String,
     pub body: String,
     pub changesets: Vec<String>,
+    /// Packages the changeset names, with `default` resolved, so per-package
+    /// changelogs can pick out their own entries.
+    pub packages: Vec<String>,
 }
 
 type BumpMap = BTreeMap<String, (BumpLevel, Vec<(String, String)>)>;
@@ -51,34 +54,42 @@ pub fn assemble(
         // into the release's changelog, tag message or release notes. When the
         // same changeset also bumps a package, its body is already in that
         // release, so it's not repeated as a none entry.
-        let has_real_bump = cs.packages.values().any(|b| *b > BumpLevel::None);
-        if !has_real_bump && !cs.packages.is_empty() {
+        let resolved: Vec<(String, BumpLevel)> = cs
+            .packages
+            .iter()
+            .map(|(pkg_name, bump)| {
+                let name = if pkg_name == "default" && is_single_package {
+                    packages
+                        .first()
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| "default".to_string())
+                } else {
+                    pkg_name.clone()
+                };
+                (name, *bump)
+            })
+            .collect();
+
+        let has_real_bump = resolved.iter().any(|(_, b)| *b > BumpLevel::None);
+        if !has_real_bump && !resolved.is_empty() {
             none_entries.push(NoneEntry {
                 title: extract_title(&cs.body),
                 body: cs.body.clone(),
                 changesets: vec![cs_name.clone()],
+                packages: resolved.iter().map(|(n, _)| n.clone()).collect(),
             });
         }
 
-        for (pkg_name, bump) in &cs.packages {
-            let resolved_name = if pkg_name == "default" && is_single_package {
-                packages
-                    .first()
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| "default".to_string())
-            } else {
-                pkg_name.clone()
-            };
-
+        for (resolved_name, bump) in resolved {
             let entry = bumps_per_package
                 .entry(resolved_name)
                 .or_insert((BumpLevel::None, Vec::new()));
 
-            if *bump > entry.0 {
-                entry.0 = *bump;
+            if bump > entry.0 {
+                entry.0 = bump;
             }
 
-            if *bump > BumpLevel::None {
+            if bump > BumpLevel::None {
                 entry.1.push((cs_name.clone(), cs.body.clone()));
             }
         }
