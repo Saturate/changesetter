@@ -6,6 +6,25 @@
 
 
 
+
+## 0.4.1 - 2026-10-21
+
+### changesetter
+
+#### None-bump changesets stay out of the release notes
+
+A `none` changeset for a package that also gets a real bump was folded into that release's changelog entry, tag message and GitHub release notes. It now goes under the none-bump heading ("Internal" by default), or nowhere with `none_bump = "omit"`, as the docs describe. The version PR's changelog preview also shows the changelog on a first release, when CHANGELOG.md is a new file.
+
+### Internal
+
+The release action's version-PR mode now tags every package a version PR
+bumped, in the configured tag format, finishes a release a cancelled run left
+halfway, and finds pending changesets through the CLI. Direct mode now pushes
+its release commit and fails when `changesetter release` fails.
+
+Revert two commits that were pushed to main by accident.
+
+
 ## 0.4.0 - 2026-10-16
 
 ### changesetter
