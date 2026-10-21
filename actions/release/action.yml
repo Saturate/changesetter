@@ -295,13 +295,16 @@ runs:
         # would open a version PR that releases nothing when merged.
         changesetter version --no-commit
 
-        # New changelog entries, from every changelog file the packages write
-        # to (per-package changelogs included).
-        mapfile -t CHANGELOGS < <(changesetter status --output json | jq -r '[.packages[].changelog] | unique | .[]')
-        CHANGELOG_DIFF=$(git diff -- "${CHANGELOGS[@]}" | grep "^+" | grep -v "^+++" | sed 's/^+//' || true)
-
         # Stage and commit
         git add -A
+
+        # New changelog entries, from every changelog file the packages write
+        # to (per-package changelogs included). Diffed from the index: on a
+        # first release the changelog is a new, untracked file, which a plain
+        # `git diff` leaves out.
+        mapfile -t CHANGELOGS < <(changesetter status --output json | jq -r '[.packages[].changelog] | unique | .[]')
+        CHANGELOG_DIFF=$(git diff --cached -- "${CHANGELOGS[@]}" | grep "^+" | grep -v "^+++" | sed 's/^+//' || true)
+
         git commit -m "chore: version packages" --allow-empty
 
         # Force push the version branch
