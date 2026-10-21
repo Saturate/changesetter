@@ -68,6 +68,11 @@ fn append_none_entries(output: &mut String, entries: &[NoneEntry], config: &Chan
         return;
     }
 
+    // Release bodies end without a trailing newline, so the heading needs a
+    // blank line of its own to separate it from the last entry.
+    if !output.is_empty() && !output.ends_with("\n\n") {
+        output.push('\n');
+    }
     output.push_str(&format!("### {}\n\n", config.none_bump_heading));
     for entry in entries {
         if !entry.body.is_empty() {
@@ -111,10 +116,17 @@ pub fn write_per_package_changelogs(
 ) -> anyhow::Result<()> {
     for release in &plan.releases {
         let changelog_path = release_changelog_path(release, config);
-        let entry = format!(
+        let mut entry = format!(
             "## {} - {}\n\n{}\n",
             release.version, date, release.changelog
         );
+        let own: Vec<NoneEntry> = plan
+            .none_entries
+            .iter()
+            .filter(|n| n.packages.contains(&release.name))
+            .cloned()
+            .collect();
+        append_none_entries(&mut entry, &own, config);
         update_changelog_file(&changelog_path, &entry)?;
     }
     Ok(())
@@ -192,12 +204,13 @@ mod tests {
                 title: "Updated CI".to_string(),
                 body: "#### Updated CI\n\nSwitched runners.".to_string(),
                 changesets: vec!["cs2".to_string()],
+                packages: vec!["mylib".to_string()],
             }],
         );
         let config = ChangelogConfig::default();
         let entry = generate_changelog_entry(&plan, &config, "2026-07-25", false);
 
-        assert!(entry.contains("### Internal"));
+        assert!(entry.contains("#### Feature\n\n### Internal\n\n"));
         assert!(entry.contains("Updated CI"));
     }
 
@@ -209,6 +222,7 @@ mod tests {
                 title: "CI".to_string(),
                 body: "#### CI".to_string(),
                 changesets: vec![],
+                packages: vec!["mylib".to_string()],
             }],
         );
         let config = ChangelogConfig {
@@ -238,7 +252,12 @@ mod tests {
                     "#### UI fix",
                 ),
             ],
-            vec![],
+            vec![NoneEntry {
+                title: "CI".to_string(),
+                body: "#### CI".to_string(),
+                changesets: vec!["cs3".to_string()],
+                packages: vec!["mylib".to_string()],
+            }],
         );
         let config = ChangelogConfig {
             per_package: false,
@@ -250,6 +269,7 @@ mod tests {
         assert!(entry.contains("### frontend"));
         assert!(entry.contains("API change"));
         assert!(entry.contains("UI fix"));
+        assert!(entry.contains("#### UI fix\n\n### Internal\n\n"));
     }
 
     #[test]
@@ -285,6 +305,58 @@ mod tests {
         assert!(content.contains("## 0.1.0"));
     }
 
+    fn per_package_plan(dir: &Path) -> ReleasePlan {
+        let mut release = make_release("a", "1.0.0", "1.1.0", BumpLevel::Minor, "#### Feature");
+        release.path = dir.to_path_buf();
+        make_plan(
+            vec![release],
+            vec![
+                NoneEntry {
+                    title: "CI for a".to_string(),
+                    body: "#### CI for a".to_string(),
+                    changesets: vec!["cs2".to_string()],
+                    packages: vec!["a".to_string()],
+                },
+                NoneEntry {
+                    title: "CI for b".to_string(),
+                    body: "#### CI for b".to_string(),
+                    changesets: vec!["cs3".to_string()],
+                    packages: vec!["b".to_string()],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn per_package_writes_own_none_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = per_package_plan(dir.path());
+        write_per_package_changelogs(&plan, &ChangelogConfig::default(), "2026-07-25").unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("CHANGELOG.md")).unwrap();
+        let internal = content.find("### Internal").expect("internal heading");
+        assert!(content.find("#### Feature").unwrap() < internal);
+        assert!(internal < content.find("#### CI for a").unwrap());
+        assert!(!content.contains("CI for b"));
+        assert!(content.contains("#### Feature\n\n### Internal\n\n"));
+    }
+
+    #[test]
+    fn per_package_omits_none_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = per_package_plan(dir.path());
+        let config = ChangelogConfig {
+            none_bump: "omit".to_string(),
+            ..Default::default()
+        };
+        write_per_package_changelogs(&plan, &config, "2026-07-25").unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("CHANGELOG.md")).unwrap();
+        assert!(content.contains("#### Feature"));
+        assert!(!content.contains("Internal"));
+        assert!(!content.contains("CI for"));
+    }
+
     #[test]
     fn custom_none_heading() {
         let plan = make_plan(
@@ -293,6 +365,7 @@ mod tests {
                 title: "CI".to_string(),
                 body: "#### CI".to_string(),
                 changesets: vec![],
+                packages: vec!["mylib".to_string()],
             }],
         );
         let config = ChangelogConfig {

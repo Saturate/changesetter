@@ -118,6 +118,7 @@ fn release_with_none_entries() {
             title: "Updated CI configuration".to_string(),
             body: "#### Updated CI configuration\n\nSwitched from ubuntu-20.04 to ubuntu-24.04 runners.".to_string(),
             changesets: vec!["cs2".to_string()],
+            packages: vec!["mylib".to_string()],
         }],
     );
     let entry = generate_changelog_entry(&plan, &ChangelogConfig::default(), "2026-07-25", false);
@@ -133,11 +134,13 @@ fn none_only() {
                 title: "Updated CI configuration".to_string(),
                 body: "#### Updated CI configuration\n\nSwitched runners.".to_string(),
                 changesets: vec!["cs1".to_string()],
+                packages: vec!["mylib".to_string()],
             },
             NoneEntry {
                 title: "Added CONTRIBUTING.md".to_string(),
                 body: "#### Added CONTRIBUTING.md".to_string(),
                 changesets: vec!["cs2".to_string()],
+                packages: vec!["mylib".to_string()],
             },
         ],
     );
@@ -182,6 +185,7 @@ fn custom_none_heading() {
             title: "Docs".to_string(),
             body: "#### Updated README".to_string(),
             changesets: vec!["cs1".to_string()],
+            packages: vec!["mylib".to_string()],
         }],
     );
     let config = ChangelogConfig {
@@ -206,6 +210,7 @@ fn none_omit() {
             title: "CI".to_string(),
             body: "#### CI update".to_string(),
             changesets: vec!["cs2".to_string()],
+            packages: vec!["mylib".to_string()],
         }],
     );
     let config = ChangelogConfig {

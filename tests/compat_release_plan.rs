@@ -58,7 +58,8 @@ fn compat_none_plus_patch_equals_patch() {
     let plan = plan::assemble(&css, &pkgs, &Config::default(), None);
     assert_eq!(plan.releases.len(), 1);
     assert_eq!(plan.releases[0].version, Version::new(1, 0, 1));
-    assert!(plan.none_entries.is_empty());
+    assert_eq!(plan.releases[0].changelog, "#### Fix");
+    assert_eq!(plan.none_entries.len(), 1);
 }
 
 #[test]

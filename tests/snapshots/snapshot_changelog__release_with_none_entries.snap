@@ -5,6 +5,7 @@ expression: entry
 ## 1.0.1 - 2026-07-25
 
 #### Fixed timeout handling
+
 ### Internal
 
 #### Updated CI configuration
