@@ -61,8 +61,7 @@ pub fn assemble(
                 let name = if pkg_name == "default" && is_single_package {
                     packages
                         .first()
-                        .map(|p| p.name.clone())
-                        .unwrap_or_else(|| "default".to_string())
+                        .map_or_else(|| "default".to_string(), |p| p.name.clone())
                 } else {
                     pkg_name.clone()
                 };

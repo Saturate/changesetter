@@ -68,6 +68,11 @@ fn append_none_entries(output: &mut String, entries: &[NoneEntry], config: &Chan
         return;
     }
 
+    // Release bodies end without a trailing newline, so the heading needs a
+    // blank line of its own to separate it from the last entry.
+    if !output.is_empty() && !output.ends_with("\n\n") {
+        output.push('\n');
+    }
     output.push_str(&format!("### {}\n\n", config.none_bump_heading));
     for entry in entries {
         if !entry.body.is_empty() {
@@ -121,9 +126,6 @@ pub fn write_per_package_changelogs(
             .filter(|n| n.packages.contains(&release.name))
             .cloned()
             .collect();
-        if !own.is_empty() {
-            entry.push('\n');
-        }
         append_none_entries(&mut entry, &own, config);
         update_changelog_file(&changelog_path, &entry)?;
     }
@@ -208,7 +210,7 @@ mod tests {
         let config = ChangelogConfig::default();
         let entry = generate_changelog_entry(&plan, &config, "2026-07-25", false);
 
-        assert!(entry.contains("### Internal"));
+        assert!(entry.contains("#### Feature\n\n### Internal\n\n"));
         assert!(entry.contains("Updated CI"));
     }
 
@@ -250,7 +252,12 @@ mod tests {
                     "#### UI fix",
                 ),
             ],
-            vec![],
+            vec![NoneEntry {
+                title: "CI".to_string(),
+                body: "#### CI".to_string(),
+                changesets: vec!["cs3".to_string()],
+                packages: vec!["mylib".to_string()],
+            }],
         );
         let config = ChangelogConfig {
             per_package: false,
@@ -262,6 +269,7 @@ mod tests {
         assert!(entry.contains("### frontend"));
         assert!(entry.contains("API change"));
         assert!(entry.contains("UI fix"));
+        assert!(entry.contains("#### UI fix\n\n### Internal\n\n"));
     }
 
     #[test]
@@ -330,6 +338,7 @@ mod tests {
         assert!(content.find("#### Feature").unwrap() < internal);
         assert!(internal < content.find("#### CI for a").unwrap());
         assert!(!content.contains("CI for b"));
+        assert!(content.contains("#### Feature\n\n### Internal\n\n"));
     }
 
     #[test]
