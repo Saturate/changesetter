@@ -142,6 +142,17 @@ pub fn demote_headings(body: &str) -> String {
         } else if text.trim_matches([' ', '\t']).is_empty() {
             out.push(line.to_string());
             para = None;
+        } else if para.is_none() && text.len() - text.trim_start_matches(' ').len() >= 4 {
+            // Indented code: not a paragraph, so no Setext heading over it.
+            out.push(line.to_string());
+            first = false;
+        } else if crate::changelog::generator::is_link_reference(text) {
+            // A version link reference would end the entry's section for the
+            // parsers. One space of indent keeps it a link reference definition
+            // (CommonMark allows up to three) and no parser matches it.
+            out.push(format!(" {line}"));
+            first = false;
+            para = None;
         } else if let Some((indent, level, after)) = atx_heading(text) {
             let hashes = "#".repeat(demoted_level(level, first));
             out.push(format!("{indent}{hashes}{after}{eol}"));
@@ -250,6 +261,33 @@ mod tests {
         ] {
             assert_eq!(demote_headings(body), body, "{body:?}");
         }
+    }
+
+    #[test]
+    fn version_link_references_get_one_space_of_indent() {
+        assert_eq!(
+            demote_headings(
+                "Fix, see [1.0.0].\n\n[1.0.0]: https://x/1.0.0\n[Unreleased]: https://x\n[docs]: https://x/docs\n\nTail\n"
+            ),
+            "Fix, see [1.0.0].\n\n [1.0.0]: https://x/1.0.0\n [Unreleased]: https://x\n[docs]: https://x/docs\n\nTail\n"
+        );
+        // In code it's left alone (and warned about instead).
+        assert_eq!(
+            demote_headings("```\n[1.0.0]: x\n```\n"),
+            "```\n[1.0.0]: x\n```\n"
+        );
+    }
+
+    #[test]
+    fn indented_code_is_not_a_setext_heading() {
+        for body in ["Example:\n\n    let x = 1;\n---\n", "    let x = 1;\n===\n"] {
+            assert_eq!(demote_headings(body), body, "{body:?}");
+        }
+        // A 4-space line inside a paragraph is still paragraph text.
+        assert_eq!(
+            demote_headings("Title\n    more\n===\n"),
+            "#### Title more\n"
+        );
     }
 
     #[test]

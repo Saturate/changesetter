@@ -865,6 +865,40 @@ fn a_legacy_unclosed_fence_is_not_closed_by_a_later_one() {
 }
 
 #[test]
+fn a_version_link_reference_in_a_body_keeps_the_notes_whole() {
+    let body = "Fix, see [1.0.0].\n\n[1.0.0]: https://x/1.0.0\n\nTail text\n";
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "fix",
+        &format!("---\ndefault: patch\n---\n\n{body}"),
+    );
+    git_add_commit(dir.path(), "fix");
+    release_commit(dir.path());
+    let notes = notes_agree(dir.path(), "1.0.1");
+    assert_eq!(
+        notes,
+        "Fix, see [1.0.0].\n\n [1.0.0]: https://x/1.0.0\n\nTail text\n"
+    );
+
+    // As a none entry, absorbed by the next release.
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "note",
+        &format!("---\ndefault: none\n---\n\n{body}"),
+    );
+    git_add_commit(dir.path(), "note");
+    release_commit(dir.path());
+    write_changeset(dir.path(), "fix", "---\ndefault: patch\n---\n\n#### Fix\n");
+    git_add_commit(dir.path(), "fix");
+    release_commit(dir.path());
+    let notes = notes_agree(dir.path(), "1.0.1");
+    assert!(notes.contains("\n [1.0.0]: https://x/1.0.0\n"), "{notes}");
+    assert!(notes.contains("Tail text"), "{notes}");
+}
+
+#[test]
 fn a_legacy_unclosed_fence_reads_as_text() {
     // Written before bodies got their fences closed.
     let dir = setup_cargo_repo();
@@ -1814,4 +1848,35 @@ fn release_notes_read_lines_without_fence_state() {
         "- note 0\n\n```sh\nunclosed\n\n"
     );
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn rust_and_release_notes_agree_on_section_ends() {
+    for (line, ends) in [
+        ("## Unreleased", true),
+        ("## [Unreleased]", true),
+        ("## [Unreleased", false),
+        ("## Unreleased]", false),
+        ("## [1.0.0] - d", true),
+        ("## [v1.0.0]", true),
+        ("## v1.0.0", true),
+        ("[1.0.0]: https://x", true),
+        ("[v1.0.0]: https://x", true),
+        ("[Unreleased]: https://x", true),
+        ("[1.0.0-rc.1]: https://x", true),
+        ("[1.0.0] x]: https://x", false),
+        ("[[1.0.0]: https://x", false),
+        ("[docs]: https://x", false),
+        (" [1.0.0]: https://x", false),
+        ("[1.0.0]:https://x", false),
+    ] {
+        let changelog = format!("## 0.2.0 - d\n\n- a\n\n{line}\n\n- b\n");
+        let awk_ends = release_notes("0.2.0", &changelog) == "- a\n\n";
+        assert_eq!(awk_ends, ends, "release-notes.sh on {line:?}");
+        assert_eq!(
+            changesetter::changelog::generator::is_section_end(line),
+            ends,
+            "Rust on {line:?}"
+        );
+    }
 }

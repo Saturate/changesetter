@@ -28,7 +28,7 @@ changelog="${2:-CHANGELOG.md}"
 # warn about those.
 awk -v version="$version" '
   { sub(/[ \t\r]+$/, "") }
-  /^## \[?Unreleased\]?$/ || /^## (\[[vV]?|[vV])[0-9]+\.[0-9]+\.[0-9]+/ || /^\[(Unreleased|[vV]?[0-9]+\.[0-9]+\.[0-9]+[^]]*)\]: / {
+  /^## (Unreleased|\[Unreleased\])$/ || /^## (\[[vV]?|[vV])[0-9]+\.[0-9]+\.[0-9]+/ || /^\[(Unreleased|[vV]?[0-9]+\.[0-9]+\.[0-9]+[^]]*)\]: / {
     if (found) exit
     next
   }

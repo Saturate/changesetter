@@ -233,14 +233,27 @@ fn is_unreleased_heading(line: &str) -> bool {
 /// Keep a Changelog ends the file with "[1.0.0]: https://..." link lines.
 /// Only version and Unreleased labels count, since changeset bodies may use
 /// reference links of their own.
-fn is_link_reference(line: &str) -> bool {
-    let Some((label, _)) = line
-        .strip_prefix('[')
-        .and_then(|rest| rest.split_once("]: "))
-    else {
+/// The label runs to the first `]`, and is `Unreleased` or a version with an
+/// optional `v`, like release-notes.sh's `\[(Unreleased|[vV]?<semver>[^]]*)\]: `.
+pub(crate) fn is_link_reference(line: &str) -> bool {
+    let Some((label, after)) = line.strip_prefix('[').and_then(|rest| rest.split_once(']')) else {
         return false;
     };
-    label == "Unreleased" || is_any_version_heading(&format!("## {label}"))
+    if !after.starts_with(": ") {
+        return false;
+    }
+    let version = label
+        .strip_prefix('v')
+        .or_else(|| label.strip_prefix('V'))
+        .unwrap_or(label);
+    label == "Unreleased" || is_version_heading(&format!("## {version}"))
+}
+
+/// Whether a line ends a version's notes, the same set release-notes.sh stops
+/// at (besides the plain "## <semver>" heading it also starts at): any version
+/// heading, an Unreleased heading, or a version or Unreleased link reference.
+pub fn is_section_end(line: &str) -> bool {
+    is_any_version_heading(line) || is_unreleased_heading(line) || is_link_reference(line)
 }
 
 /// Lines in a changeset body's fenced code that the changelog parsers would
