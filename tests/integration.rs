@@ -570,6 +570,101 @@ fn omit_writes_no_unreleased_section() {
     assert_clean(dir.path());
 }
 
+fn git_out(repo: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn none_only_release_commits_notes_without_tags() {
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "ci",
+        "---\ndefault: none\n---\n\n#### CI tweak\n",
+    );
+    git_add_commit(dir.path(), "add changeset");
+
+    release_commit(dir.path());
+
+    assert_eq!(
+        git_out(dir.path(), &["log", "-1", "--format=%s"]).trim(),
+        "chore: add unreleased changelog notes"
+    );
+    assert_eq!(git_out(dir.path(), &["tag", "-l"]), "");
+}
+
+#[test]
+fn absorbed_notes_reach_the_tag_message_and_json_once() {
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "ci",
+        "---\ndefault: none\n---\n\n#### CI tweak\n",
+    );
+    git_add_commit(dir.path(), "add changeset");
+    release_commit(dir.path());
+
+    write_changeset(dir.path(), "fix", "---\ndefault: patch\n---\n\n#### Fix\n");
+    git_add_commit(dir.path(), "add changeset");
+    // The binary, as the action runs it, since the JSON goes to stdout.
+    let out = Command::new(env!("CARGO_BIN_EXE_changesetter"))
+        .args(["release", "--output", "json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let expected = "#### Fix\n\n### Internal\n\n#### CI tweak";
+    assert_eq!(json["releases"][0]["changelog"], expected);
+
+    let message = git_out(dir.path(), &["tag", "-l", "--format=%(contents)", "v1.0.1"]);
+    assert_eq!(message.trim_end(), expected);
+    assert_eq!(message.matches("CI tweak").count(), 1);
+    let notes = release_notes("1.0.1", &read(&dir.path().join("CHANGELOG.md")));
+    assert_eq!(notes.trim_end(), expected);
+}
+
+#[test]
+fn private_workspace_root_gets_no_changelog() {
+    let dir = setup_repo();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"private":true,"workspaces":["packages/*"]}"#,
+    )
+    .unwrap();
+    for name in ["a", "b"] {
+        let pkg = dir.path().join("packages").join(name);
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            format!(r#"{{"name":"{name}","version":"1.0.0"}}"#),
+        )
+        .unwrap();
+    }
+    git_add_commit(dir.path(), "workspace");
+    use_per_package(dir.path(), "");
+    write_changeset(dir.path(), "docs", "---\ndefault: none\n---\n\n#### Docs\n");
+    git_add_commit(dir.path(), "add changeset");
+
+    release_commit(dir.path());
+
+    assert!(!dir.path().join("CHANGELOG.md").exists());
+    for name in ["a", "b"] {
+        let changelog = read(&dir.path().join("packages").join(name).join("CHANGELOG.md"));
+        assert!(changelog.contains("#### Docs"), "{changelog}");
+    }
+    assert_clean(dir.path());
+}
+
 // ---------- Release with tagging ----------
 
 #[test]
@@ -1437,4 +1532,25 @@ fn release_notes_never_treat_unreleased_as_a_version() {
     // A stray Unreleased section below a version still ends that version's notes.
     let changelog = "## 1.1.0 - d\n\n- New\n\n## [Unreleased]\n\n- Later\n";
     assert_eq!(release_notes("1.1.0", changelog), "- New\n\n");
+}
+
+#[test]
+fn release_notes_end_at_other_tools_headings_and_links() {
+    for next in [
+        "## [1.0.0] - 2020-01-01",
+        "## v1.0.0",
+        "## [Unreleased]",
+        "## Unreleased",
+        "[1.1.0]: https://example.com/compare/v1.0.0...v1.1.0",
+        "[Unreleased]: https://example.com/compare/v1.1.0...HEAD",
+    ] {
+        let changelog = format!("## 1.1.0 - d\n\n- New\n\n{next}\n\n- Old\n");
+        assert_eq!(release_notes("1.1.0", &changelog), "- New\n\n", "{next}");
+    }
+    // Reference links in a changeset body are part of the notes.
+    let changelog = "## 1.1.0 - d\n\nSee [docs].\n\n[docs]: https://example.com\n";
+    assert_eq!(
+        release_notes("1.1.0", changelog),
+        "See [docs].\n\n[docs]: https://example.com\n"
+    );
 }

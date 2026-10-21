@@ -53,7 +53,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     } else {
         pre_state.as_ref()
     };
-    let release_plan = plan::assemble(&changesets, &packages, &config, pre_ref);
+    let mut release_plan = plan::assemble(&changesets, &packages, &config, pre_ref);
 
     if release_plan.releases.is_empty() && release_plan.none_entries.is_empty() {
         eprintln!("No pending changesets, nothing to release.");
@@ -108,7 +108,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         }
     }
 
-    let changelogs = if config.changelog.per_package && is_monorepo {
+    let writes = if config.changelog.per_package && is_monorepo {
         generator::write_per_package_changelogs(&release_plan, &packages, &config.changelog, &date)?
     } else {
         generator::write_root_changelog(
@@ -119,6 +119,9 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
             is_monorepo,
         )?
     };
+    // Tag messages and the JSON output read `changelog`, so it has to carry
+    // what landed in the version section, absorbed Unreleased notes included.
+    writes.apply_to(&mut release_plan);
 
     for cs in &changesets {
         if let Some(name) = &cs.filename {
@@ -146,7 +149,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     }
 
     if !opts.no_commit {
-        commit_version_changes(repo_root, &release_plan, &config, &changelogs)?;
+        commit_version_changes(repo_root, &release_plan, &config, &writes.paths)?;
     }
 
     for release in &release_plan.releases {
@@ -277,10 +280,18 @@ fn commit_version_changes(
         .collect();
     let versions_str = versions.join(", ");
 
-    let message = config
-        .release
-        .commit_message
-        .replace("{versions}", &versions_str);
+    // A run with only none-bump changesets releases nothing, and the
+    // "{versions}" template would leave "chore: release " with nothing after it.
+    let message = if plan.releases.is_empty() && changelogs.is_empty() {
+        "chore: remove none-bump changesets".to_string()
+    } else if plan.releases.is_empty() {
+        "chore: add unreleased changelog notes".to_string()
+    } else {
+        config
+            .release
+            .commit_message
+            .replace("{versions}", &versions_str)
+    };
 
     crate::git::git_commit(repo_root, &message)?;
     Ok(())

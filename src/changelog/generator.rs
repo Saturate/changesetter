@@ -2,16 +2,47 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::ChangelogConfig;
-use crate::package::types::Package;
+use crate::package::types::{Package, PackageType};
 use crate::release::plan::{NoneEntry, ReleasePlan};
 
 /// Holds none-bump entries that have no version section to live in yet. The
 /// next release written to the same changelog folds it into its own section.
 pub const UNRELEASED_HEADING: &str = "## Unreleased";
+const UNRELEASED_HEADING_BRACKETED: &str = "## [Unreleased]";
 
 /// The package name a changeset uses for the whole repo. A single-package
 /// repo resolves it to the real package; in a monorepo it stays as is.
 const REPO_WIDE_PACKAGE: &str = "default";
+
+/// What a release run wrote to the changelogs.
+#[derive(Debug, Default)]
+pub struct ChangelogWrites {
+    /// Changelogs that changed, to stage in the release commit.
+    pub paths: Vec<PathBuf>,
+    /// Per released package, what its version section holds below its own
+    /// entries (absorbed Unreleased notes and the none-bump section), so tag
+    /// messages and release notes match the changelog.
+    pub extra_notes: BTreeMap<String, String>,
+}
+
+impl ChangelogWrites {
+    /// Appends each release's extra notes to its `changelog`.
+    pub fn apply_to(&self, plan: &mut ReleasePlan) {
+        for release in &mut plan.releases {
+            let Some(extra) = self.extra_notes.get(&release.name) else {
+                continue;
+            };
+            if extra.is_empty() {
+                continue;
+            }
+            release.changelog = if release.changelog.trim().is_empty() {
+                extra.clone()
+            } else {
+                format!("{}\n\n{extra}", release.changelog.trim_end())
+            };
+        }
+    }
+}
 
 /// The text a release puts at the top of a new changelog: the version section
 /// with its none-bump entries, or only an Unreleased section when nothing is
@@ -24,7 +55,15 @@ pub fn generate_changelog_entry(
 ) -> String {
     let none: Vec<&NoneEntry> = plan.none_entries.iter().collect();
     let release = release_section(plan, date, is_monorepo, config);
-    compose_section(release.as_deref(), None, &none, config).unwrap_or_default()
+    compose_section(
+        release.as_deref(),
+        UNRELEASED_HEADING,
+        &Folded::default(),
+        &none,
+        config,
+    )
+    .map(|(section, _)| section)
+    .unwrap_or_default()
 }
 
 fn release_section(
@@ -63,62 +102,104 @@ fn release_section(
     Some(output)
 }
 
-/// Builds the section to put at the top of one changelog. `release` is the
-/// version section (heading and entries), or `None` to write an Unreleased
-/// section. `unreleased` is the body of the changelog's current Unreleased
-/// section, which ends up in the new section either way. Returns `None` when
-/// there's nothing to write.
-fn compose_section(
-    release: Option<&str>,
-    unreleased: Option<&str>,
-    none: &[&NoneEntry],
-    config: &ChangelogConfig,
-) -> Option<String> {
-    let omit = config.none_bump == "omit";
-    let (carried, carried_internal) =
-        split_unreleased(unreleased.unwrap_or(""), &config.none_bump_heading);
-    let has_new_internal = !omit && !none.is_empty();
-    // A heading left with nothing under it isn't worth carrying into a release.
-    let carried_internal = carried_internal.filter(|t| !t.is_empty());
-    if release.is_none() && carried.is_empty() && carried_internal.is_none() && !has_new_internal {
-        return None;
-    }
-
-    let mut parts: Vec<&str> = vec![release.map_or(UNRELEASED_HEADING, str::trim_end)];
-    if !carried.is_empty() {
-        parts.push(carried);
-    }
-    let heading = format!("### {}", config.none_bump_heading);
-    if has_new_internal || carried_internal.is_some() {
-        parts.push(&heading);
-        if let Some(text) = carried_internal {
-            parts.push(text);
-        }
-        if !omit {
-            parts.extend(
-                none.iter()
-                    .map(|n| n.body.trim())
-                    .filter(|body| !body.is_empty()),
-            );
-        }
-    }
-    Some(format!("{}\n", parts.join("\n\n")))
+/// The contents of a changelog's Unreleased sections, split around their
+/// none-bump subsections so new none-bump entries join the existing ones.
+#[derive(Debug, Default)]
+struct Folded<'a> {
+    before: Vec<&'a str>,
+    internal: Vec<&'a str>,
+    has_internal: bool,
+    after: Vec<&'a str>,
 }
 
-/// Splits an Unreleased body into what sits above its none-bump heading and
-/// the entries under it (`None` when it has no such heading), both trimmed.
-fn split_unreleased<'a>(body: &'a str, heading: &str) -> (&'a str, Option<&'a str>) {
+impl<'a> Folded<'a> {
+    fn new(bodies: &'a [String], heading: &str) -> Self {
+        let mut folded = Self::default();
+        for body in bodies {
+            let (before, internal, after) = split_unreleased(body, heading);
+            folded.before.extend(Some(before).filter(|s| !s.is_empty()));
+            if let Some(internal) = internal {
+                folded.has_internal = true;
+                folded
+                    .internal
+                    .extend(Some(internal).filter(|s| !s.is_empty()));
+            }
+            folded.after.extend(Some(after).filter(|s| !s.is_empty()));
+        }
+        folded
+    }
+}
+
+/// Builds the section to put at the top of one changelog. `release` is the
+/// version section (heading and entries), or `None` to write an Unreleased
+/// section under `unreleased_heading`. Returns the section and the part of it
+/// below the release's own entries, or `None` when there's nothing to write.
+fn compose_section(
+    release: Option<&str>,
+    unreleased_heading: &str,
+    folded: &Folded,
+    none: &[&NoneEntry],
+    config: &ChangelogConfig,
+) -> Option<(String, String)> {
+    let omit = config.none_bump == "omit";
+    let new_internal: Vec<&str> = if omit {
+        Vec::new()
+    } else {
+        none.iter()
+            .map(|n| n.body.trim())
+            .filter(|body| !body.is_empty())
+            .collect()
+    };
+    let mut extra: Vec<&str> = folded.before.clone();
+    let heading = format!("### {}", config.none_bump_heading);
+    // A heading left with nothing under it isn't worth carrying over.
+    if (!omit && !none.is_empty()) || !folded.internal.is_empty() {
+        extra.push(&heading);
+        extra.extend(&folded.internal);
+        extra.extend(new_internal);
+    }
+    extra.extend(&folded.after);
+    let extra = extra.join("\n\n");
+
+    if release.is_none() && extra.is_empty() {
+        return None;
+    }
+    let head = release.map_or(unreleased_heading, str::trim_end);
+    let section = if extra.is_empty() {
+        format!("{head}\n")
+    } else {
+        format!("{head}\n\n{extra}\n")
+    };
+    Some((section, extra))
+}
+
+/// Splits an Unreleased body around its none-bump subsection: the text above
+/// it, the subsection's entries (`None` when there's no such heading), and
+/// the text after it. The subsection ends at the next heading of level 3 or
+/// higher, so hand-written subsections like "### Added" stay separate.
+fn split_unreleased<'a>(body: &'a str, heading: &str) -> (&'a str, Option<&'a str>, &'a str) {
     let marker = format!("### {heading}");
     let mut offset = 0;
+    let mut internal_start = None;
     for line in body.split_inclusive('\n') {
-        if line.trim_end() == marker {
-            let above = body[..offset].trim();
-            let below = body[offset + line.len()..].trim();
-            return (above, Some(below));
+        let trimmed = line.trim_end();
+        match internal_start {
+            None if trimmed == marker => internal_start = Some((offset, offset + line.len())),
+            Some((head, start)) if trimmed.starts_with("### ") || trimmed.starts_with("## ") => {
+                return (
+                    body[..head].trim(),
+                    Some(body[start..offset].trim()),
+                    body[offset..].trim(),
+                );
+            }
+            _ => {}
         }
         offset += line.len();
     }
-    (body.trim(), None)
+    match internal_start {
+        Some((head, start)) => (body[..head].trim(), Some(body[start..].trim()), ""),
+        None => (body.trim(), None, ""),
+    }
 }
 
 /// Same rule as actions/release/release-notes.sh: only a heading that starts
@@ -143,10 +224,9 @@ fn is_version_heading(line: &str) -> bool {
     numeric(parts.next(), true) && numeric(parts.next(), true) && numeric(parts.next(), false)
 }
 
-/// Where an Unreleased section ends. Wider than `is_version_heading` because
-/// it also has to stop at history other tools wrote, like keep-a-changelog's
-/// "## [1.0.0]" or "## v1.0.0", or new entries would land at the end of the file.
-fn ends_unreleased(line: &str) -> bool {
+/// A version heading in any of the spellings changelogs use, including
+/// keep-a-changelog's "## [1.0.0]" and "## v1.0.0", which other tools write.
+fn is_any_version_heading(line: &str) -> bool {
     let Some(rest) = line.strip_prefix("## ") else {
         return false;
     };
@@ -159,69 +239,122 @@ fn ends_unreleased(line: &str) -> bool {
 }
 
 fn is_unreleased_heading(line: &str) -> bool {
-    line == UNRELEASED_HEADING || line == "## [Unreleased]"
+    line == UNRELEASED_HEADING || line == UNRELEASED_HEADING_BRACKETED
 }
 
-/// Removes the Unreleased section from a changelog, returning the rest of the
-/// changelog and the section's body. Only a heading above the first version
-/// heading counts, so a changeset body that happens to contain one is left
-/// alone. The section runs to the next version heading.
-fn take_unreleased(content: &str) -> (String, Option<String>) {
-    let mut offset = 0;
-    let mut start = None;
+/// Keep a Changelog ends the file with "[1.0.0]: https://..." link lines.
+/// Only version and Unreleased labels count, since changeset bodies may use
+/// reference links of their own.
+fn is_link_reference(line: &str) -> bool {
+    let Some((label, _)) = line
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("]: "))
+    else {
+        return false;
+    };
+    label == "Unreleased" || is_any_version_heading(&format!("## {label}"))
+}
+
+/// A changelog with its Unreleased sections taken out.
+#[derive(Debug)]
+struct Split {
+    rest: String,
+    bodies: Vec<String>,
+    /// The heading to write an Unreleased section under, in the file's own
+    /// spelling.
+    heading: &'static str,
+}
+
+/// Takes every Unreleased section above the first version heading out of a
+/// changelog. Lower ones are left alone, so a changeset body that happens to
+/// contain the heading isn't touched. A section runs to the next version
+/// heading, Unreleased heading or link reference.
+fn take_unreleased(content: &str) -> Split {
+    let mut rest = String::new();
+    let mut bodies = Vec::new();
+    let mut current: Option<String> = None;
+    let mut found_heading = None;
+    let mut bracketed_versions = false;
+    let mut done = false;
     for line in content.split_inclusive('\n') {
         let trimmed = line.trim_end();
-        match start {
-            None if ends_unreleased(trimmed) => break,
-            None if is_unreleased_heading(trimmed) => start = Some((offset, offset + line.len())),
-            Some((head, body)) if ends_unreleased(trimmed) => {
-                let rest = format!("{}{}", &content[..head], &content[offset..]);
-                return (rest, Some(content[body..offset].to_string()));
+        if !done {
+            if is_any_version_heading(trimmed) {
+                bodies.extend(current.take());
+                bracketed_versions = trimmed.starts_with("## [");
+                done = true;
+            } else if is_unreleased_heading(trimmed) {
+                bodies.extend(current.take());
+                found_heading.get_or_insert(trimmed == UNRELEASED_HEADING_BRACKETED);
+                current = Some(String::new());
+                continue;
+            } else if current.is_some() && is_link_reference(trimmed) {
+                bodies.extend(current.take());
+                done = true;
+            } else if let Some(body) = current.as_mut() {
+                body.push_str(line);
+                continue;
             }
-            _ => {}
         }
-        offset += line.len();
+        rest.push_str(line);
     }
-    match start {
-        Some((head, body)) => (
-            content[..head].to_string(),
-            Some(content[body..].to_string()),
-        ),
-        None => (content.to_string(), None),
+    bodies.extend(current);
+    let heading = if found_heading.unwrap_or(bracketed_versions) {
+        UNRELEASED_HEADING_BRACKETED
+    } else {
+        UNRELEASED_HEADING
+    };
+    Split {
+        rest,
+        bodies,
+        heading,
     }
 }
 
 /// Writes one changelog's part of a release: `release` is its version section,
 /// or `None` when this changelog has no release and only none-bump entries.
-/// An existing Unreleased section is folded into a new version section, or
-/// extended when there's still no release. Returns whether the file changed.
+/// Existing Unreleased sections are folded into a new version section, or
+/// merged and extended when there's still no release. Returns `None` when the
+/// file is unchanged, otherwise what the section holds below the release's own
+/// entries.
 pub fn write_changelog(
     path: &Path,
     release: Option<&str>,
     none: &[&NoneEntry],
     config: &ChangelogConfig,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<String>> {
     if release.is_none() && (none.is_empty() || config.none_bump == "omit") {
-        return Ok(false);
+        return Ok(None);
     }
-    let existing = if path.exists() {
+    let raw = if path.exists() {
         Some(std::fs::read_to_string(path)?)
     } else {
         None
     };
-    let (rest, unreleased) = existing
+    // Rewritten in the file's main line ending, so it doesn't end up mixed.
+    let crlf = raw
         .as_deref()
-        .map_or((String::new(), None), take_unreleased);
-    let Some(section) = compose_section(release, unreleased.as_deref(), none, config) else {
-        return Ok(false);
+        .is_some_and(|r| r.matches("\r\n").count() * 2 > r.matches('\n').count());
+    let existing = raw.map(|r| r.replace("\r\n", "\n"));
+    let split = existing.as_deref().map(take_unreleased);
+    let (heading, bodies): (&str, &[String]) = split
+        .as_ref()
+        .map_or((UNRELEASED_HEADING, &[]), |s| (s.heading, &s.bodies));
+    let folded = Folded::new(bodies, &config.none_bump_heading);
+    let Some((section, extra)) = compose_section(release, heading, &folded, none, config) else {
+        return Ok(None);
     };
-    let content = if existing.is_some() {
-        insert_after_header(&rest, &section)
+    let content = match &split {
+        Some(split) => insert_after_header(&split.rest, &section),
+        None => format!("# Changelog\n\n{section}"),
+    };
+    let content = if crlf {
+        content.replace('\n', "\r\n")
     } else {
-        format!("# Changelog\n\n{section}")
+        content
     };
     std::fs::write(path, content)?;
-    Ok(true)
+    Ok(Some(extra))
 }
 
 pub fn update_changelog_file(changelog_path: &Path, new_entry: &str) -> anyhow::Result<()> {
@@ -236,15 +369,21 @@ pub fn update_changelog_file(changelog_path: &Path, new_entry: &str) -> anyhow::
     Ok(())
 }
 
+/// Puts a new section at the top: below the header (everything before the
+/// first "## " heading, which may be nothing) and above every existing section.
+/// A file with no sections yet keeps its link references at the end.
 fn insert_after_header(existing: &str, new_entry: &str) -> String {
-    let entry = new_entry.trim_end();
-    let (header, rest) = if let Some(pos) = existing.find("\n## ") {
-        (&existing[..pos], &existing[pos..])
-    } else if existing.starts_with("# ") {
-        existing.split_at(existing.find('\n').unwrap_or(existing.len()))
-    } else {
-        ("", existing)
-    };
+    let mut offset = 0;
+    let mut split_at = None;
+    for line in existing.split_inclusive('\n') {
+        let trimmed = line.trim_end();
+        if trimmed.starts_with("## ") || is_link_reference(trimmed) {
+            split_at = Some(offset);
+            break;
+        }
+        offset += line.len();
+    }
+    let (header, rest) = existing.split_at(split_at.unwrap_or(existing.len()));
     let header = header.trim_end();
     let rest = rest.trim_start_matches(['\n', '\r']);
     let mut out = String::new();
@@ -252,7 +391,7 @@ fn insert_after_header(existing: &str, new_entry: &str) -> String {
         out.push_str(header);
         out.push_str("\n\n");
     }
-    out.push_str(entry);
+    out.push_str(new_entry.trim_end());
     out.push('\n');
     if !rest.is_empty() {
         out.push('\n');
@@ -262,35 +401,63 @@ fn insert_after_header(existing: &str, new_entry: &str) -> String {
 }
 
 /// Writes the root changelog for single-package repos and grouped monorepos.
-/// Returns the path when the file changed.
 pub fn write_root_changelog(
     repo_root: &Path,
     plan: &ReleasePlan,
     config: &ChangelogConfig,
     date: &str,
     is_monorepo: bool,
-) -> anyhow::Result<Vec<PathBuf>> {
+) -> anyhow::Result<ChangelogWrites> {
     let path = repo_root.join(&config.file);
     let release = release_section(plan, date, is_monorepo, config);
     let none: Vec<&NoneEntry> = plan.none_entries.iter().collect();
-    let changed = write_changelog(&path, release.as_deref(), &none, config)?;
-    Ok(if changed { vec![path] } else { vec![] })
+    let mut writes = ChangelogWrites::default();
+    if let Some(extra) = write_changelog(&path, release.as_deref(), &none, config)? {
+        writes.paths.push(path);
+        for release in &plan.releases {
+            writes
+                .extra_notes
+                .insert(release.name.clone(), extra.clone());
+        }
+    }
+    Ok(writes)
+}
+
+/// A workspace root like `{"private": true, "workspaces": [...]}` or a
+/// manifest without a name is detected as a package, but it's never released,
+/// so per-package mode doesn't give it a changelog of its own.
+fn has_own_changelog(pkg: &Package) -> bool {
+    if pkg.name.is_empty() {
+        return false;
+    }
+    if pkg.package_type != PackageType::Npm {
+        return true;
+    }
+    let Ok(content) = std::fs::read_to_string(pkg.path.join("package.json")) else {
+        return true;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return true;
+    };
+    let private = json.get("private").and_then(serde_json::Value::as_bool) == Some(true);
+    !(private && json.get("workspaces").is_some())
 }
 
 /// Writes each package's own changelog. A none-bump entry goes to every
 /// package it names, released or not, and a repo-wide `default` entry goes to
-/// every package, since per-package mode has no root changelog. Returns the
-/// paths that changed.
+/// every package with a changelog of its own, since per-package mode has no
+/// root changelog.
 pub fn write_per_package_changelogs(
     plan: &ReleasePlan,
     packages: &[Package],
     config: &ChangelogConfig,
     date: &str,
-) -> anyhow::Result<Vec<PathBuf>> {
+) -> anyhow::Result<ChangelogWrites> {
     #[derive(Default)]
     struct Target<'a> {
         names: Vec<&'a str>,
-        sections: Vec<String>,
+        releases: Vec<(&'a str, String)>,
+        repo_wide: bool,
         none: Vec<&'a NoneEntry>,
     }
     // Keyed by path: two packages in one directory share a changelog.
@@ -298,41 +465,49 @@ pub fn write_per_package_changelogs(
     for release in &plan.releases {
         let t = targets.entry(release.path.join(&config.file)).or_default();
         t.names.push(&release.name);
-        t.sections.push(format!(
-            "## {} - {}\n\n{}",
-            release.version, date, release.changelog
+        t.repo_wide = true;
+        t.releases.push((
+            &release.name,
+            format!("## {} - {}\n\n{}", release.version, date, release.changelog),
         ));
     }
     for pkg in packages {
-        targets
-            .entry(pkg.path.join(&config.file))
-            .or_default()
-            .names
-            .push(&pkg.name);
+        let t = targets.entry(pkg.path.join(&config.file)).or_default();
+        t.names.push(&pkg.name);
+        t.repo_wide |= has_own_changelog(pkg);
     }
 
     let has_real_default = packages.iter().any(|p| p.name == REPO_WIDE_PACKAGE);
     for entry in &plan.none_entries {
         let repo_wide = !has_real_default && entry.packages.iter().any(|p| p == REPO_WIDE_PACKAGE);
         for t in targets.values_mut() {
-            if repo_wide
-                || t.names
-                    .iter()
-                    .any(|n| entry.packages.iter().any(|p| p == n))
-            {
+            let named = t
+                .names
+                .iter()
+                .any(|n| !n.is_empty() && entry.packages.iter().any(|p| p == n));
+            if named || (repo_wide && t.repo_wide) {
                 t.none.push(entry);
             }
         }
     }
 
-    let mut written = Vec::new();
+    let mut writes = ChangelogWrites::default();
     for (path, t) in &targets {
-        let release = (!t.sections.is_empty()).then(|| t.sections.join("\n\n"));
-        if write_changelog(path, release.as_deref(), &t.none, config)? {
-            written.push(path.clone());
+        let release = (!t.releases.is_empty()).then(|| {
+            t.releases
+                .iter()
+                .map(|(_, s)| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        });
+        if let Some(extra) = write_changelog(path, release.as_deref(), &t.none, config)? {
+            writes.paths.push(path.clone());
+            for (name, _) in &t.releases {
+                writes.extra_notes.insert(name.to_string(), extra.clone());
+            }
         }
     }
-    Ok(written)
+    Ok(writes)
 }
 
 #[cfg(test)]
@@ -547,7 +722,7 @@ mod tests {
         let written =
             write_per_package_changelogs(&plan, &packages, &ChangelogConfig::default(), "d")
                 .unwrap();
-        assert_eq!(written.len(), 2);
+        assert_eq!(written.paths.len(), 2);
 
         let a = read(&dir.path().join("a/CHANGELOG.md"));
         assert_eq!(
@@ -599,7 +774,7 @@ mod tests {
             ..Default::default()
         };
         let written = write_per_package_changelogs(&plan, &packages, &config, "d").unwrap();
-        assert_eq!(written, vec![dir.path().join("a/CHANGELOG.md")]);
+        assert_eq!(written.paths, vec![dir.path().join("a/CHANGELOG.md")]);
 
         let content = read(&dir.path().join("a/CHANGELOG.md"));
         assert!(content.contains("#### Feature"));
@@ -673,7 +848,11 @@ mod tests {
             ..Default::default()
         };
         let entry = none_entry("#### CI", &["x"]);
-        assert!(!write_changelog(&path, None, &[&entry], &config).unwrap());
+        assert!(
+            write_changelog(&path, None, &[&entry], &config)
+                .unwrap()
+                .is_none()
+        );
         assert!(!path.exists());
     }
 
@@ -683,10 +862,14 @@ mod tests {
             let content = format!(
                 "# C\n\n## [Unreleased]\n\n### Internal\n\n- old\n\n{older}\n\n### Internal\n\n- ancient\n"
             );
-            let (rest, unreleased) = take_unreleased(&content);
-            assert_eq!(unreleased.as_deref(), Some("\n### Internal\n\n- old\n\n"));
+            let split = take_unreleased(&content);
             assert_eq!(
-                rest,
+                split.bodies,
+                vec!["\n### Internal\n\n- old\n\n".to_string()]
+            );
+            assert_eq!(split.heading, UNRELEASED_HEADING_BRACKETED);
+            assert_eq!(
+                split.rest,
                 format!("# C\n\n{older}\n\n### Internal\n\n- ancient\n")
             );
         }
@@ -710,9 +893,165 @@ mod tests {
     #[test]
     fn unreleased_below_a_version_is_not_taken() {
         let content = "# C\n\n## 1.0.0 - d\n\n## Unreleased\n\nbody\n";
-        let (rest, unreleased) = take_unreleased(content);
-        assert_eq!(rest, content);
-        assert!(unreleased.is_none());
+        let split = take_unreleased(content);
+        assert_eq!(split.rest, content);
+        assert!(split.bodies.is_empty());
+    }
+
+    fn write_and_read(
+        initial: &str,
+        release: Option<&str>,
+        none: &[&NoneEntry],
+    ) -> (String, Option<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("CHANGELOG.md");
+        std::fs::write(&path, initial).unwrap();
+        let extra = write_changelog(&path, release, none, &ChangelogConfig::default()).unwrap();
+        (read(&path), extra)
+    }
+
+    #[test]
+    fn new_sections_go_above_every_version_without_a_title() {
+        let ci_one = none_entry("#### CI one", &["x"]);
+        let ci_two = none_entry("#### CI two", &["x"]);
+        let feature = Some("## 1.1.0 - d\n\n#### Feature");
+        let (one, _) = write_and_read(
+            "## 1.0.0 - d\n\n- A\n\n## 0.9.0 - d\n\n- B\n",
+            None,
+            &[&ci_one],
+        );
+        assert_eq!(
+            one,
+            "## Unreleased\n\n### Internal\n\n#### CI one\n\n## 1.0.0 - d\n\n- A\n\n## 0.9.0 - d\n\n- B\n"
+        );
+        let (two, _) = write_and_read(&one, None, &[&ci_two]);
+        let (three, _) = write_and_read(&two, feature, &[]);
+        assert_eq!(
+            three,
+            "## 1.1.0 - d\n\n#### Feature\n\n### Internal\n\n#### CI one\n\n#### CI two\n\n## 1.0.0 - d\n\n- A\n\n## 0.9.0 - d\n\n- B\n"
+        );
+    }
+
+    #[test]
+    fn several_unreleased_sections_are_merged() {
+        let initial = "# C\n\n## Unreleased\n\n### Internal\n\n- two\n\n## Unreleased\n\n### Internal\n\n- one\n\n## 1.0.0 - d\n\n- A\n";
+        let (content, extra) = write_and_read(initial, Some("## 1.1.0 - d\n\n#### Feature"), &[]);
+        assert_eq!(
+            content,
+            "# C\n\n## 1.1.0 - d\n\n#### Feature\n\n### Internal\n\n- two\n\n- one\n\n## 1.0.0 - d\n\n- A\n"
+        );
+        assert_eq!(extra.as_deref(), Some("### Internal\n\n- two\n\n- one"));
+    }
+
+    #[test]
+    fn keeps_the_bracketed_unreleased_spelling() {
+        let ci = none_entry("#### CI", &["x"]);
+        let (kept, _) = write_and_read(
+            "# C\n\n## [Unreleased]\n\n- hand\n\n## [1.0.0] - d\n",
+            None,
+            &[&ci],
+        );
+        assert_eq!(
+            kept,
+            "# C\n\n## [Unreleased]\n\n- hand\n\n### Internal\n\n#### CI\n\n## [1.0.0] - d\n"
+        );
+        let (created, _) = write_and_read("# C\n\n## [1.0.0] - d\n\n- A\n", None, &[&ci]);
+        assert!(
+            created.starts_with("# C\n\n## [Unreleased]\n\n### Internal\n"),
+            "{created}"
+        );
+    }
+
+    #[test]
+    fn new_none_entries_join_the_internal_subsection() {
+        let ci = none_entry("#### CI new", &["x"]);
+        let initial = "# C\n\n## Unreleased\n\n### Internal\n\n#### CI old\n\n### Added\n\n- Thing\n\n## 1.0.0 - d\n";
+        let (content, _) = write_and_read(initial, None, &[&ci]);
+        assert_eq!(
+            content,
+            "# C\n\n## Unreleased\n\n### Internal\n\n#### CI old\n\n#### CI new\n\n### Added\n\n- Thing\n\n## 1.0.0 - d\n"
+        );
+    }
+
+    #[test]
+    fn link_references_stay_at_the_end() {
+        let ci = none_entry("#### CI", &["x"]);
+        let (content, _) = write_and_read("# C\n\n[1.0.0]: https://x/1.0.0\n", None, &[&ci]);
+        assert_eq!(
+            content,
+            "# C\n\n## Unreleased\n\n### Internal\n\n#### CI\n\n[1.0.0]: https://x/1.0.0\n"
+        );
+        let initial = "# C\n\n## [Unreleased]\n\n- x\n\n[Unreleased]: https://x/HEAD\n";
+        let (content, _) = write_and_read(initial, Some("## [1.1.0] - d\n\n- y"), &[]);
+        assert_eq!(
+            content,
+            "# C\n\n## [1.1.0] - d\n\n- y\n\n- x\n\n[Unreleased]: https://x/HEAD\n"
+        );
+    }
+
+    #[test]
+    fn crlf_changelogs_stay_crlf() {
+        let ci = none_entry("#### CI", &["x"]);
+        let initial = "# C\r\n\r\n## 1.0.0 - d\r\n\r\n- A\r\n";
+        let (content, _) = write_and_read(initial, None, &[&ci]);
+        assert_eq!(
+            content,
+            "# C\r\n\r\n## Unreleased\r\n\r\n### Internal\r\n\r\n#### CI\r\n\r\n## 1.0.0 - d\r\n\r\n- A\r\n"
+        );
+        let (content, _) = write_and_read(&content, Some("## 1.1.0 - d\n\n- B"), &[]);
+        assert!(!content.replace("\r\n", "").contains('\n'), "{content:?}");
+        assert!(content.contains("## 1.1.0 - d\r\n\r\n- B\r\n\r\n### Internal\r\n\r\n#### CI\r\n"));
+    }
+
+    #[test]
+    fn extra_notes_extend_the_release_changelog() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("CHANGELOG.md"),
+            "# C\n\n## Unreleased\n\n### Internal\n\n- old\n",
+        )
+        .unwrap();
+        let mut release = make_release("lib", "1.0.0", "1.1.0", BumpLevel::Minor, "#### Feature");
+        release.path = dir.path().to_path_buf();
+        let mut plan = make_plan(vec![release], vec![none_entry("#### New", &["lib"])]);
+        let writes =
+            write_root_changelog(dir.path(), &plan, &ChangelogConfig::default(), "d", false)
+                .unwrap();
+        writes.apply_to(&mut plan);
+        assert_eq!(
+            plan.releases[0].changelog,
+            "#### Feature\n\n### Internal\n\n- old\n\n#### New"
+        );
+    }
+
+    #[test]
+    fn private_workspace_root_gets_no_repo_wide_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"private":true,"workspaces":["a"]}"#,
+        )
+        .unwrap();
+        let root = Package {
+            name: String::new(),
+            path: dir.path().to_path_buf(),
+            package_type: PackageType::Npm,
+            version: Version::new(0, 0, 0),
+        };
+        let named_root = Package {
+            name: "root".to_string(),
+            ..root.clone()
+        };
+        for root in [root, named_root] {
+            let packages = vec![root, package(dir.path(), "a")];
+            let plan = make_plan(vec![], vec![none_entry("#### Docs", &["default"])]);
+            let writes =
+                write_per_package_changelogs(&plan, &packages, &ChangelogConfig::default(), "d")
+                    .unwrap();
+            assert_eq!(writes.paths, vec![dir.path().join("a/CHANGELOG.md")]);
+            assert!(!dir.path().join("CHANGELOG.md").exists());
+            std::fs::remove_file(dir.path().join("a/CHANGELOG.md")).unwrap();
+        }
     }
 
     #[test]

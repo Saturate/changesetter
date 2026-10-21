@@ -427,7 +427,9 @@ Initial release.
 - Newest version at the top
 - `none`-bump entries with no version section to live in (a release run with only `none` changesets, or a package that isn't released this time) go under an `## Unreleased` heading at the top of the changelog, with the none-bump heading inside it. Later runs append to it
 - The next release written to that changelog folds the `## Unreleased` section into its new version section and removes the heading, so the entries ship with that version's notes
-- `## Unreleased` is never a version: release-notes extraction skips it
+- `## Unreleased` is never a version: release-notes extraction skips it, and ends a version's notes at it, at other tools' version headings (`## [1.0.0]`, `## v1.0.0`) and at Keep a Changelog link references (`[1.0.0]: https://...`)
+- Absorbed Unreleased entries are part of the release's changelog text, so tag messages and GitHub release notes carry them too
+- A run with only `none` changesets creates no tags and commits as `chore: add unreleased changelog notes`
 - With `none_bump = "omit"`, none of this is written
 
 ### Monorepo changelogs
@@ -436,7 +438,7 @@ When `changelog.per_package = true` (default for monorepos), each package gets i
 
 A changeset that references multiple packages (e.g. `mylib: patch` and `my-api: minor` in one file) has its full markdown body written to every referenced package's changelog. This matches changesets' behavior. If a user wants different descriptions per package, they write separate changeset files.
 
-A `none`-bump changeset goes to each named package's changelog, in the version section when that package is released in the same run and under `## Unreleased` otherwise. There's no root changelog in this mode, so a repo-wide `default: none` goes to every package's changelog.
+A `none`-bump changeset goes to each named package's changelog, in the version section when that package is released in the same run and under `## Unreleased` otherwise. There's no root changelog in this mode, so a repo-wide `default: none` goes to every package's changelog (not to a private workspace root or an unnamed manifest). A changeset that bumps `a` and is `none` for `b` is listed only in `a`'s release.
 
 When `changelog.per_package = false`, a single root `CHANGELOG.md` groups entries by package:
 

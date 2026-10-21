@@ -122,11 +122,17 @@ None-bump entries normally go under the `none_bump_heading` inside the version s
 ...
 ```
 
-Later runs append to the same section, and an existing keep-a-changelog style `## [Unreleased]` heading is picked up the same way. The next release written to that changelog moves the section's contents into its new version section and removes the `## Unreleased` heading, so they ship with that version's release notes. The release action's notes extraction never treats `## Unreleased` as a version.
+Later runs add to the same section: new entries go under its none-bump heading, next to any hand-written subsections like `### Added`. A Keep a Changelog style `## [Unreleased]` heading is kept as spelled, and a new one uses brackets when the file's version headings do. New sections always go at the top, above every existing version.
 
-With `per_package = true`, each package named in the changeset gets the entry in its own changelog. A repo-wide `default: none` changeset goes to every package's changelog, since this mode writes no root changelog.
+The next release written to that changelog moves the section's contents into its new version section and removes the Unreleased heading. They then reach every place the release's notes go, exactly once: the changelog, the annotated tag message, the `changelog` field of `release --output json` and the GitHub release the release action creates. The release action's notes extraction never treats an Unreleased heading as a version.
 
-With `none_bump = "omit"`, no `## Unreleased` section is written.
+A release run with only none-bump changesets creates no tags or GitHub releases. Its commit is `chore: add unreleased changelog notes` (or `chore: remove none-bump changesets` when `omit` leaves nothing to write), since there are no versions for `commit_message` to name.
+
+With `per_package = true`, each package named in the changeset gets the entry in its own changelog. A repo-wide `default: none` changeset goes to every package's changelog, since this mode writes no root changelog. A private workspace root (`"private": true` with `"workspaces"`) or a manifest with no name doesn't count as a package here.
+
+A changeset that bumps one package and is `none` for another (`a: minor`, `b: none`) is listed only in `a`'s release, in per-package mode too: `b`'s changelog doesn't get it.
+
+With `none_bump = "omit"`, no Unreleased section is written.
 
 ## Tag format
 
