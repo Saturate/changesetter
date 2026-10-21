@@ -1,9 +1,9 @@
 ---
 source: tests/snapshot_changelog.rs
+assertion_line: 238
 expression: content
 ---
 # Changelog
-
 
 ## 0.2.0 - 2026-07-25
 

@@ -72,7 +72,7 @@ default: patch
 #### Fixed a bug
 ```
 
-`default` resolves to the single detected package name. In monorepos (more than one package), `default` is not valid; use the real package names.
+`default` resolves to the single detected package name. In monorepos (more than one package), `default` can't take a version bump; use the real package names. `default: none` is still allowed and marks a repo-wide change: with `per_package = true` it goes to every package's changelog, otherwise to the root changelog.
 
 ## None-bump changesets
 
@@ -89,6 +89,8 @@ Switched from ubuntu-20.04 to ubuntu-24.04 runners.
 ```
 
 None-bump entries appear in the changelog under a configurable heading (default: "Internal"). They pass `changesetter check` but don't trigger a version bump.
+
+When the changelog gets no new version in the same release run, the entries go under an `## Unreleased` heading at the top and move into the next version that changelog gets. See [Configuration](/docs/configuration#none-bump-entries-without-a-release).
 
 ## Frontmatter rules
 

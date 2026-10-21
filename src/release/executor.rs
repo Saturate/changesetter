@@ -108,18 +108,17 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         }
     }
 
-    if config.changelog.per_package && is_monorepo {
-        generator::write_per_package_changelogs(&release_plan, &config.changelog, &date)?;
+    let changelogs = if config.changelog.per_package && is_monorepo {
+        generator::write_per_package_changelogs(&release_plan, &packages, &config.changelog, &date)?
     } else {
-        let entry = generator::generate_changelog_entry(
+        generator::write_root_changelog(
+            repo_root,
             &release_plan,
             &config.changelog,
             &date,
             is_monorepo,
-        );
-        let changelog_path = repo_root.join(&config.changelog.file);
-        generator::update_changelog_file(&changelog_path, &entry)?;
-    }
+        )?
+    };
 
     for cs in &changesets {
         if let Some(name) = &cs.filename {
@@ -147,7 +146,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     }
 
     if !opts.no_commit {
-        commit_version_changes(repo_root, &release_plan, &config, is_monorepo)?;
+        commit_version_changes(repo_root, &release_plan, &config, &changelogs)?;
     }
 
     for release in &release_plan.releases {
@@ -216,7 +215,7 @@ fn commit_version_changes(
     repo_root: &Path,
     plan: &ReleasePlan,
     config: &Config,
-    is_monorepo: bool,
+    changelogs: &[std::path::PathBuf],
 ) -> anyhow::Result<()> {
     let mut paths_to_stage: Vec<String> = Vec::new();
 
@@ -259,19 +258,13 @@ fn commit_version_changes(
                 }
             }
         }
-
-        if is_monorepo && config.changelog.per_package {
-            paths_to_stage.push(
-                rel_path
-                    .join(&config.changelog.file)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
     }
 
-    if !is_monorepo || !config.changelog.per_package {
-        paths_to_stage.push(config.changelog.file.clone());
+    // Only the changelogs that were written: a none-only run touches
+    // changelogs of packages that aren't released, and `omit` may write none.
+    for path in changelogs {
+        let rel = path.strip_prefix(repo_root).unwrap_or(path);
+        paths_to_stage.push(rel.to_string_lossy().to_string());
     }
 
     let path_refs: Vec<&str> = paths_to_stage.iter().map(|s| s.as_str()).collect();

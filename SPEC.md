@@ -425,13 +425,18 @@ Initial release.
 - Entries grouped under the version heading
 - `none`-bump entries go under the configured heading (default: "Internal")
 - Newest version at the top
-- Unreleased changes can optionally go under an `## Unreleased` heading
+- `none`-bump entries with no version section to live in (a release run with only `none` changesets, or a package that isn't released this time) go under an `## Unreleased` heading at the top of the changelog, with the none-bump heading inside it. Later runs append to it
+- The next release written to that changelog folds the `## Unreleased` section into its new version section and removes the heading, so the entries ship with that version's notes
+- `## Unreleased` is never a version: release-notes extraction skips it
+- With `none_bump = "omit"`, none of this is written
 
 ### Monorepo changelogs
 
 When `changelog.per_package = true` (default for monorepos), each package gets its own `CHANGELOG.md` in its package directory.
 
 A changeset that references multiple packages (e.g. `mylib: patch` and `my-api: minor` in one file) has its full markdown body written to every referenced package's changelog. This matches changesets' behavior. If a user wants different descriptions per package, they write separate changeset files.
+
+A `none`-bump changeset goes to each named package's changelog, in the version section when that package is released in the same run and under `## Unreleased` otherwise. There's no root changelog in this mode, so a repo-wide `default: none` goes to every package's changelog.
 
 When `changelog.per_package = false`, a single root `CHANGELOG.md` groups entries by package:
 

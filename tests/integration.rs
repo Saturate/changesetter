@@ -374,6 +374,202 @@ fn none_bump_omit_keeps_it_out_of_changelog() {
     assert_eq!(count_changeset_files(dir.path()), 0);
 }
 
+fn release_commit(repo: &Path) {
+    changesetter::cli::release::run_in(
+        repo,
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: false,
+            output: None,
+        },
+    )
+    .unwrap();
+}
+
+fn assert_clean(repo: &Path) {
+    let out = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "", "dirty tree");
+}
+
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap()
+}
+
+fn use_per_package(repo: &Path, extra: &str) {
+    std::fs::write(
+        repo.join("changesetter.toml"),
+        format!("[changelog]\nper_package = true\n{extra}"),
+    )
+    .unwrap();
+    git_add_commit(repo, "config");
+}
+
+#[test]
+fn none_only_release_goes_under_unreleased() {
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "ci",
+        "---\ndefault: none\n---\n\n#### CI tweak\n",
+    );
+    git_add_commit(dir.path(), "add changeset");
+
+    release_commit(dir.path());
+
+    assert_eq!(
+        CargoAdapter.read_version(dir.path()).unwrap(),
+        Version::new(1, 0, 0)
+    );
+    assert_eq!(
+        read(&dir.path().join("CHANGELOG.md")),
+        "# Changelog\n\n## Unreleased\n\n### Internal\n\n#### CI tweak\n"
+    );
+    assert_eq!(count_changeset_files(dir.path()), 0);
+    assert_clean(dir.path());
+}
+
+#[test]
+fn unreleased_is_folded_into_the_next_version() {
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "ci",
+        "---\ndefault: none\n---\n\n#### CI tweak\n",
+    );
+    git_add_commit(dir.path(), "add changeset");
+    release_commit(dir.path());
+
+    write_changeset(dir.path(), "fix", "---\ndefault: patch\n---\n\n#### Fix\n");
+    write_changeset(dir.path(), "docs", "---\ndefault: none\n---\n\n#### Docs\n");
+    git_add_commit(dir.path(), "add changesets");
+    release_commit(dir.path());
+
+    let changelog = read(&dir.path().join("CHANGELOG.md"));
+    assert!(!changelog.contains("Unreleased"), "{changelog}");
+    assert_eq!(changelog.matches("### Internal").count(), 1, "{changelog}");
+    let notes = release_notes("1.0.1", &changelog);
+    assert!(notes.starts_with("#### Fix\n\n### Internal\n\n"), "{notes}");
+    assert!(notes.contains("#### CI tweak") && notes.contains("#### Docs"));
+    assert_clean(dir.path());
+}
+
+#[test]
+fn none_only_per_package_writes_each_named_package() {
+    let dir = setup_polyglot_repo();
+    use_per_package(dir.path(), "");
+    write_changeset(
+        dir.path(),
+        "ui",
+        "---\nfrontend: none\n---\n\n#### UI lint\n",
+    );
+    git_add_commit(dir.path(), "add changeset");
+
+    release_commit(dir.path());
+
+    assert_eq!(
+        read(&dir.path().join("web/CHANGELOG.md")),
+        "# Changelog\n\n## Unreleased\n\n### Internal\n\n#### UI lint\n"
+    );
+    assert!(!dir.path().join("CHANGELOG.md").exists());
+    assert_clean(dir.path());
+}
+
+#[test]
+fn repo_wide_none_per_package_goes_to_every_package() {
+    let dir = setup_polyglot_repo();
+    use_per_package(dir.path(), "");
+    write_changeset(dir.path(), "docs", "---\ndefault: none\n---\n\n#### Docs\n");
+    git_add_commit(dir.path(), "add changeset");
+
+    release_commit(dir.path());
+
+    for path in ["CHANGELOG.md", "web/CHANGELOG.md"] {
+        let changelog = read(&dir.path().join(path));
+        assert!(
+            changelog.contains("## Unreleased\n\n### Internal\n\n#### Docs\n"),
+            "{path}: {changelog}"
+        );
+    }
+    assert_clean(dir.path());
+}
+
+#[test]
+fn per_package_release_with_none_for_an_unreleased_package() {
+    let dir = setup_polyglot_repo();
+    use_per_package(dir.path(), "");
+    write_changeset(dir.path(), "api", "---\nbackend: minor\n---\n\n#### API\n");
+    write_changeset(
+        dir.path(),
+        "ui",
+        "---\nfrontend: none\n---\n\n#### UI lint\n",
+    );
+    git_add_commit(dir.path(), "add changesets");
+
+    release_commit(dir.path());
+
+    let backend = read(&dir.path().join("CHANGELOG.md"));
+    assert!(backend.contains("## 1.1.0 - "), "{backend}");
+    assert!(!backend.contains("UI lint") && !backend.contains("Internal"));
+    assert_eq!(
+        read(&dir.path().join("web/CHANGELOG.md")),
+        "# Changelog\n\n## Unreleased\n\n### Internal\n\n#### UI lint\n"
+    );
+    assert_clean(dir.path());
+
+    // frontend's next release picks the entry up.
+    write_changeset(
+        dir.path(),
+        "fix",
+        "---\nfrontend: patch\n---\n\n#### UI fix\n",
+    );
+    git_add_commit(dir.path(), "add changeset");
+    release_commit(dir.path());
+
+    let frontend = read(&dir.path().join("web/CHANGELOG.md"));
+    assert!(!frontend.contains("Unreleased"), "{frontend}");
+    assert_eq!(
+        release_notes("2.0.1", &frontend),
+        "#### UI fix\n\n### Internal\n\n#### UI lint\n"
+    );
+    assert_clean(dir.path());
+}
+
+#[test]
+fn omit_writes_no_unreleased_section() {
+    let dir = setup_polyglot_repo();
+    use_per_package(dir.path(), "none_bump = \"omit\"\n");
+    write_changeset(
+        dir.path(),
+        "ui",
+        "---\nfrontend: none\n---\n\n#### UI lint\n",
+    );
+    write_changeset(dir.path(), "docs", "---\ndefault: none\n---\n\n#### Docs\n");
+    git_add_commit(dir.path(), "add changesets");
+
+    release_commit(dir.path());
+
+    assert!(!dir.path().join("CHANGELOG.md").exists());
+    assert!(!dir.path().join("web/CHANGELOG.md").exists());
+    assert_eq!(count_changeset_files(dir.path()), 0);
+    assert_clean(dir.path());
+
+    let dir = setup_cargo_repo();
+    std::fs::write(
+        dir.path().join("changesetter.toml"),
+        "[changelog]\nnone_bump = \"omit\"\n",
+    )
+    .unwrap();
+    write_changeset(dir.path(), "ci", "---\ndefault: none\n---\n\n#### CI\n");
+    git_add_commit(dir.path(), "add changeset");
+    release_commit(dir.path());
+    assert!(!dir.path().join("CHANGELOG.md").exists());
+    assert_clean(dir.path());
+}
+
 // ---------- Release with tagging ----------
 
 #[test]
@@ -1229,4 +1425,16 @@ fn release_notes_are_empty_without_a_matching_section() {
         .unwrap();
     assert!(out.status.success());
     assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn release_notes_never_treat_unreleased_as_a_version() {
+    let changelog =
+        "# Changelog\n\n## Unreleased\n\n### Internal\n\n- CI\n\n## 1.0.0 - d\n\n- First\n";
+    assert_eq!(release_notes("1.0.0", changelog), "- First\n");
+    assert_eq!(release_notes("Unreleased", changelog), "");
+
+    // A stray Unreleased section below a version still ends that version's notes.
+    let changelog = "## 1.1.0 - d\n\n- New\n\n## [Unreleased]\n\n- Later\n";
+    assert_eq!(release_notes("1.1.0", changelog), "- New\n\n");
 }
