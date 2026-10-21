@@ -73,7 +73,7 @@ pub fn assemble(
         if !has_real_bump && !resolved.is_empty() {
             none_entries.push(NoneEntry {
                 title: extract_title(&cs.body),
-                body: cs.body.clone(),
+                body: demote_headings(&cs.body),
                 changesets: vec![cs_name.clone()],
                 packages: resolved.iter().map(|(n, _)| n.clone()).collect(),
             });
@@ -89,7 +89,7 @@ pub fn assemble(
             }
 
             if bump > BumpLevel::None {
-                entry.1.push((cs_name.clone(), cs.body.clone()));
+                entry.1.push((cs_name.clone(), demote_headings(&cs.body)));
             }
         }
     }
@@ -288,6 +288,37 @@ fn apply_bump(version: &Version, bump: BumpLevel) -> Version {
     }
 }
 
+/// Rewrites a changeset body for the changelog so its headings never look
+/// like a changelog's own: release-notes.sh and the changelog writer find
+/// version, Unreleased and none-bump sections by their "## " and "### "
+/// headings, and a body copied in verbatim could carry those. The entry's
+/// title (a heading on the first line) is written at the entry level, `####`,
+/// and any other heading of that level or higher one level below it. Headings
+/// inside fenced code blocks are code, so they're left alone.
+pub fn demote_headings(body: &str) -> String {
+    const ENTRY: usize = 4;
+    let mut out = String::with_capacity(body.len());
+    let mut fences = crate::changelog::generator::FenceTracker::default();
+    let mut first = true;
+    for line in body.split_inclusive('\n') {
+        let code = fences.is_code(line);
+        let level = line.chars().take_while(|c| *c == '#').count();
+        let is_heading =
+            !code && (1..=6).contains(&level) && line[level..].starts_with([' ', '\t', '\n', '\r']);
+        if is_heading && level <= ENTRY {
+            let target = if first { ENTRY } else { ENTRY + 1 };
+            out.push_str(&"#".repeat(target));
+            out.push_str(&line[level..]);
+        } else {
+            out.push_str(line);
+        }
+        if !line.trim().is_empty() {
+            first = false;
+        }
+    }
+    out
+}
+
 fn extract_title(body: &str) -> String {
     body.lines()
         .find(|l| !l.trim().is_empty())
@@ -295,6 +326,46 @@ fn extract_title(body: &str) -> String {
         .trim_start_matches('#')
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod demote_tests {
+    use super::demote_headings;
+
+    #[test]
+    fn body_headings_go_below_the_entry_heading() {
+        let body = "#### CI one\n\nDetails:\n\n### Sub heading\n\nmore\n\n## Big\n\n# Top\n\n#### Same\n\n##### Deep\n\n###### Deeper\n";
+        assert_eq!(
+            demote_headings(body),
+            "#### CI one\n\nDetails:\n\n##### Sub heading\n\nmore\n\n##### Big\n\n##### Top\n\n##### Same\n\n##### Deep\n\n###### Deeper\n"
+        );
+    }
+
+    #[test]
+    fn a_title_written_higher_goes_to_the_entry_level() {
+        assert_eq!(
+            demote_headings("\n## Title\n\nText\n"),
+            "\n#### Title\n\nText\n"
+        );
+        assert_eq!(
+            demote_headings("Text\n\n## Later\n"),
+            "Text\n\n##### Later\n"
+        );
+    }
+
+    #[test]
+    fn fenced_code_is_left_alone() {
+        let body = "#### T\n\n```md\n## not a heading\n~~~\n# still code\n```\n\n~~~~\n### code\n~~~~\n\n## after\n";
+        assert_eq!(
+            demote_headings(body),
+            "#### T\n\n```md\n## not a heading\n~~~\n# still code\n```\n\n~~~~\n### code\n~~~~\n\n##### after\n"
+        );
+    }
+
+    #[test]
+    fn hashes_without_a_space_are_text() {
+        assert_eq!(demote_headings("#hashtag\n##\n"), "#hashtag\n#####\n");
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,5 @@
 ---
 source: tests/snapshot_changelog.rs
-assertion_line: 148
 expression: entry
 ---
 ## Unreleased

@@ -44,28 +44,6 @@ impl ChangelogWrites {
     }
 }
 
-/// The text a release puts at the top of a new changelog: the version section
-/// with its none-bump entries, or only an Unreleased section when nothing is
-/// released.
-pub fn generate_changelog_entry(
-    plan: &ReleasePlan,
-    config: &ChangelogConfig,
-    date: &str,
-    is_monorepo: bool,
-) -> String {
-    let none: Vec<&NoneEntry> = plan.none_entries.iter().collect();
-    let release = release_section(plan, date, is_monorepo, config);
-    compose_section(
-        release.as_deref(),
-        UNRELEASED_HEADING,
-        &Folded::default(),
-        &none,
-        config,
-    )
-    .map(|(section, _)| section)
-    .unwrap_or_default()
-}
-
 fn release_section(
     plan: &ReleasePlan,
     date: &str,
@@ -181,8 +159,14 @@ fn split_unreleased<'a>(body: &'a str, heading: &str) -> (&'a str, Option<&'a st
     let marker = format!("### {heading}");
     let mut offset = 0;
     let mut internal_start = None;
+    let mut fences = FenceTracker::default();
     for line in body.split_inclusive('\n') {
-        let trimmed = line.trim_end();
+        // Fenced code is never a heading or a link reference.
+        let trimmed = if fences.is_code(line) {
+            ""
+        } else {
+            line.trim_end()
+        };
         match internal_start {
             None if trimmed == marker => internal_start = Some((offset, offset + line.len())),
             Some((head, start)) if trimmed.starts_with("### ") || trimmed.starts_with("## ") => {
@@ -199,6 +183,35 @@ fn split_unreleased<'a>(body: &'a str, heading: &str) -> (&'a str, Option<&'a st
     match internal_start {
         Some((head, start)) => (body[..head].trim(), Some(body[start..].trim()), ""),
         None => (body.trim(), None, ""),
+    }
+}
+
+/// Follows fenced code blocks (``` or ~~~) line by line, so a "## " line in a
+/// code sample isn't taken for a heading. Same rule as release-notes.sh.
+#[derive(Debug, Default)]
+pub(crate) struct FenceTracker {
+    open: Option<(char, usize)>,
+}
+
+impl FenceTracker {
+    /// Whether `line` is code: a fence delimiter or a line inside a fence.
+    pub(crate) fn is_code(&mut self, line: &str) -> bool {
+        let trimmed = line.trim_start_matches(' ');
+        let marker = trimmed.chars().next().filter(|c| *c == '`' || *c == '~');
+        let run = marker.map_or(0, |c| trimmed.chars().take_while(|x| *x == c).count());
+        if let Some(c) = marker.filter(|_| run >= 3) {
+            match self.open {
+                None => self.open = Some((c, run)),
+                Some((open, len))
+                    if open == c && run >= len && trimmed[run..].trim().is_empty() =>
+                {
+                    self.open = None
+                }
+                Some(_) => {}
+            }
+            return true;
+        }
+        self.open.is_some()
     }
 }
 
@@ -276,8 +289,14 @@ fn take_unreleased(content: &str) -> Split {
     let mut found_heading = None;
     let mut bracketed_versions = false;
     let mut done = false;
+    let mut fences = FenceTracker::default();
     for line in content.split_inclusive('\n') {
-        let trimmed = line.trim_end();
+        // Fenced code is never a heading or a link reference.
+        let trimmed = if fences.is_code(line) {
+            ""
+        } else {
+            line.trim_end()
+        };
         if !done {
             if is_any_version_heading(trimmed) {
                 bodies.extend(current.take());
@@ -357,26 +376,20 @@ pub fn write_changelog(
     Ok(Some(extra))
 }
 
-pub fn update_changelog_file(changelog_path: &Path, new_entry: &str) -> anyhow::Result<()> {
-    if changelog_path.exists() {
-        let existing = std::fs::read_to_string(changelog_path)?;
-        let content = insert_after_header(&existing, new_entry);
-        std::fs::write(changelog_path, content)?;
-    } else {
-        let content = format!("# Changelog\n\n{new_entry}");
-        std::fs::write(changelog_path, content)?;
-    }
-    Ok(())
-}
-
 /// Puts a new section at the top: below the header (everything before the
 /// first "## " heading, which may be nothing) and above every existing section.
 /// A file with no sections yet keeps its link references at the end.
 fn insert_after_header(existing: &str, new_entry: &str) -> String {
     let mut offset = 0;
     let mut split_at = None;
+    let mut fences = FenceTracker::default();
     for line in existing.split_inclusive('\n') {
-        let trimmed = line.trim_end();
+        // Fenced code is never a heading or a link reference.
+        let trimmed = if fences.is_code(line) {
+            ""
+        } else {
+            line.trim_end()
+        };
         if trimmed.starts_with("## ") || is_link_reference(trimmed) {
             split_at = Some(offset);
             break;
@@ -517,6 +530,21 @@ mod tests {
     use crate::package::types::{PackageType, Version};
     use crate::release::plan::PlannedRelease;
 
+    /// What a release run writes into a new root changelog, below its title.
+    fn entry_text(
+        plan: &ReleasePlan,
+        config: &ChangelogConfig,
+        date: &str,
+        is_monorepo: bool,
+    ) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        write_root_changelog(dir.path(), plan, config, date, is_monorepo).unwrap();
+        std::fs::read_to_string(dir.path().join(&config.file))
+            .unwrap_or_default()
+            .trim_start_matches("# Changelog\n\n")
+            .to_string()
+    }
+
     fn make_plan(releases: Vec<PlannedRelease>, none: Vec<NoneEntry>) -> ReleasePlan {
         ReleasePlan {
             releases,
@@ -555,7 +583,7 @@ mod tests {
             vec![],
         );
         let config = ChangelogConfig::default();
-        let entry = generate_changelog_entry(&plan, &config, "2026-07-25", false);
+        let entry = entry_text(&plan, &config, "2026-07-25", false);
 
         assert!(entry.contains("## 0.2.0 - 2026-07-25"));
         assert!(entry.contains("#### Added retry logic"));
@@ -580,7 +608,7 @@ mod tests {
             }],
         );
         let config = ChangelogConfig::default();
-        let entry = generate_changelog_entry(&plan, &config, "2026-07-25", false);
+        let entry = entry_text(&plan, &config, "2026-07-25", false);
 
         assert!(entry.contains("#### Feature\n\n### Internal\n\n"));
         assert!(entry.contains("Updated CI"));
@@ -601,7 +629,7 @@ mod tests {
             none_bump: "omit".to_string(),
             ..Default::default()
         };
-        let entry = generate_changelog_entry(&plan, &config, "2026-07-25", false);
+        let entry = entry_text(&plan, &config, "2026-07-25", false);
         assert!(!entry.contains("Internal"));
     }
 
@@ -635,7 +663,7 @@ mod tests {
             per_package: false,
             ..Default::default()
         };
-        let entry = generate_changelog_entry(&plan, &config, "2026-07-25", true);
+        let entry = entry_text(&plan, &config, "2026-07-25", true);
 
         assert!(entry.contains("### mylib"));
         assert!(entry.contains("### frontend"));
@@ -655,7 +683,7 @@ mod tests {
         .unwrap();
 
         let new_entry = "## 0.2.0 - 2026-07-25\n\n#### Fix\n\n";
-        update_changelog_file(&path, new_entry).unwrap();
+        write_changelog(&path, Some(new_entry), &[], &ChangelogConfig::default()).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.starts_with("# Changelog\n"));
@@ -670,7 +698,7 @@ mod tests {
         let path = dir.path().join("CHANGELOG.md");
 
         let new_entry = "## 0.1.0 - 2026-07-25\n\n#### Initial\n\n";
-        update_changelog_file(&path, new_entry).unwrap();
+        write_changelog(&path, Some(new_entry), &[], &ChangelogConfig::default()).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.starts_with("# Changelog"));
@@ -933,6 +961,17 @@ mod tests {
     }
 
     #[test]
+    fn fenced_headings_do_not_end_sections() {
+        let ci = none_entry("#### CI new", &["x"]);
+        let initial = "# C\n\n## Unreleased\n\n### Internal\n\n#### CI old\n\n```\n### Internal\n## 1.0.0 - d\n```\n\n## 1.0.0 - d\n\n- A\n";
+        let (content, _) = write_and_read(initial, None, &[&ci]);
+        assert_eq!(
+            content,
+            "# C\n\n## Unreleased\n\n### Internal\n\n#### CI old\n\n```\n### Internal\n## 1.0.0 - d\n```\n\n#### CI new\n\n## 1.0.0 - d\n\n- A\n"
+        );
+    }
+
+    #[test]
     fn several_unreleased_sections_are_merged() {
         let initial = "# C\n\n## Unreleased\n\n### Internal\n\n- two\n\n## Unreleased\n\n### Internal\n\n- one\n\n## 1.0.0 - d\n\n- A\n";
         let (content, extra) = write_and_read(initial, Some("## 1.1.0 - d\n\n#### Feature"), &[]);
@@ -1062,6 +1101,10 @@ mod tests {
         assert!(!is_version_heading("## 2FA support"));
         assert!(!is_version_heading("## 1.x.0"));
         assert!(!is_version_heading("### 1.0.0"));
+        for heading in ["## [1.0.0] - d", "## v1.0.0", "## [v1.0.0]", "## [V1.0.0]"] {
+            assert!(is_any_version_heading(heading), "{heading}");
+        }
+        assert!(!is_any_version_heading("## [Unreleased]"));
     }
 
     #[test]
@@ -1079,7 +1122,7 @@ mod tests {
             none_bump_heading: "Misc".to_string(),
             ..Default::default()
         };
-        let entry = generate_changelog_entry(&plan, &config, "2026-07-25", false);
+        let entry = entry_text(&plan, &config, "2026-07-25", false);
         assert!(entry.contains("### Misc"));
     }
 }

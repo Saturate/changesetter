@@ -1,6 +1,5 @@
 ---
 source: tests/snapshot_changelog.rs
-assertion_line: 238
 expression: content
 ---
 # Changelog

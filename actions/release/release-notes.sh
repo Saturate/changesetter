@@ -16,13 +16,24 @@ changelog="${2:-CHANGELOG.md}"
 # heading counts as a version heading. Other headings end a section too, so
 # notes never run to the end of the file: "## Unreleased" (none-bump entries
 # no release has picked up yet, never a version), versions in other tools'
-# spellings ("## [1.0.0]", "## v1.0.0") and Keep a Changelog's trailing
+# spellings ("## [1.0.0]", "## v1.0.0", "## [v1.0.0]") and Keep a Changelog's trailing
 # "[1.0.0]: https://..." link references. Only version and Unreleased labels
 # count, since changeset bodies may use reference links of their own. Same
 # rule as the Rust side.
 awk -v version="$version" '
   { sub(/[ \t\r]+$/, "") }
-  /^## \[?Unreleased\]?$/ || /^## (\[|[vV])[0-9]+\.[0-9]+\.[0-9]+/ || /^\[(Unreleased|[vV]?[0-9]+\.[0-9]+\.[0-9]+[^]]*)\]: / {
+  # Fenced code (``` or ~~~) is never a heading, so a "## " line in a code
+  # sample stays in the notes. A fence closes with at least as many of the
+  # same character and nothing after them.
+  match($0, /^ *(````*|~~~~*)/) {
+    run = substr($0, RSTART, RLENGTH); sub(/^ */, "", run)
+    if (fence == "") fence = run
+    else if (substr(run, 1, 1) == substr(fence, 1, 1) && length(run) >= length(fence) && RLENGTH == length($0)) fence = ""
+    if (found && (started || NF)) { started = 1; print }
+    next
+  }
+  fence != "" { if (found && (started || NF)) { started = 1; print }; next }
+  /^## \[?Unreleased\]?$/ || /^## (\[[vV]?|[vV])[0-9]+\.[0-9]+\.[0-9]+/ || /^\[(Unreleased|[vV]?[0-9]+\.[0-9]+\.[0-9]+[^]]*)\]: / {
     if (found) exit
     next
   }

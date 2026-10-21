@@ -665,6 +665,59 @@ fn private_workspace_root_gets_no_changelog() {
     assert_clean(dir.path());
 }
 
+fn version_no_commit(repo: &Path) {
+    let out = Command::new(env!("CARGO_BIN_EXE_changesetter"))
+        .args(["version", "--no-commit"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn headings_in_a_none_body_do_not_split_the_internal_section() {
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "one",
+        "---\ndefault: none\n---\n\n#### CI one\n\nDetails:\n\n### Sub heading\n\nmore one\n\n## Big heading in body\n\ntail one\n",
+    );
+    version_no_commit(dir.path());
+    write_changeset(
+        dir.path(),
+        "two",
+        "---\ndefault: none\n---\n\n#### CI two\n",
+    );
+    version_no_commit(dir.path());
+
+    assert_eq!(
+        read(&dir.path().join("CHANGELOG.md")),
+        "# Changelog\n\n## Unreleased\n\n### Internal\n\n#### CI one\n\nDetails:\n\n##### Sub heading\n\nmore one\n\n##### Big heading in body\n\ntail one\n\n#### CI two\n"
+    );
+}
+
+#[test]
+fn headings_in_a_release_body_keep_the_notes_whole() {
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "fix",
+        "---\ndefault: patch\n---\n\n#### Fix\n\n## Migration\n\nDo X.\n\n```md\n## 9.9.9 stays code\n```\n\nEnd.\n",
+    );
+    git_add_commit(dir.path(), "add changeset");
+    release_commit(dir.path());
+
+    let notes = release_notes("1.0.1", &read(&dir.path().join("CHANGELOG.md")));
+    assert_eq!(
+        notes,
+        "#### Fix\n\n##### Migration\n\nDo X.\n\n```md\n## 9.9.9 stays code\n```\n\nEnd.\n"
+    );
+}
+
 // ---------- Release with tagging ----------
 
 #[test]
@@ -1539,6 +1592,8 @@ fn release_notes_end_at_other_tools_headings_and_links() {
     for next in [
         "## [1.0.0] - 2020-01-01",
         "## v1.0.0",
+        "## [v1.0.0] - 2020-01-01",
+        "## [V1.0.0]",
         "## [Unreleased]",
         "## Unreleased",
         "[1.1.0]: https://example.com/compare/v1.0.0...v1.1.0",

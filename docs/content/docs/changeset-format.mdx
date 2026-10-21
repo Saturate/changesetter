@@ -102,3 +102,7 @@ When the changelog gets no new version in the same release run, the entries go u
 - Multiple packages allowed in one changeset
 - Empty frontmatter is an error
 - The body after the closing `---` is markdown; the first heading becomes the changelog entry title
+
+## Headings in the body
+
+The changelog finds its version, Unreleased and none-bump sections by their `## ` and `### ` headings, so headings in a changeset body are moved below them when the body is written to the changelog (and to tag messages and release notes). A heading on the body's first line becomes the entry heading, `####`. Every other heading of level 1 to 4 becomes `#####`. Levels 5 and 6, and anything inside a fenced code block (```` ``` ```` or `~~~`), are left as written.
