@@ -69,6 +69,7 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
 
     let name = writer::write_changeset(&changeset_dir, &packages, &body)?;
     eprintln!("Created {}/{name}.md", config.changeset_dir_relative());
+    crate::changelog::generator::warn_fenced_boundaries(&format!("{name}.md"), &body);
 
     Ok(())
 }

@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::changelog::markdown::code_lines;
 use crate::config::ChangelogConfig;
 use crate::package::types::{Package, PackageType};
 use crate::release::plan::{NoneEntry, ReleasePlan};
@@ -10,6 +9,12 @@ use crate::release::plan::{NoneEntry, ReleasePlan};
 /// next release written to the same changelog folds it into its own section.
 pub const UNRELEASED_HEADING: &str = "## Unreleased";
 const UNRELEASED_HEADING_BRACKETED: &str = "## [Unreleased]";
+
+/// Whitespace as release-notes.sh sees it (awk's `[ \t\r]` plus newlines).
+/// Trimming only these keeps the Rust side's notes byte for byte the same as
+/// what the script reads back, where Unicode-aware `trim` would also eat
+/// characters like U+00A0 that awk keeps.
+const WS: [char; 4] = [' ', '\t', '\r', '\n'];
 
 /// The package name a changeset uses for the whole repo. A single-package
 /// repo resolves it to the real package; in a monorepo it stays as is.
@@ -36,10 +41,10 @@ impl ChangelogWrites {
             if extra.is_empty() {
                 continue;
             }
-            release.changelog = if release.changelog.trim().is_empty() {
+            release.changelog = if release.changelog.trim_matches(WS).is_empty() {
                 extra.clone()
             } else {
-                format!("{}\n\n{extra}", release.changelog.trim_end())
+                format!("{}\n\n{extra}", release.changelog.trim_end_matches(WS))
             };
         }
     }
@@ -125,7 +130,7 @@ fn compose_section(
         Vec::new()
     } else {
         none.iter()
-            .map(|n| n.body.trim())
+            .map(|n| n.body.trim_matches(WS))
             .filter(|body| !body.is_empty())
             .collect()
     };
@@ -143,7 +148,7 @@ fn compose_section(
     if release.is_none() && extra.is_empty() {
         return None;
     }
-    let head = release.map_or(unreleased_heading, str::trim_end);
+    let head = release.map_or(unreleased_heading, |r| r.trim_end_matches(WS));
     let section = if extra.is_empty() {
         format!("{head}\n")
     } else {
@@ -160,16 +165,15 @@ fn split_unreleased<'a>(body: &'a str, heading: &str) -> (&'a str, Option<&'a st
     let marker = format!("### {heading}");
     let mut offset = 0;
     let mut internal_start = None;
-    for (line, code) in body.split_inclusive('\n').zip(code_lines(body)) {
-        // Fenced code is never a heading or a link reference.
-        let trimmed = if code { "" } else { line.trim_end() };
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(WS);
         match internal_start {
             None if trimmed == marker => internal_start = Some((offset, offset + line.len())),
             Some((head, start)) if trimmed.starts_with("### ") || trimmed.starts_with("## ") => {
                 return (
-                    body[..head].trim(),
-                    Some(body[start..offset].trim()),
-                    body[offset..].trim(),
+                    body[..head].trim_matches(WS),
+                    Some(body[start..offset].trim_matches(WS)),
+                    body[offset..].trim_matches(WS),
                 );
             }
             _ => {}
@@ -177,8 +181,12 @@ fn split_unreleased<'a>(body: &'a str, heading: &str) -> (&'a str, Option<&'a st
         offset += line.len();
     }
     match internal_start {
-        Some((head, start)) => (body[..head].trim(), Some(body[start..].trim()), ""),
-        None => (body.trim(), None, ""),
+        Some((head, start)) => (
+            body[..head].trim_matches(WS),
+            Some(body[start..].trim_matches(WS)),
+            "",
+        ),
+        None => (body.trim_matches(WS), None, ""),
     }
 }
 
@@ -235,6 +243,31 @@ fn is_link_reference(line: &str) -> bool {
     label == "Unreleased" || is_any_version_heading(&format!("## {label}"))
 }
 
+/// Lines in a changeset body's fenced code that the changelog parsers would
+/// take for a section boundary. Parsers read plain lines, not fences, so such
+/// a line ends the entry's section early once it's in the changelog. Bodies
+/// keep their code as written (changing it would change the sample), so this
+/// is only reported.
+pub fn fenced_boundary_lines(body: &str) -> Vec<&str> {
+    body.split_inclusive('\n')
+        .zip(crate::changelog::markdown::fenced_lines(body))
+        .filter(|(_, code)| *code)
+        .map(|(line, _)| line.trim_end_matches(WS))
+        .filter(|line| {
+            line.starts_with("## ") || line.starts_with("### ") || is_link_reference(line)
+        })
+        .collect()
+}
+
+/// Prints a warning for each line `fenced_boundary_lines` finds.
+pub fn warn_fenced_boundaries(file: &str, body: &str) {
+    for line in fenced_boundary_lines(body) {
+        eprintln!(
+            "warning: {file}: \"{line}\" in a code block reads as a changelog heading and ends the entry there; indent it or change the line"
+        );
+    }
+}
+
 /// A changelog with its Unreleased sections taken out.
 #[derive(Debug)]
 struct Split {
@@ -256,9 +289,8 @@ fn take_unreleased(content: &str) -> Split {
     let mut found_heading = None;
     let mut bracketed_versions = false;
     let mut done = false;
-    for (line, code) in content.split_inclusive('\n').zip(code_lines(content)) {
-        // Fenced code is never a heading or a link reference.
-        let trimmed = if code { "" } else { line.trim_end() };
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(WS);
         if !done {
             if is_any_version_heading(trimmed) {
                 bodies.extend(current.take());
@@ -344,9 +376,8 @@ pub fn write_changelog(
 fn insert_after_header(existing: &str, new_entry: &str) -> String {
     let mut offset = 0;
     let mut split_at = None;
-    for (line, code) in existing.split_inclusive('\n').zip(code_lines(existing)) {
-        // Fenced code is never a heading or a link reference.
-        let trimmed = if code { "" } else { line.trim_end() };
+    for line in existing.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(WS);
         if trimmed.starts_with("## ") || is_link_reference(trimmed) {
             split_at = Some(offset);
             break;
@@ -354,14 +385,14 @@ fn insert_after_header(existing: &str, new_entry: &str) -> String {
         offset += line.len();
     }
     let (header, rest) = existing.split_at(split_at.unwrap_or(existing.len()));
-    let header = header.trim_end();
+    let header = header.trim_end_matches(WS);
     let rest = rest.trim_start_matches(['\n', '\r']);
     let mut out = String::new();
     if !header.is_empty() {
         out.push_str(header);
         out.push_str("\n\n");
     }
-    out.push_str(new_entry.trim_end());
+    out.push_str(new_entry.trim_end_matches(WS));
     out.push('\n');
     if !rest.is_empty() {
         out.push('\n');
@@ -918,14 +949,49 @@ mod tests {
     }
 
     #[test]
-    fn fenced_headings_do_not_end_sections() {
-        let ci = none_entry("#### CI new", &["x"]);
-        let initial = "# C\n\n## Unreleased\n\n### Internal\n\n#### CI old\n\n```\n### Internal\n## 1.0.0 - d\n```\n\n## 1.0.0 - d\n\n- A\n";
-        let (content, _) = write_and_read(initial, None, &[&ci]);
+    fn parsing_ignores_fences_so_an_old_unclosed_one_stays_put() {
+        // An Unreleased note with a fence it never closed, from before bodies
+        // got their fences closed, and a later version with a closed fence.
+        // Reading lines without fence state keeps 1.0.0 a version heading.
+        let initial = "# C\n\n## Unreleased\n\n### Internal\n\n```sh\nold unclosed\n\n## 1.0.0 - d\n\n```\ncode\n```\n\n- A\n";
+        let (content, extra) = write_and_read(initial, Some("## 1.0.1 - d\n\n#### Fix"), &[]);
         assert_eq!(
             content,
-            "# C\n\n## Unreleased\n\n### Internal\n\n#### CI old\n\n```\n### Internal\n## 1.0.0 - d\n```\n\n#### CI new\n\n## 1.0.0 - d\n\n- A\n"
+            "# C\n\n## 1.0.1 - d\n\n#### Fix\n\n### Internal\n\n```sh\nold unclosed\n\n## 1.0.0 - d\n\n```\ncode\n```\n\n- A\n"
         );
+        assert_eq!(
+            extra.as_deref(),
+            Some("### Internal\n\n```sh\nold unclosed")
+        );
+    }
+
+    #[test]
+    fn fenced_boundary_lines_are_reported() {
+        let body = "#### T\n\n```md\n## 9.9.9\n### Internal\n[1.0.0]: https://x\n# fine\n```\n\n## outside is demoted\n";
+        assert_eq!(
+            fenced_boundary_lines(body),
+            vec!["## 9.9.9", "### Internal", "[1.0.0]: https://x"]
+        );
+        assert!(fenced_boundary_lines("#### T\n\n## demoted\n").is_empty());
+    }
+
+    #[test]
+    fn a_long_changelog_is_read_in_linear_time() {
+        // The parsers read each line once with no fence state, so 5,000
+        // versions, each with a fence it never closes, take milliseconds.
+        // The bound is loose so a slow debug build on CI still passes.
+        let mut initial = String::from("# C\n\n## Unreleased\n\n### Internal\n\n- old\n\n");
+        for v in (0..5000).rev() {
+            initial.push_str(&format!(
+                "## 1.0.{v} - d\n\n- note {v}\n\n```sh\nunclosed {v}\n\n"
+            ));
+        }
+        let started = std::time::Instant::now();
+        let (content, _) = write_and_read(&initial, Some("## 2.0.0 - d\n\n#### Big"), &[]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(content.starts_with(
+            "# C\n\n## 2.0.0 - d\n\n#### Big\n\n### Internal\n\n- old\n\n## 1.0.4999 - d\n"
+        ));
     }
 
     #[test]

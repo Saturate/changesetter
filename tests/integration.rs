@@ -706,7 +706,7 @@ fn headings_in_a_release_body_keep_the_notes_whole() {
     write_changeset(
         dir.path(),
         "fix",
-        "---\ndefault: patch\n---\n\n#### Fix\n\n## Migration\n\nDo X.\n\n```md\n## 9.9.9 stays code\n```\n\nEnd.\n",
+        "---\ndefault: patch\n---\n\n#### Fix\n\n## Migration\n\nDo X.\n\n```md\n# a comment stays as written\n```\n\nEnd.\n",
     );
     git_add_commit(dir.path(), "add changeset");
     release_commit(dir.path());
@@ -714,7 +714,54 @@ fn headings_in_a_release_body_keep_the_notes_whole() {
     let notes = release_notes("1.0.1", &read(&dir.path().join("CHANGELOG.md")));
     assert_eq!(
         notes,
-        "#### Fix\n\n##### Migration\n\nDo X.\n\n```md\n## 9.9.9 stays code\n```\n\nEnd.\n"
+        "#### Fix\n\n##### Migration\n\nDo X.\n\n```md\n# a comment stays as written\n```\n\nEnd.\n"
+    );
+}
+
+#[test]
+fn a_section_heading_inside_a_code_block_is_warned_about() {
+    // Unsupported: code is kept as written and the parsers don't track
+    // fences, so this line ends the entry. `status` and `add` say so.
+    let dir = setup_cargo_repo();
+    write_changeset(
+        dir.path(),
+        "fix",
+        "---\ndefault: patch\n---\n\n#### Fix\n\n```md\n## 9.9.9 looks like a version\n```\n",
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_changesetter"))
+        .arg("status")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: fix.md: \"## 9.9.9 looks like a version\" in a code block"),
+        "{stderr}"
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_changesetter"))
+        .args([
+            "add",
+            "--package",
+            "testpkg",
+            "--bump",
+            "patch",
+            "--message",
+        ])
+        .arg("Fix\n\n```\n### Internal\n```")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("\"### Internal\" in a code block"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 
@@ -784,6 +831,37 @@ fn an_unclosed_fence_in_a_none_body_does_not_swallow_the_file() {
         "#### Feature two\n\n### Internal\n\nCI note\n\n```yaml\nkey: v\n```\n\n#### Second CI note\n\n"
     );
     assert_eq!(notes_agree(dir.path(), "1.1.0"), "#### Feature one\n");
+}
+
+#[test]
+fn a_legacy_unclosed_fence_is_not_closed_by_a_later_one() {
+    // An old Unreleased note opened a fence and never closed it, and the
+    // version below has a fence of its own. Lines are read without fence
+    // state, so 1.0.0 stays a version and isn't folded into the release.
+    let dir = setup_cargo_repo();
+    std::fs::write(
+        dir.path().join("CHANGELOG.md"),
+        "# Changelog\n\n## Unreleased\n\n### Internal\n\n```sh\nold unclosed\n\n## 1.0.0 - d\n\n```\ncode\n```\n\n- A\n",
+    )
+    .unwrap();
+    write_changeset(
+        dir.path(),
+        "fix",
+        "---\ndefault: patch\n---\n\n#### Fix\u{a0}\n\nMore.\u{a0}\u{a0}\n\nDone.\n",
+    );
+    git_add_commit(dir.path(), "legacy");
+    release_commit(dir.path());
+
+    // The U+00A0s stay in the tag as in the file: Rust trims only what awk does.
+    assert_eq!(
+        notes_agree(dir.path(), "1.0.1"),
+        "#### Fix\u{a0}\n\nMore.\u{a0}\u{a0}\n\nDone.\n\n### Internal\n\n```sh\nold unclosed\n\n"
+    );
+    let changelog = read(&dir.path().join("CHANGELOG.md"));
+    assert_eq!(
+        release_notes("1.0.0", &changelog),
+        "```\ncode\n```\n\n- A\n"
+    );
 }
 
 #[test]
@@ -1715,20 +1793,25 @@ fn release_notes_end_at_other_tools_headings_and_links() {
 }
 
 #[test]
-fn release_notes_follow_commonmark_fences() {
-    // Indented 4 spaces is not a fence, and a backtick fence's info string
-    // can't hold a backtick, so the "## 0.1.0" below them is a heading.
-    for open in ["    ```", "``` a`b"] {
-        let changelog = format!("## 0.2.0 - d\n\n{open}\n\n## 0.1.0 - d\n\n- Old\n");
-        assert_eq!(
-            release_notes("0.2.0", &changelog),
-            format!("{open}\n\n"),
-            "{open}"
-        );
+fn release_notes_read_lines_without_fence_state() {
+    // Same reading as before fences mattered anywhere: a version heading ends
+    // the section wherever it is, so an old changelog with an unclosed fence
+    // still splits at its versions.
+    let changelog = "## 0.2.0 - d\n\n```sh\nunclosed\n\n## 0.1.0 - d\n\n```\nx\n```\n";
+    assert_eq!(release_notes("0.2.0", changelog), "```sh\nunclosed\n\n");
+    assert_eq!(release_notes("0.1.0", changelog), "```\nx\n```\n");
+
+    // 5,000 versions are one pass; the bound is loose for slow CI machines.
+    let mut long = String::new();
+    for v in (0..5000).rev() {
+        long.push_str(&format!(
+            "## 1.0.{v} - d\n\n- note {v}\n\n```sh\nunclosed\n\n"
+        ));
     }
-    let changelog = "## 0.2.0 - d\n\n~~~ a`b\n## 0.1.0\n~~~\n\n## 0.1.0 - d\n";
+    let started = std::time::Instant::now();
     assert_eq!(
-        release_notes("0.2.0", changelog),
-        "~~~ a`b\n## 0.1.0\n~~~\n\n"
+        release_notes("1.0.0", &long),
+        "- note 0\n\n```sh\nunclosed\n\n"
     );
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
