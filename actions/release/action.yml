@@ -108,7 +108,7 @@ runs:
           CHANGELOG=$(echo "$release" | jq -r '.changelog')
 
           gh release create "$TAG" \
-            --title "${NAME} v${VERSION}" \
+            --title "${NAME:+${NAME} }v${VERSION}" \
             --notes "$CHANGELOG" \
             $DRAFT_FLAG \
             --verify-tag || true
@@ -231,7 +231,7 @@ runs:
               if [ "$DRAFT" = "true" ]; then FLAGS+=(--draft); fi
               case "$VERSION" in *-*) FLAGS+=(--prerelease) ;; esac
               gh release create "$TAG" --verify-tag \
-                --title "${NAME} v${VERSION}" --notes "$NOTES" "${FLAGS[@]}"
+                --title "${NAME:+${NAME} }v${VERSION}" --notes "$NOTES" "${FLAGS[@]}"
               ACTED=true
             fi
           fi
@@ -305,9 +305,16 @@ runs:
         # Read from the working tree, so a first release's new CHANGELOG.md is
         # covered. Releases sharing one section (a grouped monorepo changelog)
         # are shown once under all their names.
+        # One compact JSON object per release, not tab-separated fields: tab
+        # is IFS whitespace, so read collapses an empty name (a Cargo
+        # workspace root with [workspace.package] has none) and shifts the
+        # version and changelog path into the wrong fields.
         LABELS=(); BODIES=(); KEYS=()
-        while IFS=$'\t' read -r name version file; do
-          [ -n "$name" ] || continue
+        while read -r release; do
+          name=$(jq -r '.name' <<<"$release")
+          version=$(jq -r '.version' <<<"$release")
+          file=$(jq -r '.changelog' <<<"$release")
+          LABEL="${name:+${name}@}${version}"
           NOTES=$("${GITHUB_ACTION_PATH}/release-notes.sh" "$version" "$file")
           KEY="${file}"$'\n'"${NOTES}"
           FOUND=""
@@ -315,15 +322,15 @@ runs:
             if [ "${KEYS[$i]}" = "$KEY" ]; then FOUND=$i; break; fi
           done
           if [ -n "$FOUND" ]; then
-            LABELS[FOUND]="${LABELS[$FOUND]}, ${name}@${version}"
+            LABELS[FOUND]="${LABELS[$FOUND]}, ${LABEL}"
           else
-            KEYS+=("$KEY"); LABELS+=("${name}@${version}"); BODIES+=("$NOTES")
+            KEYS+=("$KEY"); LABELS+=("$LABEL"); BODIES+=("$NOTES")
           fi
         # A release with no matching package has no changelog of its own to
         # read; release-notes.sh would fall back to the root CHANGELOG.md.
-        done < <(jq -r '.packages as $p | .releases[] | . as $r
+        done < <(jq -c '.packages as $p | .releases[] | . as $r
           | ([$p[] | select(.name == $r.name) | .changelog][0]) as $c
-          | select($c != null) | [$r.name, $r.version, $c] | @tsv' <<<"$PLAN")
+          | select($c != null) | {name: $r.name, version: $r.version, changelog: $c}' <<<"$PLAN")
 
         CHANGELOG_PREVIEW=""
         for i in "${!KEYS[@]}"; do

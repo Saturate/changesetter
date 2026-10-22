@@ -634,6 +634,36 @@ fn absorbed_notes_reach_the_tag_message_and_json_once() {
 }
 
 #[test]
+fn nameless_workspace_root_release_has_no_stray_separator() {
+    let dir = setup_repo();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[workspace]\nmembers = []\n\n[workspace.package]\nversion = \"0.0.0\"\n",
+    )
+    .unwrap();
+    write_changeset(
+        dir.path(),
+        "feat",
+        "---\ndefault: minor\n---\n\n#### Feat\n",
+    );
+    git_add_commit(dir.path(), "workspace");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_changesetter"))
+        .arg("status")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&status.stdout);
+    assert!(text.contains("\n  0.0.0 -> 0.1.0 (minor)"), "{text}");
+
+    release_commit(dir.path());
+    assert_eq!(
+        git_out(dir.path(), &["log", "-1", "--format=%s"]).trim(),
+        "chore: release 0.1.0"
+    );
+}
+
+#[test]
 fn private_workspace_root_gets_no_changelog() {
     let dir = setup_repo();
     std::fs::write(

@@ -208,7 +208,11 @@ fn apply_snapshot(
         };
 
         apply_version_bump(repo_root, &release.name, &snapshot_version, packages)?;
-        eprintln!("{} -> {snapshot_version}", release.name);
+        if release.name.is_empty() {
+            eprintln!("{snapshot_version}");
+        } else {
+            eprintln!("{} -> {snapshot_version}", release.name);
+        }
     }
 
     Ok(())
@@ -276,7 +280,15 @@ fn commit_version_changes(
     let versions: Vec<String> = plan
         .releases
         .iter()
-        .map(|r| format!("{}@{}", r.name, r.version))
+        // A Cargo workspace root versioned through [workspace.package] has no
+        // name, and "@0.1.0" reads like a typo in the release commit.
+        .map(|r| {
+            if r.name.is_empty() {
+                r.version.to_string()
+            } else {
+                format!("{}@{}", r.name, r.version)
+            }
+        })
         .collect();
     let versions_str = versions.join(", ");
 
