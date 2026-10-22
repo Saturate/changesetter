@@ -15,7 +15,7 @@ STEPS="$ROOT/steps"
 mkdir -p "$STEPS"
 ruby -ryaml -e '
   steps = YAML.load_file(ARGV[0])["runs"]["steps"]
-  %w[check-merged merged-release check-pending].each do |id|
+  %w[check-merged merged-release check-pending version-pr].each do |id|
     File.write(File.join(ARGV[1], "#{id}.sh"), steps.find { |s| s["id"] == id }.fetch("run"))
   end' "$REPO/actions/release/action.yml" "$STEPS"
 BIN="$ROOT/bin"
@@ -44,6 +44,9 @@ case "$1" in
     esac
     [ -f "$f" ] || f="$F/empty.json"
     jq -r "$jqf" "$f" ;;
+  pr)
+    # Keep the body the version PR would get.
+    while [ $# -gt 0 ]; do case "$1" in --body) printf '%s\n' "$2" > "$F/pr-body.md"; shift 2 ;; *) shift ;; esac; done ;;
   release)
     case "$2" in
       view) grep -qx "$3" "$F/releases.txt" 2>/dev/null ;;
@@ -156,6 +159,58 @@ echo "I: [release] tag_annotated = false gives a lightweight tag"
 new_repo i; printf '[release]\ntag_annotated = false\n' > changesetter.toml; git add -A; git commit -qm config; git push -q origin main
 M=$(version_pr_merge 1.1.0); label_merge "$M"
 run_steps 1; check "v1.1.0 is lightweight at the merge" '[ "$(git -C "$W" ls-remote "$O" refs/tags/v1.1.0 | cut -f1)" = "$M" ] && [ -z "$(remote_tag_at v1.1.0)" ]'
+
+# open_version_pr <n>: runs the version-PR step for the pending changesets
+open_version_pr() {
+  OUT="$FX/out-pr-$1"; : > "$OUT"
+  GH_FIXTURES="$FX" GITHUB_OUTPUT="$OUT" GH_TOKEN=x GITHUB_ACTION_PATH="$REPO/actions/release" \
+    GITHUB_REF_NAME=main PR_TITLE="chore: version packages" \
+    bash -eo pipefail "$STEPS/version-pr.sh" > "$FX/log-pr-$1" 2>&1 || echo "version-pr failed" >> "$FX/log-pr-$1"
+}
+
+echo "J: version PR preview shows notes folded in from Unreleased"
+new_repo j
+mkdir -p .changeset
+printf -- '---\npkg: none\n---\n\n#### CI tweak\n' > .changeset/ci.md
+git add -A; git commit -qm ci; changesetter version --no-commit > /dev/null 2>&1; git add -A; git commit -qm "unreleased notes"
+printf -- '---\npkg: patch\n---\n\n#### Fix\n' > .changeset/fix.md
+git add -A; git commit -qm fix; git push -q origin main
+open_version_pr 1
+check "step ran" '! grep -q "version-pr failed" "$FX/log-pr-1"'
+check "preview has the release and the folded note" 'grep -qx "### pkg@1.0.1" "$FX/pr-body.md" && grep -qx "#### Fix" "$FX/pr-body.md" && grep -qx "#### CI tweak" "$FX/pr-body.md"'
+check "preview leaves out older versions" '! grep -qx -- "- First" "$FX/pr-body.md"'
+
+echo "K: version PR preview on a first release"
+new_repo k; git rm -q CHANGELOG.md; git commit -qm "no changelog"
+mkdir -p .changeset; printf -- '---\npkg: minor\n---\n\n#### First feature\n' > .changeset/feat.md
+git add -A; git commit -qm feat; git push -q origin main
+open_version_pr 1
+check "preview has the new changelog's section" 'grep -qx "### pkg@1.1.0" "$FX/pr-body.md" && grep -qx "#### First feature" "$FX/pr-body.md"'
+
+echo "L: version PR preview with only none-bump notes"
+new_repo l; mkdir -p .changeset; printf -- '---\npkg: none\n---\n\n#### Docs\n' > .changeset/docs.md
+git add -A; git commit -qm docs; git push -q origin main
+open_version_pr 1
+check "preview has the Unreleased lines" 'grep -qx "## Unreleased" "$FX/pr-body.md" && grep -qx "#### Docs" "$FX/pr-body.md"'
+
+echo "M: version PR preview skips a release no package matches"
+new_repo m; mkdir -p .changeset; printf -- '---\npkg: patch\n---\n\n#### Fix\n' > .changeset/fix.md
+git add -A; git commit -qm fix; git push -q origin main
+# Status reports a release for a name no package has, which the preview must
+# not read from the root CHANGELOG.md.
+WRAP="$ROOT/m-bin"; mkdir -p "$WRAP"
+cat > "$WRAP/changesetter" <<WRAPPER
+#!/usr/bin/env bash
+if [ "\$*" = "status --output json" ]; then
+  "$BIN/changesetter" status --output json | jq '.releases += [{"name": "ghost", "version": "9.9.9"}]'
+else
+  exec "$BIN/changesetter" "\$@"
+fi
+WRAPPER
+chmod +x "$WRAP/changesetter"
+PATH="$WRAP:$PATH" open_version_pr 1
+check "step ran" '! grep -q "version-pr failed" "$FX/log-pr-1"'
+check "preview has pkg but no ghost" 'grep -qx "### pkg@1.0.1" "$FX/pr-body.md" && ! grep -q ghost "$FX/pr-body.md"'
 
 echo
 echo "passed $PASS, failed $FAIL (logs in $ROOT)"

@@ -73,7 +73,7 @@ pub fn assemble(
         if !has_real_bump && !resolved.is_empty() {
             none_entries.push(NoneEntry {
                 title: extract_title(&cs.body),
-                body: cs.body.clone(),
+                body: crate::changelog::markdown::demote_headings(&cs.body),
                 changesets: vec![cs_name.clone()],
                 packages: resolved.iter().map(|(n, _)| n.clone()).collect(),
             });
@@ -89,7 +89,10 @@ pub fn assemble(
             }
 
             if bump > BumpLevel::None {
-                entry.1.push((cs_name.clone(), cs.body.clone()));
+                entry.1.push((
+                    cs_name.clone(),
+                    crate::changelog::markdown::demote_headings(&cs.body),
+                ));
             }
         }
     }

@@ -53,7 +53,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     } else {
         pre_state.as_ref()
     };
-    let release_plan = plan::assemble(&changesets, &packages, &config, pre_ref);
+    let mut release_plan = plan::assemble(&changesets, &packages, &config, pre_ref);
 
     if release_plan.releases.is_empty() && release_plan.none_entries.is_empty() {
         eprintln!("No pending changesets, nothing to release.");
@@ -108,18 +108,20 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         }
     }
 
-    if config.changelog.per_package && is_monorepo {
-        generator::write_per_package_changelogs(&release_plan, &config.changelog, &date)?;
+    let writes = if config.changelog.per_package && is_monorepo {
+        generator::write_per_package_changelogs(&release_plan, &packages, &config.changelog, &date)?
     } else {
-        let entry = generator::generate_changelog_entry(
+        generator::write_root_changelog(
+            repo_root,
             &release_plan,
             &config.changelog,
             &date,
             is_monorepo,
-        );
-        let changelog_path = repo_root.join(&config.changelog.file);
-        generator::update_changelog_file(&changelog_path, &entry)?;
-    }
+        )?
+    };
+    // Tag messages and the JSON output read `changelog`, so it has to carry
+    // what landed in the version section, absorbed Unreleased notes included.
+    writes.apply_to(&mut release_plan);
 
     for cs in &changesets {
         if let Some(name) = &cs.filename {
@@ -147,7 +149,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     }
 
     if !opts.no_commit {
-        commit_version_changes(repo_root, &release_plan, &config, is_monorepo)?;
+        commit_version_changes(repo_root, &release_plan, &config, &writes.paths)?;
     }
 
     for release in &release_plan.releases {
@@ -216,7 +218,7 @@ fn commit_version_changes(
     repo_root: &Path,
     plan: &ReleasePlan,
     config: &Config,
-    is_monorepo: bool,
+    changelogs: &[std::path::PathBuf],
 ) -> anyhow::Result<()> {
     let mut paths_to_stage: Vec<String> = Vec::new();
 
@@ -259,19 +261,13 @@ fn commit_version_changes(
                 }
             }
         }
-
-        if is_monorepo && config.changelog.per_package {
-            paths_to_stage.push(
-                rel_path
-                    .join(&config.changelog.file)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
     }
 
-    if !is_monorepo || !config.changelog.per_package {
-        paths_to_stage.push(config.changelog.file.clone());
+    // Only the changelogs that were written: a none-only run touches
+    // changelogs of packages that aren't released, and `omit` may write none.
+    for path in changelogs {
+        let rel = path.strip_prefix(repo_root).unwrap_or(path);
+        paths_to_stage.push(rel.to_string_lossy().to_string());
     }
 
     let path_refs: Vec<&str> = paths_to_stage.iter().map(|s| s.as_str()).collect();
@@ -284,10 +280,18 @@ fn commit_version_changes(
         .collect();
     let versions_str = versions.join(", ");
 
-    let message = config
-        .release
-        .commit_message
-        .replace("{versions}", &versions_str);
+    // A run with only none-bump changesets releases nothing, and the
+    // "{versions}" template would leave "chore: release " with nothing after it.
+    let message = if plan.releases.is_empty() && changelogs.is_empty() {
+        "chore: remove none-bump changesets".to_string()
+    } else if plan.releases.is_empty() {
+        "chore: add unreleased changelog notes".to_string()
+    } else {
+        config
+            .release
+            .commit_message
+            .replace("{versions}", &versions_str)
+    };
 
     crate::git::git_commit(repo_root, &message)?;
     Ok(())
