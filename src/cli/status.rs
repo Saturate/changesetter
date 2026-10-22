@@ -129,7 +129,7 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
             // The release action pastes this into the version PR body, so a
             // nameless release must not leave a stray space.
             let label = if r.name.is_empty() {
-                String::new()
+                String::default()
             } else {
                 format!("{} ", r.name)
             };
