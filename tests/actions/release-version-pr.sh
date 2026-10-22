@@ -212,6 +212,22 @@ PATH="$WRAP:$PATH" open_version_pr 1
 check "step ran" '! grep -q "version-pr failed" "$FX/log-pr-1"'
 check "preview has pkg but no ghost" 'grep -qx "### pkg@1.0.1" "$FX/pr-body.md" && ! grep -q ghost "$FX/pr-body.md"'
 
+echo "N: version PR preview for a release with an empty name"
+# A Cargo workspace root versioned through [workspace.package] has no name, so
+# status reports its release as {"name": ""}.
+O="$ROOT/n-origin.git"; W="$ROOT/n-work"; FX="$ROOT/n-fx"
+git init -q --bare -b main "$O"; git clone -q "$O" "$W" 2>/dev/null; mkdir -p "$FX"; echo '[]' > "$FX/empty.json"; echo '[]' > "$FX/pulls.json"
+cd "$W" || exit 1
+printf '[workspace]\nmembers = ["crates/a"]\n\n[workspace.package]\nversion = "0.0.0"\n' > Cargo.toml
+mkdir -p crates/a .changeset; printf '[package]\nname = "a"\nversion.workspace = true\n' > crates/a/Cargo.toml
+printf -- '---\ndefault: minor\n---\n\n#### Workspace feature\n' > .changeset/feat.md
+git add -A; git commit -qm init; git push -q origin main
+check "status reports an empty release name" '[ "$(changesetter status --output json | jq -r ".releases[0].name")" = "" ]'
+open_version_pr 1
+check "step ran" '! grep -q "version-pr failed" "$FX/log-pr-1"'
+check "heading is the bare version" 'grep -qx "### 0.1.0" "$FX/pr-body.md" && ! grep -q "@" "$FX/pr-body.md"'
+check "preview has the section text" 'grep -qx "#### Workspace feature" "$FX/pr-body.md"'
+
 echo
 echo "passed $PASS, failed $FAIL (logs in $ROOT)"
 [ "$FAIL" -eq 0 ]
