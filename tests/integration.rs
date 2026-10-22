@@ -1882,7 +1882,7 @@ fn release_notes_read_lines_without_fence_state() {
     assert_eq!(release_notes("0.1.0", changelog), "```\nx\n```\n");
 
     // 5,000 versions are one pass; the bound is loose for slow CI machines.
-    let mut long = String::new();
+    let mut long = String::default();
     for v in (0..5000).rev() {
         long.push_str(&format!(
             "## 1.0.{v} - d\n\n- note {v}\n\n```sh\nunclosed\n\n"

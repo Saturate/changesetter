@@ -218,7 +218,7 @@ fn is_version_heading(line: &str) -> bool {
             let digits = if whole {
                 s
             } else {
-                let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+                let end = s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
                 &s[..end]
             };
             !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
@@ -311,7 +311,7 @@ struct Split {
 /// contain the heading isn't touched. A section runs to the next version
 /// heading, Unreleased heading or link reference.
 fn take_unreleased(content: &str) -> Split {
-    let mut rest = String::new();
+    let mut rest = String::default();
     let mut bodies = Vec::new();
     let mut current: Option<String> = None;
     let mut found_heading = None;
@@ -327,7 +327,7 @@ fn take_unreleased(content: &str) -> Split {
             } else if is_unreleased_heading(trimmed) {
                 bodies.extend(current.take());
                 found_heading.get_or_insert(trimmed == UNRELEASED_HEADING_BRACKETED);
-                current = Some(String::new());
+                current = Some(String::default());
                 continue;
             } else if current.is_some() && is_link_reference(trimmed) {
                 bodies.extend(current.take());
@@ -412,10 +412,13 @@ fn insert_after_header(existing: &str, new_entry: &str) -> String {
         }
         offset += line.len();
     }
-    let (header, rest) = existing.split_at(split_at.unwrap_or(existing.len()));
+    let (header, rest) = match split_at {
+        Some(at) => existing.split_at(at),
+        None => (existing, ""),
+    };
     let header = header.trim_end_matches(WS);
     let rest = rest.trim_start_matches(['\n', '\r']);
-    let mut out = String::new();
+    let mut out = String::default();
     if !header.is_empty() {
         out.push_str(header);
         out.push_str("\n\n");
@@ -745,7 +748,7 @@ mod tests {
     fn per_package_plan(dir: &Path, none: Vec<NoneEntry>) -> (ReleasePlan, Vec<Package>) {
         let packages = vec![package(dir, "a"), package(dir, "b")];
         let mut release = make_release("a", "1.0.0", "1.1.0", BumpLevel::Minor, "#### Feature");
-        release.path = packages[0].path.clone();
+        release.path.clone_from(&packages[0].path);
         (make_plan(vec![release], none), packages)
     }
 
@@ -1141,7 +1144,7 @@ mod tests {
         )
         .unwrap();
         let root = Package {
-            name: String::new(),
+            name: String::default(),
             path: dir.path().to_path_buf(),
             package_type: PackageType::Npm,
             version: Version::new(0, 0, 0),
