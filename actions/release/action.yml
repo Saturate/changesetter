@@ -108,7 +108,7 @@ runs:
           CHANGELOG=$(echo "$release" | jq -r '.changelog')
 
           gh release create "$TAG" \
-            --title "${NAME} v${VERSION}" \
+            --title "${NAME:+${NAME} }v${VERSION}" \
             --notes "$CHANGELOG" \
             $DRAFT_FLAG \
             --verify-tag || true
@@ -231,7 +231,7 @@ runs:
               if [ "$DRAFT" = "true" ]; then FLAGS+=(--draft); fi
               case "$VERSION" in *-*) FLAGS+=(--prerelease) ;; esac
               gh release create "$TAG" --verify-tag \
-                --title "${NAME} v${VERSION}" --notes "$NOTES" "${FLAGS[@]}"
+                --title "${NAME:+${NAME} }v${VERSION}" --notes "$NOTES" "${FLAGS[@]}"
               ACTED=true
             fi
           fi

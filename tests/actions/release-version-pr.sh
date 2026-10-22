@@ -227,6 +227,13 @@ open_version_pr 1
 check "step ran" '! grep -q "version-pr failed" "$FX/log-pr-1"'
 check "heading is the bare version" 'grep -qx "### 0.1.0" "$FX/pr-body.md" && ! grep -q "@" "$FX/pr-body.md"'
 check "preview has the section text" 'grep -qx "#### Workspace feature" "$FX/pr-body.md"'
+check "status lines have no stray space" 'grep -qx "  0.0.0 -> 0.1.0 (minor)" "$FX/pr-body.md"'
+git fetch -q origin changesetter/version-packages
+git merge -q --no-ff FETCH_HEAD -m "Merge version PR"; git push -q origin main
+M=$(git rev-parse HEAD); label_merge "$M"
+run_steps 2
+check "tag v0.1.0 on origin at the merge" '[ "$(remote_tag_at v0.1.0)" = "$M" ]'
+check "GitHub Release titled with the bare version" 'grep -q -- "--title v0.1.0 --notes" "$FX/created.log"'
 
 echo
 echo "passed $PASS, failed $FAIL (logs in $ROOT)"
