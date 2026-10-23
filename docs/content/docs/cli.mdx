@@ -31,8 +31,16 @@ Verify that at least one changeset file exists. Used in CI to enforce changeset 
 | Flag | Description |
 |---|---|
 | `--base <ref>` | Compare against a base branch (e.g. `origin/main`) |
+| `--output json` | Write structured JSON to stdout |
 
-Without `--base`, checks for any `.md` files in `.changeset/`. With `--base`, uses `git diff` to check for changeset files added in the current branch.
+Without `--base`, checks every changeset in the changeset directory. With `--base`, uses `git diff` to find the changeset files the current branch adds, changes or deletes, and fails if one of them can't be parsed. Changesets are read as committed at `HEAD`. A branch that only deletes changesets, like a version PR, passes.
+
+The JSON has these keys:
+
+- `changesets`: each changeset found, with its `file` (relative to the repo root), its `packages` as a map of package name to bump level, and its `summary` text. A changeset the branch deleted has `deleted: true` and no packages or summary.
+- `bumps`: the highest bump level per package across those changesets.
+
+The JSON is written even when no changeset is found (with an empty `changesets` list, and exit code 1), so CI can tell a missing changeset apart from a check that failed. A changeset that can't be parsed, or a base ref that isn't fetched, exits non-zero with no JSON.
 
 ## `changesetter status`
 

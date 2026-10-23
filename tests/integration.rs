@@ -128,7 +128,14 @@ fn roundtrip_cargo() {
     assert_eq!(count_changeset_files(dir.path()), 1);
 
     // check
-    changesetter::cli::check::run_in(dir.path(), &CheckArgs { base: None }).unwrap();
+    changesetter::cli::check::run_in(
+        dir.path(),
+        &CheckArgs {
+            base: None,
+            output: None,
+        },
+    )
+    .unwrap();
 
     // status
     changesetter::cli::status::run_in(dir.path()).unwrap();
@@ -176,7 +183,14 @@ fn roundtrip_npm() {
     )
     .unwrap();
 
-    changesetter::cli::check::run_in(dir.path(), &CheckArgs { base: None }).unwrap();
+    changesetter::cli::check::run_in(
+        dir.path(),
+        &CheckArgs {
+            base: None,
+            output: None,
+        },
+    )
+    .unwrap();
 
     changesetter::cli::release::run_in(
         dir.path(),
@@ -276,7 +290,14 @@ fn roundtrip_none_bump() {
     .unwrap();
 
     // check should pass
-    changesetter::cli::check::run_in(dir.path(), &CheckArgs { base: None }).unwrap();
+    changesetter::cli::check::run_in(
+        dir.path(),
+        &CheckArgs {
+            base: None,
+            output: None,
+        },
+    )
+    .unwrap();
 
     changesetter::cli::release::run_in(
         dir.path(),
@@ -1113,6 +1134,7 @@ fn check_with_base_finds_changeset_on_branch() {
         dir.path(),
         &CheckArgs {
             base: Some("main".to_string()),
+            output: None,
         },
     )
     .unwrap();
@@ -1127,14 +1149,26 @@ fn check_fails_no_changesets() {
     let changeset_dir = dir.path().join(".changeset");
     std::fs::create_dir_all(&changeset_dir).unwrap();
 
-    let result = changesetter::cli::check::run_in(dir.path(), &CheckArgs { base: None });
+    let result = changesetter::cli::check::run_in(
+        dir.path(),
+        &CheckArgs {
+            base: None,
+            output: None,
+        },
+    );
     assert!(result.is_err());
 }
 
 #[test]
 fn check_fails_no_changeset_dir() {
     let dir = setup_cargo_repo();
-    let result = changesetter::cli::check::run_in(dir.path(), &CheckArgs { base: None });
+    let result = changesetter::cli::check::run_in(
+        dir.path(),
+        &CheckArgs {
+            base: None,
+            output: None,
+        },
+    );
     assert!(result.is_err());
 }
 
