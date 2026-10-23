@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "changesetter",
   "publisher": "saturate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "name": "Changesetter",
   "description": "Polyglot changeset management for Azure Pipelines",
   "categories": ["Azure Pipelines"],
