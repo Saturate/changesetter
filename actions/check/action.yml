@@ -25,11 +25,14 @@ runs:
     - name: Determine base
       id: base
       shell: bash
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
       run: |
-        if [ -n "${{ inputs.base }}" ]; then
-          echo "ref=${{ inputs.base }}" >> "$GITHUB_OUTPUT"
-        elif [ -n "${{ github.event.pull_request.base.ref }}" ]; then
-          echo "ref=origin/${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
+        if [ -n "$INPUT_BASE" ]; then
+          echo "ref=$INPUT_BASE" >> "$GITHUB_OUTPUT"
+        elif [ -n "$PR_BASE_REF" ]; then
+          echo "ref=origin/$PR_BASE_REF" >> "$GITHUB_OUTPUT"
         else
           echo "ref=origin/main" >> "$GITHUB_OUTPUT"
         fi
@@ -40,9 +43,10 @@ runs:
       run: |
         OUTPUT=$(changesetter check --base "${{ steps.base.outputs.ref }}" 2>&1) || EXIT_CODE=$?
         echo "$OUTPUT" >&2
-        echo "output<<EOF" >> "$GITHUB_OUTPUT"
+        DELIM="CHANGESETTER_OUTPUT_$(date +%s%N)"
+        echo "output<<$DELIM" >> "$GITHUB_OUTPUT"
         echo "$OUTPUT" >> "$GITHUB_OUTPUT"
-        echo "EOF" >> "$GITHUB_OUTPUT"
+        echo "$DELIM" >> "$GITHUB_OUTPUT"
         echo "exit_code=${EXIT_CODE:-0}" >> "$GITHUB_OUTPUT"
 
     - name: Post PR comment
