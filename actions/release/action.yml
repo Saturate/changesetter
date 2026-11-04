@@ -309,12 +309,12 @@ runs:
         # is IFS whitespace, so read collapses an empty name (a Cargo
         # workspace root with [workspace.package] has none) and shifts the
         # version and changelog path into the wrong fields.
-        LABELS=(); BODIES=(); KEYS=()
+        PREVIEW_LABELS=(); BODIES=(); KEYS=()
         while read -r release; do
           name=$(jq -r '.name' <<<"$release")
           version=$(jq -r '.version' <<<"$release")
           file=$(jq -r '.changelog' <<<"$release")
-          LABEL="${name:+${name}@}${version}"
+          PKG_LABEL="${name:+${name}@}${version}"
           NOTES=$("${GITHUB_ACTION_PATH}/release-notes.sh" "$version" "$file")
           KEY="${file}"$'\n'"${NOTES}"
           FOUND=""
@@ -322,9 +322,9 @@ runs:
             if [ "${KEYS[$i]}" = "$KEY" ]; then FOUND=$i; break; fi
           done
           if [ -n "$FOUND" ]; then
-            LABELS[FOUND]="${LABELS[$FOUND]}, ${LABEL}"
+            PREVIEW_LABELS[FOUND]="${PREVIEW_LABELS[$FOUND]}, ${PKG_LABEL}"
           else
-            KEYS+=("$KEY"); LABELS+=("$LABEL"); BODIES+=("$NOTES")
+            KEYS+=("$KEY"); PREVIEW_LABELS+=("$PKG_LABEL"); BODIES+=("$NOTES")
           fi
         # A release with no matching package has no changelog of its own to
         # read; release-notes.sh would fall back to the root CHANGELOG.md.
@@ -334,7 +334,7 @@ runs:
 
         CHANGELOG_PREVIEW=""
         for i in "${!KEYS[@]}"; do
-          CHANGELOG_PREVIEW+="### ${LABELS[$i]}"$'\n\n'"${BODIES[$i]}"$'\n\n'
+          CHANGELOG_PREVIEW+="### ${PREVIEW_LABELS[$i]}"$'\n\n'"${BODIES[$i]}"$'\n\n'
         done
         if [ ${#KEYS[@]} -eq 0 ]; then
           # Nothing to release, only none-bump notes going under Unreleased:
