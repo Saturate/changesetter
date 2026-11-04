@@ -327,12 +327,15 @@ fn print_dry_run(plan: &ReleasePlan, date: &str) {
 }
 
 fn today() -> String {
-    let now = std::time::SystemTime::now()
+    let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    date_from_epoch_secs(secs)
+}
 
-    let days = now / 86400;
+fn date_from_epoch_secs(secs: u64) -> String {
+    let days = secs / 86400;
     let mut y = 1970i64;
     let mut remaining = days as i64;
 
@@ -368,7 +371,7 @@ fn chrono_lite_timestamp() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let date = today();
+    let date = date_from_epoch_secs(now);
     let time_secs = now % 86400;
     let h = time_secs / 3600;
     let m = (time_secs % 3600) / 60;

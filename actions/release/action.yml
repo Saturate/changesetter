@@ -101,18 +101,26 @@ runs:
           DRAFT_FLAG="--draft"
         fi
 
-        echo "$RELEASES" | jq -c '.[]' | while read -r release; do
-          TAG=$(echo "$release" | jq -r '.tag')
-          NAME=$(echo "$release" | jq -r '.name')
-          VERSION=$(echo "$release" | jq -r '.version')
-          CHANGELOG=$(echo "$release" | jq -r '.changelog')
+        while read -r release; do
+          TAG=$(jq -r '.tag' <<<"$release")
+          NAME=$(jq -r '.name' <<<"$release")
+          VERSION=$(jq -r '.version' <<<"$release")
+          CHANGELOG=$(jq -r '.changelog' <<<"$release")
 
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "GitHub Release ${TAG} already exists"
+            continue
+          fi
+
+          FLAGS=()
+          if [ "$DRAFT" = "true" ]; then FLAGS+=(--draft); fi
+          case "$VERSION" in *-*) FLAGS+=(--prerelease) ;; esac
           gh release create "$TAG" \
             --title "${NAME:+${NAME} }v${VERSION}" \
             --notes "$CHANGELOG" \
-            $DRAFT_FLAG \
-            --verify-tag || true
-        done
+            "${FLAGS[@]}" \
+            --verify-tag
+        done < <(jq -c '.[]' <<<"$RELEASES")
 
     # Version PR mode (version-pr: true)
     - name: Find version PR merge to release
@@ -209,9 +217,10 @@ runs:
           # recovery check on a later push doesn't re-trigger publish steps
           # gated on `released`.
           ACTED=false
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null; then
+          LS_RC=0; git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null 2>&1 || LS_RC=$?
+          if [ "$LS_RC" -eq 0 ]; then
             echo "${TAG} is already on origin"
-          else
+          elif [ "$LS_RC" -eq 2 ]; then
             # Tag the way `changesetter release` would ([release] tag_annotated).
             if [ "$(jq -r '.tag_annotated' "$WORK/after.json")" = "true" ]; then
               git tag -a -f "$TAG" "$RELEASE_SHA" -m "$NOTES" --cleanup=verbatim
@@ -221,6 +230,9 @@ runs:
             git push origin "refs/tags/${TAG}"
             echo "Tagged ${TAG}"
             ACTED=true
+          else
+            echo "::error::Failed to check tag ${TAG} (git ls-remote exit $LS_RC)"
+            exit 1
           fi
 
           if [ "$GITHUB_RELEASE" = "true" ]; then
@@ -375,7 +387,7 @@ runs:
         )
 
         if [ -n "$EXISTING_PR" ]; then
-          gh pr edit "$EXISTING_PR" --body "$PR_BODY"
+          gh pr edit "$EXISTING_PR" --body "$PR_BODY" --add-label "$LABEL"
           PR_URL=$(gh pr view "$EXISTING_PR" --json url --jq '.url')
           echo "Updated existing PR #${EXISTING_PR}"
         else

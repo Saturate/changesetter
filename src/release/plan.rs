@@ -220,37 +220,44 @@ fn apply_dependency_cascading(bumps: &mut BumpMap, packages: &[Package], config:
 
     let dependents_map = crate::release::deps::build_dependents_map(packages);
 
-    let bumped: Vec<String> = bumps
-        .iter()
-        .filter(|(_, (b, _))| *b > BumpLevel::None)
-        .map(|(name, _)| name.clone())
-        .collect();
+    loop {
+        let bumped: Vec<String> = bumps
+            .iter()
+            .filter(|(_, (b, _))| *b > BumpLevel::None)
+            .map(|(name, _)| name.clone())
+            .collect();
 
-    for bumped_pkg in &bumped {
-        if let Some(dependents) = dependents_map.get(bumped_pkg) {
-            for dependent in dependents {
-                if dependent == bumped_pkg {
-                    continue;
-                }
-                let entry = bumps
-                    .entry(dependent.clone())
-                    .or_insert((BumpLevel::None, Vec::new()));
+        let mut changed = false;
+        for bumped_pkg in &bumped {
+            if let Some(dependents) = dependents_map.get(bumped_pkg) {
+                for dependent in dependents {
+                    if dependent == bumped_pkg {
+                        continue;
+                    }
+                    let entry = bumps
+                        .entry(dependent.clone())
+                        .or_insert((BumpLevel::None, Vec::new()));
 
-                if entry.0 < mode {
-                    entry.0 = mode;
-                }
+                    if entry.0 < mode {
+                        entry.0 = mode;
+                        changed = true;
+                    }
 
-                let already_has_cascade_entry =
-                    entry.1.iter().any(|(name, _)| name == "dependency-cascade");
-                if !already_has_cascade_entry {
-                    entry.1.push((
-                        "dependency-cascade".to_string(),
-                        format!(
-                            "#### Dependency update\n\nBumped due to dependency on {bumped_pkg}"
-                        ),
-                    ));
+                    let already_has_cascade_entry =
+                        entry.1.iter().any(|(name, _)| name == "dependency-cascade");
+                    if !already_has_cascade_entry {
+                        entry.1.push((
+                            "dependency-cascade".to_string(),
+                            format!(
+                                "#### Dependency update\n\nBumped due to dependency on {bumped_pkg}"
+                            ),
+                        ));
+                    }
                 }
             }
+        }
+        if !changed {
+            break;
         }
     }
 }
@@ -725,6 +732,62 @@ mod tests {
 
         let b = plan.releases.iter().find(|r| r.name == "b").unwrap();
         assert_eq!(b.bump, BumpLevel::Minor);
+    }
+
+    #[test]
+    fn cascade_transitive_three_deep() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let a_dir = dir.path().join("a");
+        std::fs::create_dir(&a_dir).unwrap();
+        std::fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname = \"a\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let b_dir = dir.path().join("b");
+        std::fs::create_dir(&b_dir).unwrap();
+        std::fs::write(
+            b_dir.join("Cargo.toml"),
+            "[package]\nname = \"b\"\nversion = \"1.0.0\"\n\n[dependencies]\na = \"1\"\n",
+        )
+        .unwrap();
+
+        let c_dir = dir.path().join("c");
+        std::fs::create_dir(&c_dir).unwrap();
+        std::fs::write(
+            c_dir.join("Cargo.toml"),
+            "[package]\nname = \"c\"\nversion = \"1.0.0\"\n\n[dependencies]\nb = \"1\"\n",
+        )
+        .unwrap();
+
+        let packages = vec![
+            Package {
+                name: "a".to_string(),
+                path: a_dir,
+                package_type: crate::package::types::PackageType::Cargo,
+                version: Version::parse("1.0.0").unwrap(),
+            },
+            Package {
+                name: "b".to_string(),
+                path: b_dir,
+                package_type: crate::package::types::PackageType::Cargo,
+                version: Version::parse("1.0.0").unwrap(),
+            },
+            Package {
+                name: "c".to_string(),
+                path: c_dir,
+                package_type: crate::package::types::PackageType::Cargo,
+                version: Version::parse("1.0.0").unwrap(),
+            },
+        ];
+        let changesets = vec![make_cs(&[("a", BumpLevel::Patch)], "#### Fix", "cs1")];
+        let config = make_cascade_config("patch");
+
+        let plan = assemble(&changesets, &packages, &config, None);
+        assert_eq!(plan.releases.len(), 3);
+        assert!(plan.releases.iter().any(|r| r.name == "c"));
     }
 
     #[test]

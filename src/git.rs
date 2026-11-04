@@ -37,6 +37,7 @@ pub fn diff_changeset_files(
         .args([
             "diff",
             "--name-only",
+            "--diff-filter=A",
             &format!("{base}...HEAD"),
             "--",
             &dir_arg,
