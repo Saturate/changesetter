@@ -72,7 +72,7 @@ default: patch
 #### Fixed a bug
 ```
 
-`default` resolves to the single detected package name. In monorepos (more than one package), `default` is not valid; use the real package names.
+`default` resolves to the single detected package name. In monorepos (more than one package), `default` can't take a version bump; use the real package names. `default: none` is still allowed and marks a repo-wide change: with `per_package = true` it goes to every package's changelog, otherwise to the root changelog.
 
 ## None-bump changesets
 
@@ -90,6 +90,10 @@ Switched from ubuntu-20.04 to ubuntu-24.04 runners.
 
 None-bump entries appear in the changelog under a configurable heading (default: "Internal"). They pass `changesetter check` but don't trigger a version bump.
 
+A changeset that bumps one package and is `none` for another is listed only in the bumped package's release, also with `per_package = true`.
+
+When the changelog gets no new version in the same release run, the entries go under an `## Unreleased` heading at the top and move into the next version that changelog gets. See [Configuration](/docs/configuration#none-bump-entries-without-a-release).
+
 ## Frontmatter rules
 
 - Keys are package names as defined in config or auto-detected from manifests
@@ -98,3 +102,11 @@ None-bump entries appear in the changelog under a configurable heading (default:
 - Multiple packages allowed in one changeset
 - Empty frontmatter is an error
 - The body after the closing `---` is markdown; the first heading becomes the changelog entry title
+
+## Headings in the body
+
+The changelog finds its version, Unreleased and none-bump sections by their `## ` and `### ` headings, so headings in a changeset body are moved below them when the body is written to the changelog (and to tag messages and release notes). A heading on the body's first line becomes the entry heading, `####`. Every other heading of level 1 to 4 becomes `#####`, one level below the entry heading: `## Migration` later in a body renders as `##### Migration`. This covers `#` headings indented up to 3 spaces (the indent is kept) and underlined (Setext) headings, where a plain paragraph sits over `===` or `---`. A `---` after a blank line, a list item, a quote or a table row is a thematic break or part of that block, and is left alone. Levels 5 and 6 are left as written. A version or Unreleased link reference definition at the start of a line (`[1.0.0]: https://...`) gets one space of indent, so the changelog doesn't read it as Keep a Changelog's trailing links; it's still the same link.
+
+Code is left as written too: changing a line in a fenced code block (```` ``` ```` or `~~~`) would change the sample. A code block the body never closes is closed at the end of the body, so the rest of the changelog doesn't render as code.
+
+The changelog is read line by line, without tracking code blocks, so one case isn't supported: a line inside a code block in a changeset body that starts with `## `, `### ` or a version link reference (`[1.0.0]: https://...`) at the start of the line. Once written, it ends the entry's section there, cutting the release notes short. `changesetter add` and `changesetter status` print a warning for such a line; indent it or reword it if the sample allows.

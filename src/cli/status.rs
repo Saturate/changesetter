@@ -116,14 +116,26 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
     let pre_state = crate::release::pre::read_pre_state(&changeset_dir);
     let release_plan = plan::assemble(&changesets, &packages, &config, pre_state.as_ref());
 
+    for cs in &changesets {
+        let file = cs.filename.as_deref().unwrap_or("changeset");
+        crate::changelog::generator::warn_fenced_boundaries(&format!("{file}.md"), &cs.body);
+    }
+
     println!("{} changeset(s) pending\n", changesets.len());
 
     if !release_plan.releases.is_empty() {
         println!("Releases:");
         for r in &release_plan.releases {
+            // The release action pastes this into the version PR body, so a
+            // nameless release must not leave a stray space.
+            let label = if r.name.is_empty() {
+                String::default()
+            } else {
+                format!("{} ", r.name)
+            };
             println!(
-                "  {} {} -> {} ({})",
-                r.name, r.previous_version, r.version, r.bump
+                "  {label}{} -> {} ({})",
+                r.previous_version, r.version, r.bump
             );
         }
     }

@@ -13,9 +13,25 @@ changelog="${2:-CHANGELOG.md}"
 # rather than a regex: the dots would match any character, and 1.0.1 must not
 # match a 1.0.10 heading. Changeset bodies are copied in verbatim and may have
 # "## " headings of their own ("## 2FA support"), so only a semver-looking
-# heading counts as a version heading.
+# heading counts as a version heading. Other headings end a section too, so
+# notes never run to the end of the file: "## Unreleased" (none-bump entries
+# no release has picked up yet, never a version), versions in other tools'
+# spellings ("## [1.0.0]", "## v1.0.0", "## [v1.0.0]") and Keep a
+# Changelog's trailing "[1.0.0]: https://..." link references. Only version
+# and Unreleased labels count, since changeset bodies may use reference links
+# of their own. Same rule as the Rust side.
+#
+# Lines are read one at a time with no code-fence state, so this is linear
+# and reads every changelog the same way. changesetter demotes the headings
+# in the bodies it writes, so only a "## " line inside a code block in a
+# changeset body can end a section early, and `changesetter add`/`status`
+# warn about those.
 awk -v version="$version" '
   { sub(/[ \t\r]+$/, "") }
+  /^## (Unreleased|\[Unreleased\])$/ || /^## (\[[vV]?|[vV])[0-9]+\.[0-9]+\.[0-9]+/ || /^\[(Unreleased|[vV]?[0-9]+\.[0-9]+\.[0-9]+[^]]*)\]: / {
+    if (found) exit
+    next
+  }
   /^## [0-9]+\.[0-9]+\.[0-9]+/ {
     # The section ends at the next version heading, even a duplicate of ours.
     if (found) exit

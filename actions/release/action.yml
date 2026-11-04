@@ -108,7 +108,7 @@ runs:
           CHANGELOG=$(echo "$release" | jq -r '.changelog')
 
           gh release create "$TAG" \
-            --title "${NAME} v${VERSION}" \
+            --title "${NAME:+${NAME} }v${VERSION}" \
             --notes "$CHANGELOG" \
             $DRAFT_FLAG \
             --verify-tag || true
@@ -231,7 +231,7 @@ runs:
               if [ "$DRAFT" = "true" ]; then FLAGS+=(--draft); fi
               case "$VERSION" in *-*) FLAGS+=(--prerelease) ;; esac
               gh release create "$TAG" --verify-tag \
-                --title "${NAME} v${VERSION}" --notes "$NOTES" "${FLAGS[@]}"
+                --title "${NAME:+${NAME} }v${VERSION}" --notes "$NOTES" "${FLAGS[@]}"
               ACTED=true
             fi
           fi
@@ -286,6 +286,7 @@ runs:
 
         # Compute what would change
         STATUS=$(changesetter status 2>&1 || true)
+        PLAN=$(changesetter status --output json)
 
         # Create or reset the version branch
         git checkout -B "$BRANCH"
@@ -298,12 +299,51 @@ runs:
         # Stage and commit
         git add -A
 
-        # New changelog entries, from every changelog file the packages write
-        # to (per-package changelogs included). Diffed from the index: on a
-        # first release the changelog is a new, untracked file, which a plain
-        # `git diff` leaves out.
-        mapfile -t CHANGELOGS < <(changesetter status --output json | jq -r '[.packages[].changelog] | unique | .[]')
-        CHANGELOG_DIFF=$(git diff --cached -- "${CHANGELOGS[@]}" | grep "^+" | grep -v "^+++" | sed 's/^+//' || true)
+        # The preview is each release's new version section, read the way the
+        # release after the merge reads it. A diff would miss notes folded in
+        # from "## Unreleased", which are unchanged lines that only moved.
+        # Read from the working tree, so a first release's new CHANGELOG.md is
+        # covered. Releases sharing one section (a grouped monorepo changelog)
+        # are shown once under all their names.
+        # One compact JSON object per release, not tab-separated fields: tab
+        # is IFS whitespace, so read collapses an empty name (a Cargo
+        # workspace root with [workspace.package] has none) and shifts the
+        # version and changelog path into the wrong fields.
+        LABELS=(); BODIES=(); KEYS=()
+        while read -r release; do
+          name=$(jq -r '.name' <<<"$release")
+          version=$(jq -r '.version' <<<"$release")
+          file=$(jq -r '.changelog' <<<"$release")
+          LABEL="${name:+${name}@}${version}"
+          NOTES=$("${GITHUB_ACTION_PATH}/release-notes.sh" "$version" "$file")
+          KEY="${file}"$'\n'"${NOTES}"
+          FOUND=""
+          for i in "${!KEYS[@]}"; do
+            if [ "${KEYS[$i]}" = "$KEY" ]; then FOUND=$i; break; fi
+          done
+          if [ -n "$FOUND" ]; then
+            LABELS[FOUND]="${LABELS[$FOUND]}, ${LABEL}"
+          else
+            KEYS+=("$KEY"); LABELS+=("$LABEL"); BODIES+=("$NOTES")
+          fi
+        # A release with no matching package has no changelog of its own to
+        # read; release-notes.sh would fall back to the root CHANGELOG.md.
+        done < <(jq -c '.packages as $p | .releases[] | . as $r
+          | ([$p[] | select(.name == $r.name) | .changelog][0]) as $c
+          | select($c != null) | {name: $r.name, version: $r.version, changelog: $c}' <<<"$PLAN")
+
+        CHANGELOG_PREVIEW=""
+        for i in "${!KEYS[@]}"; do
+          CHANGELOG_PREVIEW+="### ${LABELS[$i]}"$'\n\n'"${BODIES[$i]}"$'\n\n'
+        done
+        if [ ${#KEYS[@]} -eq 0 ]; then
+          # Nothing to release, only none-bump notes going under Unreleased:
+          # the changelog lines this run adds. Diffed from the index, which
+          # covers a changelog that's a new, untracked file.
+          CHANGELOGS=()
+          while IFS= read -r file; do CHANGELOGS+=("$file"); done < <(jq -r '[.packages[].changelog] | unique | .[]' <<<"$PLAN")
+          CHANGELOG_PREVIEW=$(git diff --cached -- "${CHANGELOGS[@]}" | grep "^+" | grep -v "^+++" | sed 's/^+//' || true)
+        fi
 
         git commit -m "chore: version packages" --allow-empty
 
@@ -330,7 +370,7 @@ runs:
 
         ## Changelog preview
 
-        ${CHANGELOG_DIFF}
+        ${CHANGELOG_PREVIEW}
         PREOF
         )
 

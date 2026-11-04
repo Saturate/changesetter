@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use changesetter::changelog::generator::{generate_changelog_entry, update_changelog_file};
+use changesetter::changelog::generator::{write_changelog, write_root_changelog};
 use changesetter::changeset::types::BumpLevel;
 use changesetter::config::ChangelogConfig;
 use changesetter::package::types::Version;
@@ -24,6 +24,21 @@ fn make_release(
     }
 }
 
+/// What a release run writes into a new root changelog, below its title.
+fn entry_text(
+    plan: &ReleasePlan,
+    config: &ChangelogConfig,
+    date: &str,
+    is_monorepo: bool,
+) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    write_root_changelog(dir.path(), plan, config, date, is_monorepo).unwrap();
+    std::fs::read_to_string(dir.path().join(&config.file))
+        .unwrap_or_default()
+        .trim_start_matches("# Changelog\n\n")
+        .to_string()
+}
+
 fn make_plan(releases: Vec<PlannedRelease>, none_entries: Vec<NoneEntry>) -> ReleasePlan {
     ReleasePlan {
         releases,
@@ -43,7 +58,7 @@ fn single_release_patch() {
         )],
         vec![],
     );
-    let entry = generate_changelog_entry(&plan, &ChangelogConfig::default(), "2026-07-25", false);
+    let entry = entry_text(&plan, &ChangelogConfig::default(), "2026-07-25", false);
     insta::assert_snapshot!(entry);
 }
 
@@ -59,7 +74,7 @@ fn single_release_minor() {
         )],
         vec![],
     );
-    let entry = generate_changelog_entry(&plan, &ChangelogConfig::default(), "2026-07-25", false);
+    let entry = entry_text(&plan, &ChangelogConfig::default(), "2026-07-25", false);
     insta::assert_snapshot!(entry);
 }
 
@@ -75,7 +90,7 @@ fn single_release_major() {
         )],
         vec![],
     );
-    let entry = generate_changelog_entry(&plan, &ChangelogConfig::default(), "2026-07-25", false);
+    let entry = entry_text(&plan, &ChangelogConfig::default(), "2026-07-25", false);
     insta::assert_snapshot!(entry);
 }
 
@@ -100,7 +115,7 @@ fn multiple_releases() {
         ],
         vec![],
     );
-    let entry = generate_changelog_entry(&plan, &ChangelogConfig::default(), "2026-07-25", false);
+    let entry = entry_text(&plan, &ChangelogConfig::default(), "2026-07-25", false);
     insta::assert_snapshot!(entry);
 }
 
@@ -121,7 +136,7 @@ fn release_with_none_entries() {
             packages: vec!["mylib".to_string()],
         }],
     );
-    let entry = generate_changelog_entry(&plan, &ChangelogConfig::default(), "2026-07-25", false);
+    let entry = entry_text(&plan, &ChangelogConfig::default(), "2026-07-25", false);
     insta::assert_snapshot!(entry);
 }
 
@@ -144,7 +159,7 @@ fn none_only() {
             },
         ],
     );
-    let entry = generate_changelog_entry(&plan, &ChangelogConfig::default(), "2026-07-25", false);
+    let entry = entry_text(&plan, &ChangelogConfig::default(), "2026-07-25", false);
     insta::assert_snapshot!(entry);
 }
 
@@ -173,7 +188,7 @@ fn grouped_monorepo() {
         per_package: false,
         ..Default::default()
     };
-    let entry = generate_changelog_entry(&plan, &config, "2026-07-25", true);
+    let entry = entry_text(&plan, &config, "2026-07-25", true);
     insta::assert_snapshot!(entry);
 }
 
@@ -192,7 +207,7 @@ fn custom_none_heading() {
         none_bump_heading: "Misc".to_string(),
         ..Default::default()
     };
-    let entry = generate_changelog_entry(&plan, &config, "2026-07-25", false);
+    let entry = entry_text(&plan, &config, "2026-07-25", false);
     insta::assert_snapshot!(entry);
 }
 
@@ -217,7 +232,7 @@ fn none_omit() {
         none_bump: "omit".to_string(),
         ..Default::default()
     };
-    let entry = generate_changelog_entry(&plan, &config, "2026-07-25", false);
+    let entry = entry_text(&plan, &config, "2026-07-25", false);
     insta::assert_snapshot!(entry);
 }
 
@@ -232,7 +247,7 @@ fn update_existing_changelog() {
     .unwrap();
 
     let new_entry = "## 0.2.0 - 2026-07-25\n\n#### Added retry logic\n\nRetries up to 3 times.\n";
-    update_changelog_file(&path, new_entry).unwrap();
+    write_changelog(&path, Some(new_entry), &[], &ChangelogConfig::default()).unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();
     insta::assert_snapshot!(content);
