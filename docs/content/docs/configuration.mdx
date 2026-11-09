@@ -23,9 +23,9 @@ type = "npm"
 
 | Field | Description |
 |---|---|
-| `name` | Package name (used in changeset frontmatter) |
+| `name` | Package name (used in changeset frontmatter). Replaces the name read from the manifest. Keep it equal to the manifest name for packages that other packages depend on, since dependency cascades match on manifest names |
 | `path` | Path to the package directory, relative to repo root |
-| `type` | Ecosystem type: `cargo`, `cargo-workspace`, `npm`, `python`, `dotnet`, `helm` |
+| `type` | Ecosystem type: `cargo`, `cargo-workspace`, `npm`, `python`, `dotnet`, `helm`, `godot`. Picks the adapter that reads `path`; without it the first adapter that finds a manifest wins |
 | `members` | For workspace types: `"all"` to bump all members together |
 
 ## Ignore
@@ -35,6 +35,14 @@ Packages that are auto-detected but should never be versioned:
 ```toml
 ignore = ["examples", "internal-tools", "test-fixtures"]
 ```
+
+Entries can use `*` (any run of characters, including none) and `?` (exactly one character), so one entry can cover a family of packages that grows over time:
+
+```toml
+ignore = ["*_core", "*_gd", "example-?"]
+```
+
+An entry without wildcards must match the whole name. A nameless package, such as a Cargo workspace root with no `[workspace.package]` version, has the empty name `""`, which `ignore = [""]` excludes. `*` matches the empty name too, so `"*"` ignores every package.
 
 Ignored packages are excluded from the release plan, changelogs, and tagging.
 

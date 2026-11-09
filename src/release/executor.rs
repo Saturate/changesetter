@@ -7,6 +7,7 @@ use crate::errors::ChangesetterError;
 use crate::package::adapter::Adapter;
 use crate::package::cargo::CargoAdapter;
 use crate::package::dotnet::DotnetAdapter;
+use crate::package::godot::GodotAdapter;
 use crate::package::helm::HelmAdapter;
 use crate::package::npm::NpmAdapter;
 use crate::package::python::PythonAdapter;
@@ -185,6 +186,7 @@ fn apply_version_bump(
         crate::package::types::PackageType::Python => Box::new(PythonAdapter),
         crate::package::types::PackageType::Helm => Box::new(HelmAdapter),
         crate::package::types::PackageType::Dotnet => Box::new(DotnetAdapter),
+        crate::package::types::PackageType::Godot => Box::new(GodotAdapter),
     };
 
     adapter.write_version(&pkg.path, new_version)?;

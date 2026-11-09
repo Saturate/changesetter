@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::package::adapter::Adapter;
 use crate::package::cargo::CargoAdapter;
 use crate::package::dotnet::DotnetAdapter;
+use crate::package::godot::GodotAdapter;
 use crate::package::helm::HelmAdapter;
 use crate::package::npm::NpmAdapter;
 use crate::package::python::PythonAdapter;
@@ -19,6 +20,7 @@ pub fn build_dependents_map(packages: &[Package]) -> BTreeMap<String, Vec<String
             PackageType::Python => Box::new(PythonAdapter),
             PackageType::Dotnet => Box::new(DotnetAdapter),
             PackageType::Helm => Box::new(HelmAdapter),
+            PackageType::Godot => Box::new(GodotAdapter),
         };
 
         let deps = adapter.dependencies(&pkg.path).unwrap_or_default();

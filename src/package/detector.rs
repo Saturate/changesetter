@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::package::adapter::Adapter;
 use crate::package::cargo::CargoAdapter;
 use crate::package::dotnet::DotnetAdapter;
+use crate::package::godot::GodotAdapter;
 use crate::package::helm::HelmAdapter;
 use crate::package::npm::NpmAdapter;
 use crate::package::python::PythonAdapter;
@@ -16,18 +17,19 @@ const EXCLUDED_DIRS: &[&str] = &["node_modules", "target", ".git", "vendor", "di
 pub fn detect_packages(repo_root: &Path, config: &Config) -> anyhow::Result<Vec<Package>> {
     let manifest_dirs = find_manifest_dirs(repo_root)?;
 
-    let adapters: Vec<Box<dyn Adapter>> = vec![
-        Box::new(CargoAdapter),
-        Box::new(NpmAdapter),
-        Box::new(PythonAdapter),
-        Box::new(HelmAdapter),
-        Box::new(DotnetAdapter),
+    let adapters: Vec<(&[&str], Box<dyn Adapter>)> = vec![
+        (&["cargo", "cargo-workspace"], Box::new(CargoAdapter)),
+        (&["npm"], Box::new(NpmAdapter)),
+        (&["python"], Box::new(PythonAdapter)),
+        (&["helm"], Box::new(HelmAdapter)),
+        (&["dotnet"], Box::new(DotnetAdapter)),
+        (&["godot"], Box::new(GodotAdapter)),
     ];
 
     let mut packages: BTreeMap<String, Package> = BTreeMap::new();
 
     for dir in manifest_dirs {
-        for adapter in &adapters {
+        for (_, adapter) in &adapters {
             if let Some(pkg) = adapter.detect(&dir)? {
                 packages.entry(pkg.name.clone()).or_insert(pkg);
             }
@@ -36,17 +38,37 @@ pub fn detect_packages(repo_root: &Path, config: &Config) -> anyhow::Result<Vec<
 
     for pkg_config in &config.packages {
         let pkg_path = repo_root.join(&pkg_config.path);
-        for adapter in &adapters {
-            if let Some(pkg) = adapter.detect(&pkg_path)? {
+        let candidates: Vec<&Box<dyn Adapter>> = match &pkg_config.package_type {
+            Some(ty) => {
+                let adapter = adapters
+                    .iter()
+                    .find(|(types, _)| types.contains(&ty.as_str()))
+                    .map(|(_, a)| a)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "unknown type \"{ty}\" for package \"{}\" in changesetter.toml",
+                            pkg_config.name
+                        )
+                    })?;
+                vec![adapter]
+            }
+            None => adapters.iter().map(|(_, a)| a).collect(),
+        };
+
+        for adapter in candidates {
+            if let Some(mut pkg) = adapter.detect_configured(&pkg_path)? {
+                // The configured name replaces the manifest's, so drop the
+                // auto-detected entry for the same manifest instead of
+                // keeping it under its old name.
+                packages.retain(|_, p| !(p.path == pkg.path && p.package_type == pkg.package_type));
+                pkg.name = pkg_config.name.clone();
                 packages.insert(pkg.name.clone(), pkg);
                 break;
             }
         }
     }
 
-    let ignored: std::collections::HashSet<&str> =
-        config.ignore.iter().map(|s| s.as_str()).collect();
-    packages.retain(|name, _| !ignored.contains(name.as_str()));
+    packages.retain(|name, _| !config.is_ignored(name));
 
     Ok(packages.into_values().collect())
 }
@@ -128,7 +150,7 @@ fn walk_dir(current: &Path, dirs: &mut Vec<PathBuf>) {
 fn is_manifest(filename: &str) -> bool {
     matches!(
         filename,
-        "Cargo.toml" | "package.json" | "pyproject.toml" | "Chart.yaml"
+        "Cargo.toml" | "package.json" | "pyproject.toml" | "Chart.yaml" | "project.godot"
     ) || filename.ends_with(".csproj")
 }
 
@@ -259,6 +281,129 @@ mod tests {
         let pkgs = detect_packages(dir.path(), &config).unwrap();
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0].name, "mylib");
+    }
+
+    const GODOT_PROJECT: &str = "; Engine configuration file.
+
+config_version=5
+
+[application]
+
+config/name=\"Slopocalypse\"
+";
+
+    #[test]
+    fn detect_godot_project_with_version() {
+        let dir = tempfile::tempdir().unwrap();
+        init_git(dir.path());
+        std::fs::write(
+            dir.path().join("project.godot"),
+            format!(
+                "{GODOT_PROJECT}config/version=\"0.3.0\"
+"
+            ),
+        )
+        .unwrap();
+        git_add_all(dir.path());
+
+        let pkgs = detect_packages(dir.path(), &Config::default()).unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "Slopocalypse");
+        assert_eq!(pkgs[0].package_type, PackageType::Godot);
+    }
+
+    #[test]
+    fn versionless_demo_project_does_not_make_a_monorepo() {
+        let dir = tempfile::tempdir().unwrap();
+        init_git(dir.path());
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]
+name = \"mylib\"
+version = \"1.0.0\"
+",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("demo")).unwrap();
+        std::fs::write(dir.path().join("demo/project.godot"), GODOT_PROJECT).unwrap();
+        git_add_all(dir.path());
+
+        let pkgs = detect_packages(dir.path(), &Config::default()).unwrap();
+        let names: Vec<&str> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["mylib"]);
+    }
+
+    #[test]
+    fn config_name_overrides_detected_name() {
+        let dir = tempfile::tempdir().unwrap();
+        init_git(dir.path());
+        std::fs::write(dir.path().join("project.godot"), GODOT_PROJECT).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name": "tooling", "version": "1.0.0", "private": true}"#,
+        )
+        .unwrap();
+        git_add_all(dir.path());
+
+        let config: Config = toml_edit::de::from_str(
+            "ignore = [\"tooling\"]
+
+[[package]]
+name = \"slopocalypse\"
+path = \".\"
+type = \"godot\"
+",
+        )
+        .unwrap();
+
+        let pkgs = detect_packages(dir.path(), &config).unwrap();
+        let names: Vec<&str> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["slopocalypse"]);
+        assert_eq!(pkgs[0].package_type, PackageType::Godot);
+    }
+
+    #[test]
+    fn config_type_picks_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        init_git(dir.path());
+        std::fs::write(dir.path().join("project.godot"), GODOT_PROJECT).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name": "tooling", "version": "1.0.0"}"#,
+        )
+        .unwrap();
+        git_add_all(dir.path());
+
+        // Without `type`, npm would be tried first and win for this path.
+        let config: Config = toml_edit::de::from_str(
+            "[[package]]
+name = \"game\"
+path = \".\"
+type = \"godot\"
+",
+        )
+        .unwrap();
+
+        let pkgs = detect_packages(dir.path(), &config).unwrap();
+        let game = pkgs.iter().find(|p| p.name == "game").unwrap();
+        assert_eq!(game.package_type, PackageType::Godot);
+        assert!(pkgs.iter().any(|p| p.name == "tooling"));
+        assert!(!pkgs.iter().any(|p| p.name == "Slopocalypse"));
+    }
+
+    #[test]
+    fn config_unknown_type_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let config: Config = toml_edit::de::from_str(
+            "[[package]]
+name = \"x\"
+path = \".\"
+type = \"gradle\"
+",
+        )
+        .unwrap();
+        let err = detect_packages(dir.path(), &config).unwrap_err();
+        assert!(err.to_string().contains("gradle"));
     }
 
     #[test]

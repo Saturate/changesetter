@@ -101,6 +101,13 @@ pub struct HooksConfig {
 }
 
 impl Config {
+    /// Whether `name` matches an `ignore` entry. Entries are glob patterns
+    /// where `*` matches any run of characters (including none) and `?`
+    /// matches one character; an entry without either must match exactly.
+    pub fn is_ignored(&self, name: &str) -> bool {
+        self.ignore.iter().any(|pattern| glob_match(pattern, name))
+    }
+
     pub fn load(repo_root: &Path) -> anyhow::Result<Self> {
         let config_path = repo_root.join("changesetter.toml");
         if !config_path.exists() {
@@ -129,6 +136,32 @@ impl Config {
             None => ".changeset",
         }
     }
+}
+
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    // Position of the last `*` and the text index it is currently matched up to.
+    let mut star: Option<(usize, usize)> = None;
+
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, ti));
+            pi += 1;
+        } else if let Some((sp, st)) = star {
+            // Let the last `*` swallow one more character and retry.
+            pi = sp + 1;
+            ti = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
 }
 
 // The dir is used both as a filesystem path and as a git pathspec, so it has
@@ -169,6 +202,36 @@ fn validate_changeset_dir(dir: &str) -> Result<String, ChangesetterError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glob_match_patterns() {
+        assert!(glob_match("examples", "examples"));
+        assert!(!glob_match("examples", "examples2"));
+        assert!(glob_match("*_core", "voxkit_core"));
+        assert!(glob_match("*_core", "_core"));
+        assert!(!glob_match("*_core", "voxkit_gd"));
+        assert!(glob_match("mod-*-gd", "mod-a-b-gd"));
+        assert!(glob_match("v?", "v1"));
+        assert!(!glob_match("v?", "v"));
+        assert!(glob_match("*", ""));
+        assert!(glob_match("a*b*c", "aXXbYYbc"));
+        assert!(!glob_match("a*b*c", "aXXbYY"));
+        assert!(glob_match("", ""));
+        assert!(!glob_match("", "x"));
+        assert!(!glob_match("*_core", ""));
+    }
+
+    #[test]
+    fn is_ignored_uses_globs() {
+        let config = Config {
+            ignore: vec!["".into(), "tools".into(), "*_core".into()],
+            ..Default::default()
+        };
+        assert!(config.is_ignored(""));
+        assert!(config.is_ignored("tools"));
+        assert!(config.is_ignored("weapons_core"));
+        assert!(!config.is_ignored("slopocalypse"));
+    }
 
     #[test]
     fn default_config() {
