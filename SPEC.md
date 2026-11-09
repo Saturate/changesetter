@@ -280,6 +280,7 @@ Walk the repo for known manifest files and register each as a package:
 | `pyproject.toml` | Python | `project.version` or `tool.poetry.version` |
 | `*.csproj` | .NET | `PropertyGroup > Version` (XML; requires `quick-xml`, must preserve structure/comments/conditionals) |
 | `Chart.yaml` | Helm | `version` |
+| `project.godot` | Godot | `config/version` |
 
 Package name is derived from the manifest (crate name, npm name, etc.).
 
