@@ -61,7 +61,7 @@ pub fn detect_packages(repo_root: &Path, config: &Config) -> anyhow::Result<Vec<
                 // auto-detected entry for the same manifest instead of
                 // keeping it under its old name.
                 packages.retain(|_, p| !(p.path == pkg.path && p.package_type == pkg.package_type));
-                pkg.name = pkg_config.name.clone();
+                pkg.name.clone_from(&pkg_config.name);
                 packages.insert(pkg.name.clone(), pkg);
                 break;
             }
