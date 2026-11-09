@@ -655,7 +655,7 @@ Useful in CI to publish canary packages from feature branches for integration te
 
 ## Documentation site
 
-A [fumadocs](https://fumadocs.vercel.app/) site lives in `docs/`. This is a Next.js app with MDX content, deployed to GitHub Pages (or Vercel).
+A [fumadocs](https://fumadocs.vercel.app/) site lives in `docs/`. This is a Next.js app with MDX content, deployed to Vercel (https://changesetter-delta.vercel.app).
 
 Content structure:
 - **Getting started**: install, init, first changeset, first release
