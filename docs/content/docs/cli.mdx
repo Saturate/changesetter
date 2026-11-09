@@ -32,7 +32,7 @@ Verify that at least one changeset file exists. Used in CI to enforce changeset 
 |---|---|
 | `--base <ref>` | Compare against a base branch (e.g. `origin/main`) |
 
-Without `--base`, checks for any `.md` files in `.changeset/`. With `--base`, uses `git diff` to check for changeset files added in the current branch.
+Without `--base`, checks for any `.md` files in `.changeset/`. With `--base`, checks for changeset files added since the branch left `<ref>`: committed on the branch, staged, or untracked (files matched by `.gitignore` don't count). That lets a pre-commit hook or local gate run `changesetter check --base origin/main` before the changeset is committed. CI checkouts are clean, so there it only sees committed files.
 
 ## `changesetter status`
 
