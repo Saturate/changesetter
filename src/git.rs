@@ -37,14 +37,9 @@ pub fn diff_changeset_files(
     changeset_dir: &str,
 ) -> anyhow::Result<Vec<String>> {
     let dir_arg = format!("{changeset_dir}/");
-    let unavailable = || ChangesetterError::BaseRefUnavailable {
-        base: base.to_string(),
-    };
 
-    // `base...HEAD` compares against the merge base; diffing the merge base
-    // against the working tree keeps that and adds uncommitted changes.
-    let merge_base = run_git(repo_root, &["merge-base", base, "HEAD"])?.ok_or_else(unavailable)?;
-    let merge_base = merge_base.trim();
+    let merge_base = merge_base(repo_root, base)?;
+    let merge_base = merge_base.as_str();
 
     let added = run_git(
         repo_root,
@@ -72,6 +67,31 @@ pub fn diff_changeset_files(
         .map(|l| l.to_string())
         .collect();
     Ok(files.into_iter().collect())
+}
+
+/// Whether anything changed since the branch left `base`: committed, staged,
+/// unstaged or untracked (and not gitignored).
+pub fn has_changes_since(repo_root: &Path, base: &str) -> anyhow::Result<bool> {
+    let merge_base = merge_base(repo_root, base)?;
+    let changed = run_git(repo_root, &["diff", "--name-only", &merge_base])?
+        .ok_or_else(|| anyhow::anyhow!("git diff against {base} failed"))?;
+    if !changed.trim().is_empty() {
+        return Ok(true);
+    }
+    let untracked = run_git(repo_root, &["ls-files", "--others", "--exclude-standard"])?
+        .ok_or_else(|| anyhow::anyhow!("git ls-files failed"))?;
+    Ok(!untracked.trim().is_empty())
+}
+
+/// The commit where HEAD's branch left `base`. `base...HEAD` diffs against
+/// it; diffing it against the working tree also takes in uncommitted changes.
+fn merge_base(repo_root: &Path, base: &str) -> anyhow::Result<String> {
+    let out = run_git(repo_root, &["merge-base", base, "HEAD"])?.ok_or_else(|| {
+        ChangesetterError::BaseRefUnavailable {
+            base: base.to_string(),
+        }
+    })?;
+    Ok(out.trim().to_string())
 }
 
 /// Runs git and returns stdout, or `None` if git exited with an error.

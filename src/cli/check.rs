@@ -8,7 +8,8 @@ use crate::errors::ChangesetterError;
 #[derive(Args)]
 pub struct CheckArgs {
     /// Base branch to compare against. Counts changesets added since the
-    /// merge base, including staged and untracked ones.
+    /// merge base, including staged and untracked ones. Passes when nothing
+    /// at all changed since the base.
     #[arg(long)]
     pub base: Option<String>,
 }
@@ -56,6 +57,11 @@ fn check_with_base(
         .collect();
 
     if added.is_empty() {
+        // Nothing to describe, e.g. a gate run on main against itself.
+        if !crate::git::has_changes_since(repo_root, base)? {
+            eprintln!("No changes since {base}; no changeset needed.");
+            return Ok(());
+        }
         eprintln!("Run `changesetter add` to create one.");
         anyhow::bail!(ChangesetterError::NoChangesets);
     }
@@ -189,21 +195,89 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn check_with_base_no_changesets_fails() {
-        let dir = setup_repo();
+    fn check_main(dir: &Path) -> anyhow::Result<()> {
+        run_in(
+            dir,
+            &CheckArgs {
+                base: Some("main".to_string()),
+            },
+        )
+    }
 
+    #[test]
+    fn check_with_base_no_changes_passes() {
+        let dir = setup_repo();
         Command::new("git")
-            .args(["checkout", "-b", "feature"])
+            .args(["checkout", "-q", "-b", "feature"])
             .current_dir(dir.path())
             .output()
             .unwrap();
+        assert!(check_main(dir.path()).is_ok());
+    }
 
-        let args = CheckArgs {
-            base: Some("main".to_string()),
-        };
-        let result = run_in(dir.path(), &args);
-        assert!(result.is_err());
+    #[test]
+    fn check_base_against_itself_passes() {
+        let dir = setup_repo();
+        assert!(check_main(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn check_with_base_committed_change_without_changeset_fails() {
+        let dir = feature_branch();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "fn main() {}
+",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "code"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let err = check_main(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("no changeset"), "{err}");
+    }
+
+    #[test]
+    fn check_with_base_uncommitted_change_without_changeset_fails() {
+        let dir = feature_branch();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "fn main() {}
+",
+        )
+        .unwrap();
+        assert!(check_main(dir.path()).is_err());
+    }
+
+    #[test]
+    fn check_with_base_gitignored_change_only_passes() {
+        let dir = setup_repo();
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            "target/
+",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "ignore"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::fs::create_dir_all(dir.path().join("target")).unwrap();
+        std::fs::write(dir.path().join("target/out"), "x").unwrap();
+        assert!(check_main(dir.path()).is_ok());
     }
 
     fn feature_branch() -> tempfile::TempDir {
