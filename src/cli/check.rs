@@ -208,7 +208,7 @@ mod tests {
 
     fn feature_branch() -> tempfile::TempDir {
         let dir = setup_repo();
-        std::fs::create_dir(dir.path().join(".changeset")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".changeset")).unwrap();
         Command::new("git")
             .args(["checkout", "-q", "-b", "feature"])
             .current_dir(dir.path())
