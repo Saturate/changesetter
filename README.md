@@ -226,4 +226,4 @@ post_bump = ["cargo check", "cargo fmt"]
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

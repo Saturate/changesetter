@@ -27,41 +27,64 @@ pub fn is_working_tree_clean(repo_root: &Path) -> anyhow::Result<bool> {
     Ok(output.stdout.is_empty())
 }
 
+/// Changeset files added since `base`: committed on this branch, staged, or
+/// still untracked. Local gates run before the commit, so committed-only
+/// would miss the changeset they are meant to find; CI checkouts are clean,
+/// so for them this is the same as comparing `base...HEAD`.
 pub fn diff_changeset_files(
     repo_root: &Path,
     base: &str,
     changeset_dir: &str,
 ) -> anyhow::Result<Vec<String>> {
     let dir_arg = format!("{changeset_dir}/");
-    let output = Command::new("git")
-        .args([
+    let unavailable = || ChangesetterError::BaseRefUnavailable {
+        base: base.to_string(),
+    };
+
+    // `base...HEAD` compares against the merge base; diffing the merge base
+    // against the working tree keeps that and adds uncommitted changes.
+    let merge_base = run_git(repo_root, &["merge-base", base, "HEAD"])?.ok_or_else(unavailable)?;
+    let merge_base = merge_base.trim();
+
+    let added = run_git(
+        repo_root,
+        &[
             "diff",
             "--name-only",
             "--diff-filter=A",
-            &format!("{base}...HEAD"),
+            merge_base,
             "--",
             &dir_arg,
-        ])
+        ],
+    )?
+    .ok_or_else(|| anyhow::anyhow!("git diff against {base} failed"))?;
+
+    let untracked = run_git(
+        repo_root,
+        &["ls-files", "--others", "--exclude-standard", "--", &dir_arg],
+    )?
+    .ok_or_else(|| anyhow::anyhow!("git ls-files failed"))?;
+
+    let files: std::collections::BTreeSet<String> = added
+        .lines()
+        .chain(untracked.lines())
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect();
+    Ok(files.into_iter().collect())
+}
+
+/// Runs git and returns stdout, or `None` if git exited with an error.
+fn run_git(repo_root: &Path, args: &[&str]) -> anyhow::Result<Option<String>> {
+    let output = Command::new("git")
+        .args(args)
         .current_dir(repo_root)
         .output()
         .map_err(|_| ChangesetterError::GitNotFound)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("unknown revision") || stderr.contains("bad revision") {
-            anyhow::bail!(ChangesetterError::BaseRefUnavailable {
-                base: base.to_string()
-            });
-        }
-        anyhow::bail!("git diff failed: {stderr}");
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect())
+    Ok(output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned()))
 }
 
 pub fn git_add(repo_root: &Path, paths: &[&str]) -> anyhow::Result<()> {
