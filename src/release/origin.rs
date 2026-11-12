@@ -3,7 +3,7 @@
 //! from local git, so it needs the history (`fetch-depth: 0` in CI); a
 //! changeset with no commit yet, or a shallow clone, simply has no origin.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use crate::changeset::types::{Changeset, Origin};
@@ -18,7 +18,7 @@ const END: char = '\u{1d}';
 /// "Merged PR 12: Title".
 pub fn pr_number(subject: &str, body: &str) -> Option<u64> {
     let digits = |s: &str| -> Option<u64> {
-        let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+        let end = s.bytes().take_while(u8::is_ascii_digit).count();
         s[..end].parse().ok()
     };
     if let Some(rest) = subject.strip_prefix("Merge pull request #") {
@@ -48,14 +48,40 @@ struct Added {
     body: String,
 }
 
-/// The oldest commit that added each file under `dir`, by repo-relative path.
+/// The commits a shallow clone's history stops at. `git log` shows every
+/// file as added in them, so they say nothing about where a file came from.
+fn shallow_boundary(repo_root: &Path) -> anyhow::Result<HashSet<String>> {
+    let shallow = crate::git::run_git(repo_root, &["rev-parse", "--is-shallow-repository"])?;
+    if shallow.as_deref().map(str::trim) != Some("true") {
+        return Ok(HashSet::new());
+    }
+    let Some(path) = crate::git::run_git(repo_root, &["rev-parse", "--git-path", "shallow"])?
+    else {
+        return Ok(HashSet::new());
+    };
+    let path = repo_root.join(path.trim());
+    Ok(std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
+/// The newest commit that added each file under `dir`, by repo-relative
+/// path. A changeset file that exists now came from its latest add: a name
+/// can be reused after a release deleted the old file.
 fn added_commits(repo_root: &Path, dir: &str) -> anyhow::Result<BTreeMap<String, Added>> {
+    let boundary = shallow_boundary(repo_root)?;
     let format = format!("--format={RECORD}%H{FIELD}%an{FIELD}%s{FIELD}%b{END}");
     let pathspec = format!("{dir}/");
     let Some(out) = crate::git::run_git(
         repo_root,
         &[
+            "-c",
+            "core.quotePath=false",
             "log",
+            "--no-show-signature",
             "--diff-filter=A",
             "--no-renames",
             "--name-only",
@@ -68,7 +94,7 @@ fn added_commits(repo_root: &Path, dir: &str) -> anyhow::Result<BTreeMap<String,
         return Ok(BTreeMap::new());
     };
     let mut added = BTreeMap::new();
-    // Newest first, so a later (older) record for the same path wins.
+    // Newest first, so the first record for a path wins.
     for record in out.split(RECORD).filter(|r| !r.trim().is_empty()) {
         let Some((header, files)) = record.split_once(END) else {
             continue;
@@ -79,69 +105,113 @@ fn added_commits(repo_root: &Path, dir: &str) -> anyhow::Result<BTreeMap<String,
         else {
             continue;
         };
+        if boundary.contains(commit) {
+            continue;
+        }
         for file in files.lines().map(str::trim).filter(|f| !f.is_empty()) {
-            added.insert(
-                file.to_string(),
-                Added {
-                    commit: commit.to_string(),
-                    author: author.to_string(),
-                    subject: subject.to_string(),
-                    body: body.to_string(),
-                },
-            );
+            added.entry(file.to_string()).or_insert_with(|| Added {
+                commit: commit.to_string(),
+                author: author.to_string(),
+                subject: subject.to_string(),
+                body: body.to_string(),
+            });
         }
     }
     Ok(added)
 }
 
-/// The pull request that merged `commit` into HEAD's branch, when the merge
-/// commit names one. That merge is the oldest commit on HEAD's first-parent
-/// line that has `commit` in its history. When that commit's first parent is
-/// `commit` itself, `commit` was made on the branch directly: no merge.
-fn merged_by(repo_root: &Path, commit: &str) -> anyhow::Result<Option<u64>> {
-    let range = format!("{commit}..HEAD");
-    let Some(chain) = crate::git::run_git(
-        repo_root,
-        &[
-            "rev-list",
-            "--first-parent",
-            "--ancestry-path",
-            "--reverse",
-            &range,
-        ],
-    )?
-    else {
-        return Ok(None);
-    };
-    let Some(merge) = chain
-        .lines()
-        .next()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-    else {
-        return Ok(None);
-    };
-    let parent = crate::git::run_git(repo_root, &["rev-parse", &format!("{merge}^1")])?;
-    if parent.as_deref().map(str::trim) == Some(commit) {
-        return Ok(None);
+/// How deep `merged_by` follows merges of merges (a feature merged into
+/// develop, develop into main).
+const MERGE_DEPTH: usize = 3;
+
+/// History lookups for `merged_by`, cached across changesets.
+struct History<'a> {
+    repo_root: &'a Path,
+    lines: HashMap<String, Vec<String>>,
+}
+
+impl History<'_> {
+    /// The first-parent line from `tip`, newest first.
+    fn first_parent_line(&mut self, tip: &str) -> anyhow::Result<&[String]> {
+        if !self.lines.contains_key(tip) {
+            let out = crate::git::run_git(self.repo_root, &["rev-list", "--first-parent", tip])?
+                .unwrap_or_default();
+            let line = out.lines().map(|l| l.trim().to_string()).collect();
+            self.lines.insert(tip.to_string(), line);
+        }
+        Ok(&self.lines[tip])
     }
-    let format = format!("--format=%s{FIELD}%b");
-    let Some(message) = crate::git::run_git(repo_root, &["log", "-1", &format, merge])? else {
-        return Ok(None);
-    };
-    let (subject, body) = message.split_once(FIELD).unwrap_or((&message, ""));
-    Ok(pr_number(subject, body))
+
+    fn git(&self, args: &[&str]) -> anyhow::Result<Option<String>> {
+        crate::git::run_git(self.repo_root, args)
+    }
+
+    /// The pull request that brought `commit` onto `tip`'s first-parent line.
+    /// That's the oldest commit on the line with `commit` in its history (a
+    /// merge), unless `commit` is on the line itself. The merge's own branch
+    /// is searched first, so a feature merged into develop and develop into
+    /// main gets the feature's pull request, not the release's.
+    fn merged_by(
+        &mut self,
+        tip: &str,
+        commit: &str,
+        descendants: &HashSet<String>,
+        depth: usize,
+    ) -> anyhow::Result<Option<u64>> {
+        let line = self.first_parent_line(tip)?;
+        if line.iter().any(|c| c == commit) {
+            return Ok(None);
+        }
+        let Some(merge) = line
+            .iter()
+            .rev()
+            .find(|c| descendants.contains(*c))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if depth > 0 {
+            if let Some(branch) =
+                self.git(&["rev-parse", "--verify", "-q", &format!("{merge}^2")])?
+            {
+                let inner = self.merged_by(branch.trim(), commit, descendants, depth - 1)?;
+                if inner.is_some() {
+                    return Ok(inner);
+                }
+            }
+        }
+        let format = format!("--format=%s{FIELD}%b");
+        let message = self
+            .git(&["log", "-1", "--no-show-signature", &format, &merge])?
+            .unwrap_or_default();
+        let (subject, body) = message.split_once(FIELD).unwrap_or((&message, ""));
+        Ok(pr_number(subject, body))
+    }
+
+    /// Every commit between `commit` and HEAD that has `commit` in its history.
+    fn descendants(&self, commit: &str) -> anyhow::Result<HashSet<String>> {
+        let range = format!("{commit}..HEAD");
+        let out = self
+            .git(&["rev-list", "--ancestry-path", &range])?
+            .unwrap_or_default();
+        Ok(out.lines().map(|l| l.trim().to_string()).collect())
+    }
 }
 
 /// Fills in each changeset's `origin`. `dir` is the changeset directory
 /// relative to the repo root, with `/` separators.
 pub fn annotate(repo_root: &Path, dir: &str, changesets: &mut [Changeset]) -> anyhow::Result<()> {
     let added = added_commits(repo_root, dir)?;
+    let mut history = History {
+        repo_root,
+        lines: HashMap::new(),
+    };
     let mut merges: BTreeMap<String, Option<u64>> = BTreeMap::new();
     for cs in changesets.iter_mut() {
         let Some(name) = &cs.filename else {
             continue;
         };
+        let name = name.replace('\\', "/");
         let Some(a) = added.get(&format!("{dir}/{name}.md")) else {
             continue;
         };
@@ -150,7 +220,8 @@ pub fn annotate(repo_root: &Path, dir: &str, changesets: &mut [Changeset]) -> an
             None => match merges.get(&a.commit) {
                 Some(n) => *n,
                 None => {
-                    let n = merged_by(repo_root, &a.commit)?;
+                    let descendants = history.descendants(&a.commit)?;
+                    let n = history.merged_by("HEAD", &a.commit, &descendants, MERGE_DEPTH)?;
                     merges.insert(a.commit.clone(), n);
                     n
                 }
@@ -269,5 +340,115 @@ mod tests {
         let mut changesets = vec![changeset("plain")];
         annotate(dir.path(), ".changeset", &mut changesets).unwrap();
         assert_eq!(changesets[0].origin.as_ref().unwrap().pr, None);
+    }
+
+    fn pr_of(dir: &Path, name: &str) -> Option<u64> {
+        let mut changesets = vec![changeset(name)];
+        annotate(dir, ".changeset", &mut changesets).unwrap();
+        changesets[0].origin.as_ref().and_then(|o| o.pr)
+    }
+
+    fn commit_file(dir: &Path, file: &str, message: &str) {
+        std::fs::write(dir.join(file), message).unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-qm", message]);
+    }
+
+    #[test]
+    fn branch_with_more_commits_after_the_changeset() {
+        let dir = repo();
+        let d = dir.path();
+        git(d, &["checkout", "-qb", "feat"]);
+        add(d, "a", "add changeset");
+        commit_file(d, "y", "review fixes");
+        git(d, &["checkout", "-q", "main"]);
+        commit_file(d, "z", "unrelated on main");
+        git(
+            d,
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feat",
+                "-m",
+                "Merge pull request #9 from o/feat",
+            ],
+        );
+        commit_file(d, "w", "later on main");
+        assert_eq!(pr_of(d, "a"), Some(9));
+    }
+
+    #[test]
+    fn feature_through_develop_gets_the_feature_pr() {
+        let dir = repo();
+        let d = dir.path();
+        git(d, &["checkout", "-qb", "develop"]);
+        git(d, &["checkout", "-qb", "feat"]);
+        add(d, "a", "add changeset");
+        commit_file(d, "y", "more");
+        git(d, &["checkout", "-q", "develop"]);
+        git(
+            d,
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feat",
+                "-m",
+                "Merge pull request #9 from o/feat",
+            ],
+        );
+        commit_file(d, "v", "direct on develop");
+        add(d, "b", "changeset straight on develop");
+        git(d, &["checkout", "-q", "main"]);
+        git(
+            d,
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "develop",
+                "-m",
+                "Merge pull request #50 from o/develop",
+            ],
+        );
+        assert_eq!(pr_of(d, "a"), Some(9));
+        // Committed on develop, so the release merge is what brought it in.
+        assert_eq!(pr_of(d, "b"), Some(50));
+    }
+
+    #[test]
+    fn reused_name_takes_the_newest_add() {
+        let dir = repo();
+        let d = dir.path();
+        add(d, "fix", "old (#3)");
+        std::fs::remove_file(d.join(".changeset/fix.md")).unwrap();
+        git(d, &["add", "-A"]);
+        git(d, &["commit", "-qm", "release"]);
+        add(d, "fix", "new (#40)");
+        assert_eq!(pr_of(d, "fix"), Some(40));
+    }
+
+    #[test]
+    fn non_ascii_names() {
+        let dir = repo();
+        add(dir.path(), "føø", "add (#5)");
+        assert_eq!(pr_of(dir.path(), "føø"), Some(5));
+    }
+
+    #[test]
+    fn shallow_clone_boundary_is_not_an_origin() {
+        let dir = repo();
+        let d = dir.path();
+        add(d, "a", "a (#1)");
+        add(d, "b", "b (#2)");
+        commit_file(d, "y", "unrelated (#99)");
+        let clone = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", d.display().to_string().replace('\\', "/"));
+        git(clone.path(), &["clone", "-q", "--depth", "1", &url, "."]);
+        let mut changesets = vec![changeset("a"), changeset("b")];
+        annotate(clone.path(), ".changeset", &mut changesets).unwrap();
+        assert_eq!(changesets[0].origin, None);
+        assert_eq!(changesets[1].origin, None);
     }
 }

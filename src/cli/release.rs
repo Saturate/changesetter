@@ -29,6 +29,7 @@ pub fn run_in(repo_root: &Path, args: &ReleaseArgs) -> anyhow::Result<()> {
         dry_run: args.dry_run,
         no_commit: args.no_commit,
         snapshot: None,
+        origins: args.output.as_deref() == Some("json"),
     };
 
     let result = executor::execute_version(repo_root, &opts)?;

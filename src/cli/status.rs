@@ -382,6 +382,7 @@ mod tests {
                 dry_run: true,
                 no_commit: true,
                 snapshot: None,
+                origins: false,
             },
         )
         .unwrap();

@@ -211,13 +211,15 @@ The links point at `repo_url`, which defaults to the `origin` remote turned into
 
 Where an entry came from is read from local git, with no network calls:
 
-- The commit is the one that added the changeset file. Its author goes into `--output json` as `author`.
-- The pull request number comes from that commit's message when it was squash-merged (`Title (#31)`). Otherwise it comes from the merge commit that brought it into the current branch: `Merge pull request #31 from ...`, GitLab's `See merge request group/project!31` or Azure DevOps' `Merged PR 31: ...`. A changeset committed straight to the branch, or brought in by a rebase merge, has no pull request.
-- This needs the history, so check out with `fetch-depth: 0` in CI. A changeset that isn't committed yet, or isn't in a shallow clone's history, gets no pull request or commit.
+- The commit is the latest one that added the changeset file, so a name reused after an earlier release deleted it gets its new commit. Its author goes into `--output json` as `author`.
+- The pull request number comes from that commit's message when it was squash-merged (`Title (#31)`). Otherwise it comes from the merge commit that brought it into the current branch: `Merge pull request #31 from ...`, GitLab's `See merge request group/project!31` or Azure DevOps' `Merged PR 31: ...`. When a feature branch was merged into another branch (say `develop`) that was then merged in, the feature's pull request wins over the later one. A changeset committed straight to the branch, or brought in by a rebase or fast-forward merge, has no pull request.
+- This needs the history, so check out with `fetch-depth: 0` in CI. A changeset that isn't committed yet, or whose commit is beyond a shallow clone's history, gets no pull request or commit.
 
-Issue references are a prefix followed by digits, standing alone: not inside a word, a URL, code or an existing link. `#123` links to the repo's issues on GitHub and GitLab. `[[changelog.issue_links]]` adds other prefixes, and the digits replace `{id}` in `url`. A `#` entry there replaces the default.
+Issue references are a prefix followed by digits, standing alone: not inside a word or after a `\`. Code (fenced, indented or in backticks), existing links, link reference definitions, URLs written out in the text and HTML tags and anchors are left alone. `#123` links to the repo's issues on GitHub and GitLab. `[[changelog.issue_links]]` adds other prefixes, and the digits replace `{id}` in `url`. A `#` entry there replaces the default.
 
-The pull request and commit are added only in grouped changelogs, where every entry is one list item. In a flat changelog, `links = true` links issue references only. `--output json` has `commit`, `author` and `pr` for every entry either way.
+The pull request and commit are added only in grouped changelogs, where every entry is one list item. In a flat changelog, `links = true` links issue references only. `status --output json` and `release --output json` have `commit`, `author` and `pr` for every entry either way. Without `--output json` or `links`, the history isn't read at all.
+
+`repo_url` defaults to the `origin` remote. A remote with no web pages (a local path or `file://`) gives no links, and an SSH host alias from `~/.ssh/config` can't be turned into the real host, so set `repo_url` in those cases.
 
 ### None-bump entries without a release
 

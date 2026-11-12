@@ -24,25 +24,40 @@ impl Repo {
     /// Credentials and `.git` are dropped.
     pub fn parse(remote: &str) -> Option<Self> {
         let remote = remote.trim();
-        let (host, path) = if let Some(rest) = remote
-            .strip_prefix("https://")
-            .or_else(|| remote.strip_prefix("http://"))
-            .or_else(|| remote.strip_prefix("ssh://"))
-        {
-            let rest = rest.rsplit_once('@').map_or(rest, |(_, r)| r);
-            let (host, path) = rest.split_once('/')?;
-            // ssh://git@host:22/o/r
-            (
-                host.split(':').next().unwrap_or(host).to_string(),
-                path.to_string(),
-            )
-        } else {
-            let rest = remote.rsplit_once('@').map_or(remote, |(_, r)| r);
-            let (host, path) = rest.split_once(':')?;
-            (host.to_string(), path.to_string())
+        let (scheme, host, path) = match remote.split_once("://") {
+            Some((scheme, rest)) => {
+                let scheme = scheme.to_lowercase();
+                let (authority, path) = rest.split_once('/')?;
+                let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+                match scheme.as_str() {
+                    // A web URL keeps its scheme and port.
+                    "https" | "http" => (scheme, host.to_string(), path.to_string()),
+                    // An ssh port isn't the web server's.
+                    "ssh" | "git" | "git+ssh" | "ssh+git" => (
+                        "https".to_string(),
+                        host.split(':').next().unwrap_or(host).to_string(),
+                        path.to_string(),
+                    ),
+                    // file:// and the like have no web pages.
+                    _ => return None,
+                }
+            }
+            None => {
+                // scp syntax, `[user@]host:path`. A local path isn't one,
+                // and neither is a Windows drive (`C:/...`).
+                let (authority, path) = remote.split_once(':')?;
+                if authority.contains(['/', '\\']) {
+                    return None;
+                }
+                let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+                if host.len() < 2 {
+                    return None;
+                }
+                ("https".to_string(), host.to_string(), path.to_string())
+            }
         };
         let mut path = path.trim_matches('/').trim_end_matches(".git").to_string();
-        if host.is_empty() || path.is_empty() {
+        if host.is_empty() || path.is_empty() || host.contains(char::is_whitespace) {
             return None;
         }
         let host_l = host.to_lowercase();
@@ -67,7 +82,7 @@ impl Repo {
             path = path.trim_end_matches('/').to_string();
         }
         Some(Self {
-            url: format!("https://{host}/{path}"),
+            url: format!("{scheme}://{host}/{path}"),
             forge,
         })
     }
@@ -148,16 +163,19 @@ impl Linker {
     }
 
     /// Turns issue references into links: a rule's prefix followed by
-    /// digits, standing alone (not inside a word, path or URL). Code (fenced
-    /// or in backticks) and existing links are left alone.
+    /// digits, standing alone (not inside a word, path or URL). Code (fenced,
+    /// indented or in backticks), existing links, link reference definitions,
+    /// bare URLs and HTML tags and anchors are left alone.
     pub fn linkify(&self, text: &str) -> String {
         if self.rules.is_empty() {
             return text.to_string();
         }
-        let code = crate::changelog::markdown::fenced_lines(text);
+        let fenced = crate::changelog::markdown::fenced_lines(text);
         let mut out = String::with_capacity(text.len());
-        for (line, is_code) in text.split_inclusive('\n').zip(code) {
-            if is_code {
+        let mut blocks = Blocks::default();
+        for (line, is_fenced) in text.split_inclusive('\n').zip(fenced) {
+            let skip = blocks.is_code(line, is_fenced) || is_link_definition(line);
+            if skip {
                 out.push_str(line);
             } else {
                 out.push_str(&self.linkify_line(line));
@@ -172,28 +190,50 @@ impl Linker {
         let mut i = 0;
         let mut in_code = false;
         let mut bracket = 0usize;
-        let mut in_url = false;
-        let mut in_angle = false;
+        // Parentheses open in a link's URL; 0 when not in one.
+        let mut url_depth = 0usize;
+        let mut in_tag = false;
+        let mut in_anchor = false;
         while i < line.len() {
             let c = line[i..].chars().next().unwrap_or(' ');
             let len = c.len_utf8();
+            let rest = &line[i..];
+            if !in_code && !in_tag && url_depth == 0 && starts_bare_url(bytes, i) {
+                // Copy the whole URL as is.
+                let end = rest
+                    .find(|c: char| c.is_whitespace() || c == '<')
+                    .unwrap_or(rest.len());
+                out.push_str(&rest[..end]);
+                i += end;
+                continue;
+            }
             match c {
-                '`' => in_code = !in_code,
-                '[' if !in_code => bracket += 1,
-                ']' if !in_code => {
+                '`' if !in_tag => in_code = !in_code,
+                '[' if !in_code && !in_tag && url_depth == 0 => bracket += 1,
+                ']' if !in_code && !in_tag && url_depth == 0 => {
                     bracket = bracket.saturating_sub(1);
-                    if line[i + 1..].starts_with('(') {
-                        in_url = true;
+                    if rest[1..].starts_with('(') {
+                        url_depth = 1;
+                        out.push_str("](");
+                        i += 2;
+                        continue;
                     }
                 }
-                ')' if in_url => in_url = false,
-                '<' if !in_code && line[i + 1..].starts_with(|c: char| c.is_ascii_alphabetic()) => {
-                    in_angle = true;
+                '(' if url_depth > 0 => url_depth += 1,
+                ')' if url_depth > 0 => url_depth -= 1,
+                '<' if !in_code && url_depth == 0 && is_tag_start(rest) => {
+                    in_tag = true;
+                    let lower = rest.to_ascii_lowercase();
+                    if lower.starts_with("<a ") || lower.starts_with("<a>") {
+                        in_anchor = true;
+                    } else if lower.starts_with("</a") {
+                        in_anchor = false;
+                    }
                 }
-                '>' if in_angle => in_angle = false,
+                '>' if in_tag => in_tag = false,
                 _ => {}
             }
-            let free = !in_code && bracket == 0 && !in_url && !in_angle;
+            let free = !in_code && bracket == 0 && url_depth == 0 && !in_tag && !in_anchor;
             if free && starts_token(bytes, i) {
                 if let Some((prefix, url, id_len)) = self.rule_at(&line[i..]) {
                     let id = &line[i + prefix.len()..i + prefix.len() + id_len];
@@ -221,11 +261,83 @@ impl Linker {
 }
 
 /// Whether a reference may start at byte `i`: at the start of the line, or
-/// after a character that can't be part of a word, path, URL or entity.
+/// after a character that can't be part of a word, path, URL or entity, or
+/// escape it (`\#12`).
 fn starts_token(bytes: &[u8], i: usize) -> bool {
     i == 0 || {
         let prev = bytes[i - 1];
-        !(prev.is_ascii_alphanumeric() || b"_/-&#.:@=".contains(&prev) || prev >= 0x80)
+        !(prev.is_ascii_alphanumeric() || b"_/-&#.:@=\\".contains(&prev) || prev >= 0x80)
+    }
+}
+
+/// A URL written out in text (`https://…`, `www.…`), at the start of a
+/// word. Everything up to the next space belongs to it.
+fn starts_bare_url(bytes: &[u8], i: usize) -> bool {
+    if i > 0 && !(bytes[i - 1].is_ascii_whitespace() || b"(\"'".contains(&bytes[i - 1])) {
+        return false;
+    }
+    let rest = &bytes[i..];
+    if rest.len() >= 4 && rest[..4].eq_ignore_ascii_case(b"www.") {
+        return true;
+    }
+    let scheme = rest
+        .iter()
+        .take_while(|b| b.is_ascii_alphanumeric() || b"+.-".contains(b))
+        .count();
+    scheme > 0 && rest[0].is_ascii_alphabetic() && rest[scheme..].starts_with(b"://")
+}
+
+/// An HTML tag (`<a href=…>`, `</a>`, `<br/>`): `<` then a letter, `/` or
+/// `!`, closed by `>` on the same line. `x<y` isn't one.
+fn is_tag_start(rest: &str) -> bool {
+    rest[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '/' || c == '!')
+        && rest[1..].contains('>')
+}
+
+/// `[label]: url`, indented at most 3 spaces.
+fn is_link_definition(line: &str) -> bool {
+    let t = line.trim_start_matches(' ');
+    line.len() - t.len() <= 3
+        && t.starts_with('[')
+        && t.find("]:").is_some_and(|i| !t[1..i].is_empty())
+}
+
+/// Tracks which lines are indented code, outside fences: 4 or more spaces
+/// past the current list item's content, after a blank line or more code.
+/// Inside a list item, its content's indent counts as the margin.
+#[derive(Default)]
+struct Blocks {
+    list_indent: Option<usize>,
+    after_blank: bool,
+    in_code: bool,
+}
+
+impl Blocks {
+    fn is_code(&mut self, line: &str, fenced: bool) -> bool {
+        let text = line.trim_end_matches(['\n', '\r']);
+        if fenced {
+            self.after_blank = false;
+            self.in_code = false;
+            return true;
+        }
+        if text.trim().is_empty() {
+            self.after_blank = true;
+            return self.in_code;
+        }
+        let expanded = text.replace('\t', "    ");
+        let indent = expanded.len() - expanded.trim_start_matches(' ').len();
+        let margin = self.list_indent.unwrap_or(0);
+        let code = indent >= margin + 4 && (self.after_blank || self.in_code);
+        if !code {
+            if let Some(item) = crate::changelog::groups::list_item_text(&expanded) {
+                self.list_indent = Some(expanded.len() - item.len());
+            } else if indent == 0 && self.after_blank {
+                self.list_indent = None;
+            }
+        }
+        self.after_blank = false;
+        self.in_code = code;
+        code
     }
 }
 
@@ -323,5 +435,76 @@ mod tests {
     #[test]
     fn no_default_issue_rule_without_repo() {
         assert_eq!(linker(None, &[]).linkify("Fix #12"), "Fix #12");
+    }
+
+    fn gh() -> Linker {
+        linker(Some("https://github.com/o/r"), &[])
+    }
+
+    #[test]
+    fn linkify_leaves_markdown_structures_alone() {
+        let l = gh();
+        for text in [
+            "Escaped \\#12",
+            "[ref]: https://e.com/a?#20",
+            "See https://e.com/a?x=1&y=(2)#21 for more",
+            "www.example.com/#22",
+            "[x](https://e.com/(a)#14) after",
+            "<a href=\"u\">#13</a>",
+            "Para\n\n    code #19\n",
+            "- item\n\n      code #23\n",
+        ] {
+            assert_eq!(l.linkify(text), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn linkify_still_finds_references_near_structures() {
+        let l = gh();
+        assert_eq!(
+            l.linkify("x<y #17"),
+            "x<y [#17](https://github.com/o/r/issues/17)"
+        );
+        assert_eq!(
+            l.linkify("[x](https://e.com/(a)) and #15"),
+            "[x](https://e.com/(a)) and [#15](https://github.com/o/r/issues/15)"
+        );
+        assert_eq!(
+            l.linkify("- item\n  more #24\n"),
+            "- item\n  more [#24](https://github.com/o/r/issues/24)\n"
+        );
+        assert_eq!(
+            l.linkify("<b>#25</b>"),
+            "<b>[#25](https://github.com/o/r/issues/25)</b>"
+        );
+        assert_eq!(
+            l.linkify("ü #26"),
+            "ü [#26](https://github.com/o/r/issues/26)"
+        );
+    }
+
+    #[test]
+    fn remotes_without_web_pages() {
+        for remote in [
+            "file:///srv/repo.git",
+            "C:/code/origin.git",
+            "C:\\code\\origin.git",
+            "./relative:path",
+            "/srv/repo.git",
+        ] {
+            assert_eq!(Repo::parse(remote), None, "{remote}");
+        }
+        assert_eq!(
+            Repo::parse("git://github.com/o/r.git").unwrap().url,
+            "https://github.com/o/r"
+        );
+        assert_eq!(
+            Repo::parse("https://gitlab.acme.com:8443/g/r").unwrap().url,
+            "https://gitlab.acme.com:8443/g/r"
+        );
+        assert_eq!(
+            Repo::parse("http://git.internal/o/r").unwrap().url,
+            "http://git.internal/o/r"
+        );
     }
 }

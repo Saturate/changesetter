@@ -18,6 +18,9 @@ pub struct ExecuteOptions {
     pub dry_run: bool,
     pub no_commit: bool,
     pub snapshot: Option<String>,
+    /// Read where each changeset came from in git, for `--output json`.
+    /// Always done when `[changelog] links` is on.
+    pub origins: bool,
 }
 
 pub struct ExecuteResult {
@@ -31,7 +34,13 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     let config = Config::load(repo_root)?;
     let changeset_dir = config.changeset_dir(repo_root);
     let mut changesets = reader::read_changesets(&changeset_dir)?;
-    crate::release::origin::annotate(repo_root, config.changeset_dir_relative(), &mut changesets)?;
+    if opts.origins || config.changelog.links {
+        crate::release::origin::annotate(
+            repo_root,
+            config.changeset_dir_relative(),
+            &mut changesets,
+        )?;
+    }
 
     if changesets.is_empty() {
         eprintln!("No pending changesets, nothing to release.");
@@ -447,6 +456,7 @@ mod tests {
             dry_run: false,
             no_commit: true,
             snapshot: None,
+            origins: false,
         };
         let result = execute_version(dir.path(), &opts).unwrap();
         assert!(result.plan.releases.is_empty());
@@ -465,6 +475,7 @@ mod tests {
             dry_run: true,
             no_commit: false,
             snapshot: None,
+            origins: false,
         };
         let result = execute_version(dir.path(), &opts).unwrap();
         assert_eq!(result.plan.releases.len(), 1);
@@ -487,6 +498,7 @@ mod tests {
             dry_run: false,
             no_commit: true,
             snapshot: None,
+            origins: false,
         };
         let result = execute_version(dir.path(), &opts).unwrap();
         assert_eq!(result.plan.releases.len(), 1);
@@ -530,6 +542,7 @@ mod tests {
             dry_run: false,
             no_commit: false,
             snapshot: None,
+            origins: false,
         };
         execute_version(dir.path(), &opts).unwrap();
 
@@ -556,6 +569,7 @@ mod tests {
             dry_run: false,
             no_commit: true,
             snapshot: Some("canary".to_string()),
+            origins: false,
         };
         execute_version(dir.path(), &opts).unwrap();
 
