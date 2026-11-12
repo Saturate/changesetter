@@ -68,46 +68,11 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
     let config = Config::load(repo_root)?;
     let changeset_dir = config.changeset_dir(repo_root);
 
-    if !changeset_dir.exists() {
-        std::fs::create_dir_all(&changeset_dir)?;
-    }
-
-    if let Some(kind) = &args.kind {
-        validate_meta("type", kind, &[])?;
-    }
-    if let Some(scope) = &args.scope {
-        validate_meta("scope", scope, &['.', '/'])?;
-    }
+    std::fs::create_dir_all(&changeset_dir)?;
 
     let is_tty = atty_check();
-
-    if !is_tty && args.package.is_empty() && args.message.is_none() && !args.no_bump {
-        anyhow::bail!(
-            "Non-interactive mode requires --package, --bump, and --message flags.\n\
-             Run interactively in a terminal, or use:\n  \
-             changesetter add --package <name> --bump <level> --message \"description\""
-        );
-    }
-
-    if args.package.is_empty() && !is_tty {
-        anyhow::bail!("--package is required in non-interactive mode");
-    }
-    let packages: BTreeMap<String, BumpLevel> = if args.package.is_empty() {
-        resolve_packages_interactive(repo_root, &config, args)?
-    } else {
-        resolve_packages_noninteractive(repo_root, &config, args)?
-    };
-
-    for key in ["type", "scope"] {
-        let given = if key == "type" {
-            &args.kind
-        } else {
-            &args.scope
-        };
-        if given.is_some() && packages.contains_key(key) {
-            anyhow::bail!("--{key} can't be used with a package named \"{key}\"");
-        }
-    }
+    check_args(args, is_tty)?;
+    let packages = resolve_packages(repo_root, &config, args, is_tty)?;
 
     let body: String = match &args.message {
         Some(msg) => msg.trim().to_string(),
@@ -118,27 +83,79 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
     let kind: Option<&str> = args.kind.as_deref();
     let scope: Option<&str> = args.scope.as_deref();
     let name = writer::write_changeset_typed(&changeset_dir, &packages, kind, scope, &body)?;
-    eprintln!("Created {}/{name}.md", config.changeset_dir_relative());
-    crate::changelog::generator::warn_fenced_boundaries(&format!("{name}.md"), &body);
-    // The same warning `status` and `release` give, for a `breaking` type
-    // from --type or from a "feat!:" prefix on the message.
-    for (pkg, bump) in &packages {
+    let file = format!("{name}.md");
+    eprintln!("Created {}/{file}", config.changeset_dir_relative());
+    crate::changelog::generator::warn_fenced_boundaries(&file, &body);
+    warn_breaking(&file, &body, &packages, args, &config);
+    Ok(())
+}
+
+/// The flag checks that don't need the packages: `--type`/`--scope` values,
+/// and the flags non-interactive mode can't do without.
+fn check_args(args: &AddArgs, is_tty: bool) -> anyhow::Result<()> {
+    if let Some(kind) = &args.kind {
+        validate_meta("type", kind, &[])?;
+    }
+    if let Some(scope) = &args.scope {
+        validate_meta("scope", scope, &['.', '/'])?;
+    }
+    if is_tty || !args.package.is_empty() {
+        return Ok(());
+    }
+    if args.message.is_none() && !args.no_bump {
+        anyhow::bail!(
+            "Non-interactive mode requires --package, --bump, and --message flags.\n\
+             Run interactively in a terminal, or use:\n  \
+             changesetter add --package <name> --bump <level> --message \"description\""
+        );
+    }
+    anyhow::bail!("--package is required in non-interactive mode");
+}
+
+/// The packages and bumps, from the flags or asked for in a terminal. A
+/// package named "type" or "scope" can't be combined with that flag, since
+/// both would be the same front matter key.
+fn resolve_packages(
+    repo_root: &Path,
+    config: &Config,
+    args: &AddArgs,
+    is_tty: bool,
+) -> anyhow::Result<BTreeMap<String, BumpLevel>> {
+    let packages = if args.package.is_empty() && is_tty {
+        resolve_packages_interactive(repo_root, config, args)?
+    } else {
+        resolve_packages_noninteractive(repo_root, config, args)?
+    };
+    for (key, given) in [("type", &args.kind), ("scope", &args.scope)] {
+        if given.is_some() && packages.contains_key(key) {
+            anyhow::bail!("--{key} can't be used with a package named \"{key}\"");
+        }
+    }
+    Ok(packages)
+}
+
+/// The same warning `status` and `release` give, for a `breaking` type from
+/// --type or from a "feat!:" prefix on the message.
+fn warn_breaking(
+    file: &str,
+    body: &str,
+    packages: &BTreeMap<String, BumpLevel>,
+    args: &AddArgs,
+    config: &Config,
+) {
+    for (pkg, bump) in packages {
         let kind = crate::changelog::groups::classify(
-            &body,
+            body,
             args.kind.as_deref(),
             args.scope.as_deref(),
             *bump,
             &config.changelog,
         )
         .kind;
-        if let Some(w) =
-            crate::changelog::groups::breaking_warning(&format!("{name}.md"), &kind, pkg, *bump)
-        {
+        if let Some(w) = crate::changelog::groups::breaking_warning(file, &kind, pkg, *bump) {
             eprintln!("{w}");
         }
     }
-
-    Ok(())
 }
 
 fn resolve_packages_noninteractive(

@@ -240,7 +240,7 @@ mod tests {
     fn status_with_changesets() {
         let dir = setup_repo();
         let changeset_dir = dir.path().join(".changeset");
-        std::fs::create_dir(&changeset_dir).unwrap();
+        std::fs::create_dir_all(&changeset_dir).unwrap();
         std::fs::write(
             changeset_dir.join("test.md"),
             "---\ntestpkg: minor\n---\n\n#### New feature\n",
@@ -289,7 +289,7 @@ mod tests {
 
         let status = json_status(dir.path()).unwrap();
         assert_eq!(status["pending"], serde_json::json!(["team/test"]));
-        assert_eq!(status["packages"][0]["tagged"], true);
+        assert_eq!(status["packages"][0]["tagged"].as_bool(), Some(true));
         assert_eq!(
             status["releases"],
             serde_json::json!([{
@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(a["tag"], "@s/a@v1.0.0");
         assert_eq!(a["changelog"], "CHANGELOG.md");
         assert_eq!(status["releases"][0]["tag"], "@s/a@v1.1.0");
-        assert_eq!(status["tag_annotated"], true);
+        assert_eq!(status["tag_annotated"].as_bool(), Some(true));
     }
 
     #[test]

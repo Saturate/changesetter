@@ -146,7 +146,7 @@ mod tests {
         )
         .unwrap();
         let changeset_dir = dir.path().join(".changeset");
-        std::fs::create_dir(&changeset_dir).unwrap();
+        std::fs::create_dir_all(&changeset_dir).unwrap();
         std::fs::write(
             changeset_dir.join("test.md"),
             "---\ntestpkg: minor\n---\n\n#### New feature\n",
