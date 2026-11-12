@@ -239,7 +239,10 @@ pub fn find_group<'a>(
 ) -> Option<&'a ChangelogGroup> {
     let summary = summary.to_lowercase();
     groups.iter().find(|g| {
-        (g.types.is_empty() || g.types.iter().any(|t| t == kind))
+        // A breaking change is never left out of the changelog: `skip`
+        // groups pass it on to the next group that takes it.
+        !(g.skip && kind == "breaking")
+            && (g.types.is_empty() || g.types.iter().any(|t| t == kind))
             && g.pattern
                 .as_ref()
                 .is_none_or(|p| glob_match(&p.to_lowercase(), &summary))
@@ -476,6 +479,29 @@ mod tests {
             Some("Fixes")
         );
         assert_eq!(find_group(&groups, "wat", "x"), None);
+    }
+
+    #[test]
+    fn skip_groups_never_take_breaking_entries() {
+        let groups = vec![
+            ChangelogGroup {
+                title: "Hidden".into(),
+                types: vec![],
+                pattern: Some("wip*".into()),
+                skip: true,
+            },
+            group("Breaking changes", &["breaking"]),
+        ];
+        assert_eq!(
+            find_group(&groups, "breaking", "WIP: new saves").map(|g| g.title.as_str()),
+            Some("Breaking changes")
+        );
+        assert_eq!(
+            find_group(&groups, "fix", "WIP: typo").map(|g| g.title.as_str()),
+            Some("Hidden")
+        );
+        // With nothing else to take it, it goes to the fallback group.
+        assert_eq!(find_group(&groups[..1], "breaking", "WIP: x"), None);
     }
 
     #[test]

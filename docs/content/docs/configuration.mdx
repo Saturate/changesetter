@@ -155,7 +155,7 @@ group = true
 | Reverts | `revert` |
 | Under the hood | `docs`, `refactor`, `test`, `ci`, `chore`, `build`, `style`, `deps` |
 
-To pick your own, list them in order. Each entry goes to the first group that takes it. A group takes an entry when the entry's type is in `types` (or `types` is left out) and its summary matches `match` (or `match` is left out). `match` is a case-insensitive glob: `*` matches any run of characters and `?` matches one. `skip = true` leaves matching entries out of the changelog, though they still count towards the bump.
+To pick your own, list them in order. Each entry goes to the first group that takes it. A group takes an entry when the entry's type is in `types` (or `types` is left out) and its summary matches `match` (or `match` is left out). `match` is a case-insensitive glob: `*` matches any run of characters and `?` matches one. `skip = true` leaves matching entries out of the changelog, though they still count towards the bump. A breaking entry (type `breaking`) is never skipped: a `skip` group passes it on to the next group that takes it, or to "Other changes".
 
 ```toml
 [[changelog.groups]]
