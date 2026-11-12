@@ -187,66 +187,44 @@ impl Linker {
     fn linkify_line(&self, line: &str) -> String {
         let bytes = line.as_bytes();
         let mut out = String::with_capacity(line.len());
+        let mut state = Inline::default();
         let mut i = 0;
-        let mut in_code = false;
-        let mut bracket = 0usize;
-        // Parentheses open in a link's URL; 0 when not in one.
-        let mut url_depth = 0usize;
-        let mut in_tag = false;
-        let mut in_anchor = false;
         while i < line.len() {
-            let c = line[i..].chars().next().unwrap_or(' ');
-            let len = c.len_utf8();
             let rest = &line[i..];
-            if !in_code && !in_tag && url_depth == 0 && starts_bare_url(bytes, i) {
-                // Copy the whole URL as is.
-                let end = rest
-                    .find(|c: char| c.is_whitespace() || c == '<')
-                    .unwrap_or(rest.len());
-                out.push_str(&rest[..end]);
-                i += end;
+            // A run to copy as it is: a bare URL, or a link's "](".
+            let verbatim = if state.plain() && starts_bare_url(bytes, i) {
+                bare_url_len(rest)
+            } else {
+                state.step(rest)
+            };
+            if verbatim > 0 {
+                out.push_str(&rest[..verbatim]);
+                i += verbatim;
                 continue;
             }
-            match c {
-                '`' if !in_tag => in_code = !in_code,
-                '[' if !in_code && !in_tag && url_depth == 0 => bracket += 1,
-                ']' if !in_code && !in_tag && url_depth == 0 => {
-                    bracket = bracket.saturating_sub(1);
-                    if rest[1..].starts_with('(') {
-                        url_depth = 1;
-                        out.push_str("](");
-                        i += 2;
-                        continue;
-                    }
-                }
-                '(' if url_depth > 0 => url_depth += 1,
-                ')' if url_depth > 0 => url_depth -= 1,
-                '<' if !in_code && url_depth == 0 && is_tag_start(rest) => {
-                    in_tag = true;
-                    let lower = rest.to_ascii_lowercase();
-                    if lower.starts_with("<a ") || lower.starts_with("<a>") {
-                        in_anchor = true;
-                    } else if lower.starts_with("</a") {
-                        in_anchor = false;
-                    }
-                }
-                '>' if in_tag => in_tag = false,
-                _ => {}
-            }
-            let free = !in_code && bracket == 0 && url_depth == 0 && !in_tag && !in_anchor;
-            if free && starts_token(bytes, i) {
-                if let Some((prefix, url, id_len)) = self.rule_at(&line[i..]) {
-                    let id = &line[i + prefix.len()..i + prefix.len() + id_len];
-                    let text = &line[i..i + prefix.len() + id_len];
-                    out.push_str(&format!("[{text}]({})", url.replace("{id}", id)));
-                    i += prefix.len() + id_len;
+            if state.free() && starts_token(bytes, i) {
+                if let Some(link) = self.link_at(rest) {
+                    out.push_str(&link.markdown);
+                    i += link.len;
                     continue;
                 }
             }
+            let c = rest.chars().next().unwrap_or(' ');
             out.push(c);
-            i += len;
+            i += c.len_utf8();
         }
         out
+    }
+
+    /// The link for a reference at the start of `rest`, if a rule matches.
+    fn link_at(&self, rest: &str) -> Option<Link> {
+        let (prefix, url, digits) = self.rule_at(rest)?;
+        let len = prefix.len() + digits;
+        let id = &rest[prefix.len()..len];
+        Some(Link {
+            markdown: format!("[{}]({})", &rest[..len], url.replace("{id}", id)),
+            len,
+        })
     }
 
     fn rule_at<'a>(&'a self, rest: &str) -> Option<(&'a str, &'a str, usize)> {
@@ -268,6 +246,81 @@ fn starts_token(bytes: &[u8], i: usize) -> bool {
         let prev = bytes[i - 1];
         !(prev.is_ascii_alphanumeric() || b"_/-&#.:@=\\".contains(&prev) || prev >= 0x80)
     }
+}
+
+/// A reference turned into a markdown link, and how many bytes of the text
+/// it replaces.
+struct Link {
+    markdown: String,
+    len: usize,
+}
+
+/// Where a scan of one line is: inside code, link text, a link's URL or an
+/// HTML tag or anchor, where references aren't linked.
+#[derive(Default)]
+struct Inline {
+    in_code: bool,
+    bracket: usize,
+    /// Parentheses open in a link's URL; 0 when not in one.
+    url_depth: usize,
+    in_tag: bool,
+    in_anchor: bool,
+}
+
+impl Inline {
+    /// Outside code, tags and link URLs, where a bare URL can start.
+    fn plain(&self) -> bool {
+        !self.in_code && !self.in_tag && self.url_depth == 0
+    }
+
+    /// Where a reference may be linked.
+    fn free(&self) -> bool {
+        self.plain() && self.bracket == 0 && !self.in_anchor
+    }
+
+    /// Updates the state for the character at the start of `rest`. Returns
+    /// how many bytes to copy as they are (2 for a link's "](") or 0.
+    fn step(&mut self, rest: &str) -> usize {
+        let Some(c) = rest.chars().next() else {
+            return 0;
+        };
+        match c {
+            '`' if !self.in_tag => self.in_code = !self.in_code,
+            '[' if self.plain() => self.bracket += 1,
+            ']' if self.plain() => {
+                self.bracket = self.bracket.saturating_sub(1);
+                if rest[1..].starts_with('(') {
+                    self.url_depth = 1;
+                    return 2;
+                }
+            }
+            '(' if self.url_depth > 0 => self.url_depth += 1,
+            ')' if self.url_depth > 0 => self.url_depth -= 1,
+            '<' if !self.in_code && self.url_depth == 0 && is_tag_start(rest) => {
+                self.open_tag(rest)
+            }
+            '>' if self.in_tag => self.in_tag = false,
+            _ => {}
+        }
+        0
+    }
+
+    fn open_tag(&mut self, rest: &str) {
+        self.in_tag = true;
+        let lower = rest.get(..4).unwrap_or(rest).to_ascii_lowercase();
+        if lower.starts_with("<a ") || lower.starts_with("<a>") {
+            self.in_anchor = true;
+        } else if lower.starts_with("</a") {
+            self.in_anchor = false;
+        }
+    }
+}
+
+/// How long a bare URL at the start of `rest` is: up to the next space or `<`.
+fn bare_url_len(rest: &str) -> usize {
+    rest.char_indices()
+        .find(|(_, c)| c.is_whitespace() || *c == '<')
+        .map_or(rest.len(), |(i, _)| i)
 }
 
 /// A URL written out in text (`https://…`, `www.…`), at the start of a
