@@ -108,21 +108,15 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
         }
     }
 
-    let body = if let Some(msg) = &args.message {
-        msg.trim().to_string()
-    } else if is_tty {
-        prompt_body()?
-    } else {
-        String::new()
+    let body: String = match &args.message {
+        Some(msg) => msg.trim().to_string(),
+        None if is_tty => prompt_body()?,
+        None => String::default(),
     };
 
-    let name = writer::write_changeset_typed(
-        &changeset_dir,
-        &packages,
-        args.kind.as_deref(),
-        args.scope.as_deref(),
-        &body,
-    )?;
+    let kind: Option<&str> = args.kind.as_deref();
+    let scope: Option<&str> = args.scope.as_deref();
+    let name = writer::write_changeset_typed(&changeset_dir, &packages, kind, scope, &body)?;
     eprintln!("Created {}/{name}.md", config.changeset_dir_relative());
     crate::changelog::generator::warn_fenced_boundaries(&format!("{name}.md"), &body);
     // The same warning `status` and `release` give, for a `breaking` type
