@@ -88,7 +88,7 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
         let raw = raw.strip_prefix('\n').unwrap_or(raw);
         raw.trim_end().to_string()
     } else {
-        String::new()
+        String::default()
     };
 
     Ok(Changeset {

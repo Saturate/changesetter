@@ -436,7 +436,7 @@ post_bump = ["cargo check", "cargo fmt"]
 
     #[test]
     fn changeset_dir_absolute_rejected() {
-        let err = load_changeset_dir("/tmp/changesets").unwrap_err();
+        let err = load_changeset_dir("/abs/changesets").unwrap_err();
         assert!(err.to_string().contains("relative path"), "{err}");
     }
 

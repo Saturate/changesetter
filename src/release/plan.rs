@@ -828,7 +828,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let a_dir = dir.path().join("a");
-        std::fs::create_dir(&a_dir).unwrap();
+        std::fs::create_dir_all(&a_dir).unwrap();
         std::fs::write(
             a_dir.join("Cargo.toml"),
             "[package]\nname = \"a\"\nversion = \"1.0.0\"\n",
@@ -836,7 +836,7 @@ mod tests {
         .unwrap();
 
         let b_dir = dir.path().join("b");
-        std::fs::create_dir(&b_dir).unwrap();
+        std::fs::create_dir_all(&b_dir).unwrap();
         std::fs::write(
             b_dir.join("Cargo.toml"),
             "[package]\nname = \"b\"\nversion = \"1.0.0\"\n\n[dependencies]\na = \"1\"\n",
@@ -923,7 +923,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let a_dir = dir.path().join("a");
-        std::fs::create_dir(&a_dir).unwrap();
+        std::fs::create_dir_all(&a_dir).unwrap();
         std::fs::write(
             a_dir.join("Cargo.toml"),
             "[package]\nname = \"a\"\nversion = \"1.0.0\"\n",
@@ -931,7 +931,7 @@ mod tests {
         .unwrap();
 
         let b_dir = dir.path().join("b");
-        std::fs::create_dir(&b_dir).unwrap();
+        std::fs::create_dir_all(&b_dir).unwrap();
         std::fs::write(
             b_dir.join("Cargo.toml"),
             "[package]\nname = \"b\"\nversion = \"1.0.0\"\n\n[dependencies]\na = \"1\"\n",
@@ -939,7 +939,7 @@ mod tests {
         .unwrap();
 
         let c_dir = dir.path().join("c");
-        std::fs::create_dir(&c_dir).unwrap();
+        std::fs::create_dir_all(&c_dir).unwrap();
         std::fs::write(
             c_dir.join("Cargo.toml"),
             "[package]\nname = \"c\"\nversion = \"1.0.0\"\n\n[dependencies]\nb = \"1\"\n",
