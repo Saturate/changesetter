@@ -93,6 +93,8 @@ per_package = true
 none_bump_heading = "Internal"
 ```
 
+Set `group = true` under `[changelog]` to list each version's entries under headings by conventional type (Features, Fixes, ...), or define your own `[[changelog.groups]]`. See [Configuration](https://changesetter-delta.vercel.app/configuration#grouped-changelogs).
+
 ## Pre-release mode
 
 Enter pre-release mode to publish release candidates before a stable release:

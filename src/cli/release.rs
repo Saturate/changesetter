@@ -33,11 +33,9 @@ pub fn run_in(repo_root: &Path, args: &ReleaseArgs) -> anyhow::Result<()> {
 
     let result = executor::execute_version(repo_root, &opts)?;
 
-    if result.plan.releases.is_empty() {
-        return Ok(());
-    }
-
-    if !args.dry_run && !args.no_commit {
+    // Tools reading `--output json` get JSON even when nothing is released, so
+    // they never have to tell an empty stdout from a failure.
+    if !result.plan.releases.is_empty() && !args.dry_run && !args.no_commit {
         create_tags(repo_root, &result)?;
     }
 
@@ -88,6 +86,7 @@ fn print_json_output(result: &ExecuteResult) -> anyhow::Result<()> {
                 "tag": tag,
                 "changelog": r.changelog,
                 "changesets": r.changesets,
+                "entries": r.entries.iter().map(|e| e.to_json()).collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -96,12 +95,7 @@ fn print_json_output(result: &ExecuteResult) -> anyhow::Result<()> {
         .plan
         .none_entries
         .iter()
-        .map(|n| {
-            serde_json::json!({
-                "title": n.title,
-                "body": n.body,
-            })
-        })
+        .map(|n| n.to_json())
         .collect();
 
     let output = serde_json::json!({
@@ -151,7 +145,7 @@ mod tests {
         )
         .unwrap();
         let changeset_dir = dir.path().join(".changeset");
-        std::fs::create_dir(&changeset_dir).unwrap();
+        std::fs::create_dir_all(&changeset_dir).unwrap();
         std::fs::write(
             changeset_dir.join("test.md"),
             "---\ntestpkg: minor\n---\n\n#### New feature\n",

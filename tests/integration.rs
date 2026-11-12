@@ -122,6 +122,8 @@ fn roundtrip_cargo() {
             bump: Some("patch".to_string()),
             no_bump: false,
             message: Some("Fixed a bug".to_string()),
+            kind: None,
+            scope: None,
         },
     )
     .unwrap();
@@ -172,6 +174,8 @@ fn roundtrip_npm() {
             bump: Some("minor".to_string()),
             no_bump: false,
             message: Some("Added feature".to_string()),
+            kind: None,
+            scope: None,
         },
     )
     .unwrap();
@@ -219,6 +223,8 @@ fn roundtrip_polyglot() {
             bump: Some("minor".to_string()),
             no_bump: false,
             message: Some("New API endpoint".to_string()),
+            kind: None,
+            scope: None,
         },
     )
     .unwrap();
@@ -231,6 +237,8 @@ fn roundtrip_polyglot() {
             bump: Some("patch".to_string()),
             no_bump: false,
             message: Some("UI fix".to_string()),
+            kind: None,
+            scope: None,
         },
     )
     .unwrap();
@@ -271,6 +279,8 @@ fn roundtrip_none_bump() {
             bump: None,
             no_bump: true,
             message: Some("Updated CI config".to_string()),
+            kind: None,
+            scope: None,
         },
     )
     .unwrap();
@@ -1172,6 +1182,8 @@ fn add_unknown_package_errors() {
             bump: Some("patch".to_string()),
             no_bump: false,
             message: Some("Fix".to_string()),
+            kind: None,
+            scope: None,
         },
     );
     assert!(result.is_err());

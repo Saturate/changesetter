@@ -20,9 +20,11 @@ Create a new changeset file.
 | `--package <name>` | Package(s) affected (repeatable) |
 | `--bump <level>` | Bump level: `patch`, `minor`, `major`, `none` |
 | `--no-bump` | Shorthand for `--bump none` |
-| `-m, --message <text>` | Change description |
+| `-m, --message <text>` | Change description, written as the body's first line in plain text |
+| `--type <type>` | Conventional type (`feat`, `fix`, `perf`, ...) for [grouped changelogs](/configuration#grouped-changelogs) |
+| `--scope <scope>` | Scope shown as `**scope:**` in front of the entry in grouped changelogs |
 
-When run without flags in a terminal, prompts interactively for packages, bump level, and description. When stdin is not a TTY (CI), all flags are required.
+When run without flags in a terminal, prompts interactively for packages, bump level, and description. When stdin is not a TTY (CI), `--package`, `--bump` (or `--no-bump`) and `--message` are required. `--type` and `--scope` are always optional; see [Type and scope](/changeset-format#type-and-scope).
 
 ## `changesetter check`
 
@@ -47,8 +49,8 @@ The JSON has these keys:
 - `pending`: changeset file names, relative to the changeset directory and without `.md`.
 - `packages`: every detected package with its current `version`, its `path` (`.` for the repo root), the `changelog` file it writes to, the `tag` for that version (following the configured tag format) and `tagged`, whether that tag exists locally. Run `git fetch --tags` first in CI.
 - `tag_annotated`: whether `release` creates annotated tags (the `[release]` setting).
-- `releases`: what a release would do now: `name`, `previous_version`, `version`, `bump` and `tag`. A package named in a changeset but not detected shows up here with `previous_version` `0.0.0` and no `packages` entry.
-- `none_entries`: titles of changesets that document a change without bumping a version.
+- `releases`: what a release would do now: `name`, `previous_version`, `version`, `bump`, `tag` and `entries` (see [entries](#entries)). A package named in a changeset but not detected shows up here with `previous_version` `0.0.0` and no `packages` entry.
+- `none_entries`: changesets that document a change without bumping a version, with the same fields as an entry plus `title` and `body`.
 
 ```json
 {
@@ -58,7 +60,9 @@ The JSON has these keys:
     { "name": "mylib", "version": "1.0.0", "path": ".", "changelog": "CHANGELOG.md", "tagged": true, "tag": "v1.0.0" }
   ],
   "releases": [
-    { "name": "mylib", "previous_version": "1.0.0", "version": "1.1.0", "bump": "minor", "tag": "v1.1.0" }
+    { "name": "mylib", "previous_version": "1.0.0", "version": "1.1.0", "bump": "minor", "tag": "v1.1.0", "entries": [
+      { "id": "brave-foxes-dance", "bump": "minor", "type": "feat", "scope": null, "group": null, "skip": false, "summary": "Added retries" }
+    ] }
   ],
   "none_entries": []
 }
@@ -86,9 +90,47 @@ The full release pipeline: version bump, changelog, commit, and git tags.
 | `--no-commit` | Modify files but don't commit or tag |
 | `--output json` | Write structured JSON to stdout |
 
-The JSON output is consumed by the GitHub Actions release action to create GitHub Releases.
+The JSON output is consumed by the GitHub Actions release action to create GitHub Releases. Only the JSON goes to stdout. Progress messages, warnings and the `--dry-run` summary go to stderr, so `changesetter release --dry-run --output json > plan.json` gives a file you can parse as is.
 
-When no changesets are pending, exits 0 with a message and no side effects.
+The JSON has `releases` (each with `name`, `version`, `previous_version`, `bump`, `tag`, `changelog`, `changesets` and `entries`) and `none_entries`. Each none entry has the [entry](#entries) fields plus `title` and `body`. `--dry-run --output json` reports the same thing without changing anything, so a pipeline can read every changeset's type and summary before `release` consumes the files.
+
+`--no-commit` bumps the manifests and writes the changelogs, then stops, leaving you to commit, tag and publish. Use it when the build has to run on the bumped version before anything is committed. See [Build before committing](/recipes/build-before-commit).
+
+### Entries
+
+Each entry in `releases[].entries` and `none_entries` has these fields:
+
+| Field | Description |
+|---|---|
+| `id` | The changeset file name without `.md`. Entries changesetter writes itself are `fixed-group` or `dependency-cascade` |
+| `bump` | The bump this changeset gives the package |
+| `type` | The changeset's [type](/changeset-format#type-and-scope): from `type:`, a summary prefix, or the bump |
+| `scope` | The scope, or `null` |
+| `group` | The group title it's listed under in a grouped changelog. `null` when grouping is off or no group takes it, in which case it goes under "Other changes" |
+| `skip` | Whether a `skip` group leaves it out of the changelog |
+| `summary` | The body's first heading, paragraph (on one line) or list item, without heading hashes or a conventional prefix. Empty when the body starts with code or a table |
+
+```json
+{
+  "releases": [
+    {
+      "name": "game",
+      "version": "1.1.0",
+      "previous_version": "1.0.0",
+      "bump": "minor",
+      "tag": "v1.1.0",
+      "changelog": "### Features\n\n- **world:** New biome generator",
+      "changesets": ["damp-crows-plot"],
+      "entries": [
+        { "id": "damp-crows-plot", "bump": "minor", "type": "feat", "scope": "world", "group": "Features", "skip": false, "summary": "New biome generator" }
+      ]
+    }
+  ],
+  "none_entries": []
+}
+```
+
+When no changesets are pending, exits 0 with a message and no side effects. With `--output json` it still prints JSON, with empty `releases` and `none_entries`.
 
 ## `changesetter pre`
 

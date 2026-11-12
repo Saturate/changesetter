@@ -94,14 +94,44 @@ A changeset that bumps one package and is `none` for another is listed only in t
 
 When the changelog gets no new version in the same release run, the entries go under an `## Unreleased` heading at the top and move into the next version that changelog gets. See [Configuration](/configuration#none-bump-entries-without-a-release).
 
+## Type and scope
+
+A changeset can name a conventional type and a scope. They decide only where the entry is listed in a [grouped changelog](/configuration#grouped-changelogs) and what `--output json` reports. The bump alone decides the version.
+
+```markdown
+---
+mylib: minor
+type: feat
+scope: world
+---
+
+New biome generator
+```
+
+`changesetter add --type feat --scope world` writes the same front matter. The type can be any word: `feat`, `fix`, `perf`, `docs`, `refactor`, `test`, `ci`, `chore`, `revert`, `build`, `style` or one of your own. Without a `type:`, it's read from a conventional prefix on the summary (the body's first line), like git-cliff reads commit messages:
+
+```markdown
+---
+mylib: patch
+---
+
+fix(ui): Buttons no longer flicker
+```
+
+That entry gets type `fix` and scope `ui`, and its summary is `Buttons no longer flicker`. The summary is the body's first heading or paragraph, joined onto one line, or its first list item. Only a real heading loses its `#`s, so `#123 crash on save` stays as written. `feat!: ...` (with `!`) gives type `breaking`. Only known types and the types your groups name count as a prefix, so `Note: ...` stays part of the summary. A `type:` or `scope:` in the front matter wins over the prefix, and the prefix is still stripped.
+
+With neither, the type follows the bump: `major` is `breaking`, `minor` is `feat`, `patch` is `fix` and `none` is `chore`. A changeset typed `breaking` that doesn't bump major gets a warning from `add`, `status` and `release`. It isn't an error, because the bump still decides the version.
+
+`type` and `scope` are keys in the same map as the packages. A value that's a bump level (`type: patch`, or `scope: none`) still names a package called `type` or `scope`, so leave the key out rather than writing `none`. A number or `true`/`false` is read as its text (`scope: 2024`). The original changesets tool doesn't know these keys, so leave them out if it also reads your changesets.
+
 ## Frontmatter rules
 
-- Keys are package names as defined in config or auto-detected from manifests
-- Values must be one of: `none`, `patch`, `minor`, `major`
+- Keys are package names as defined in config or auto-detected from manifests, plus the optional `type` and `scope`
+- Package values must be one of: `none`, `patch`, `minor`, `major`
 - Keys with `@` or `/` must be quoted
 - Multiple packages allowed in one changeset
 - Empty frontmatter is an error
-- The body after the closing `---` is markdown; the first heading becomes the changelog entry title
+- The body after the closing `---` is markdown. Its first line is the entry's summary, whether it's plain text (what `changesetter add -m` writes) or a heading
 
 ## Headings in the body
 

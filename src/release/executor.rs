@@ -39,7 +39,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
                 releases: vec![],
                 none_entries: vec![],
             },
-            date: String::new(),
+            date: String::default(),
             is_monorepo: false,
             config,
         });
@@ -55,12 +55,15 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         pre_state.as_ref()
     };
     let mut release_plan = plan::assemble(&changesets, &packages, &config, pre_ref);
+    for warning in release_plan.breaking_warnings() {
+        eprintln!("{warning}");
+    }
 
     if release_plan.releases.is_empty() && release_plan.none_entries.is_empty() {
         eprintln!("No pending changesets, nothing to release.");
         return Ok(ExecuteResult {
             plan: release_plan,
-            date: String::new(),
+            date: String::default(),
             is_monorepo,
             config,
         });
@@ -95,58 +98,23 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     for release in &release_plan.releases {
         apply_version_bump(repo_root, &release.name, &release.version, &packages)?;
     }
+    run_post_bump_hooks(repo_root, &config)?;
 
-    if !config.hooks.post_bump.is_empty() {
-        for hook in &config.hooks.post_bump {
-            eprintln!("Running post-bump hook: {hook}");
-            let status = std::process::Command::new("sh")
-                .args(["-c", hook])
-                .current_dir(repo_root)
-                .status()?;
-            if !status.success() {
-                anyhow::bail!("post-bump hook failed: {hook}");
-            }
-        }
-    }
-
-    let writes = if config.changelog.per_package && is_monorepo {
-        generator::write_per_package_changelogs(&release_plan, &packages, &config.changelog, &date)?
-    } else {
-        generator::write_root_changelog(
-            repo_root,
-            &release_plan,
-            &config.changelog,
-            &date,
-            is_monorepo,
-        )?
-    };
+    let writes = write_changelogs(
+        repo_root,
+        &release_plan,
+        &packages,
+        &config,
+        &date,
+        is_monorepo,
+    )?;
     // Tag messages and the JSON output read `changelog`, so it has to carry
     // what landed in the version section, absorbed Unreleased notes included.
     writes.apply_to(&mut release_plan);
 
-    for cs in &changesets {
-        if let Some(name) = &cs.filename {
-            let path = changeset_dir.join(format!("{name}.md"));
-            if path.exists() {
-                std::fs::remove_file(&path)?;
-            }
-        }
-    }
-
+    remove_changesets(&changeset_dir, &changesets)?;
     if let Some(state) = &pre_state {
-        if state.mode == "pre" {
-            let mut updated = state.clone();
-            for release in &release_plan.releases {
-                let counter = updated
-                    .packages_released
-                    .entry(release.name.clone())
-                    .or_insert(0);
-                *counter += 1;
-            }
-            crate::release::pre::write_pre_state(&changeset_dir, &updated)?;
-        } else if state.mode == "exit" {
-            crate::release::pre::remove_pre_state(&changeset_dir)?;
-        }
+        update_pre_state(&changeset_dir, state, &release_plan)?;
     }
 
     if !opts.no_commit {
@@ -166,6 +134,70 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         is_monorepo,
         config,
     })
+}
+
+fn run_post_bump_hooks(repo_root: &Path, config: &Config) -> anyhow::Result<()> {
+    for hook in &config.hooks.post_bump {
+        eprintln!("Running post-bump hook: {hook}");
+        let status = std::process::Command::new("sh")
+            .args(["-c", hook])
+            .current_dir(repo_root)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("post-bump hook failed: {hook}");
+        }
+    }
+    Ok(())
+}
+
+fn write_changelogs(
+    repo_root: &Path,
+    plan: &ReleasePlan,
+    packages: &[crate::package::types::Package],
+    config: &Config,
+    date: &str,
+    is_monorepo: bool,
+) -> anyhow::Result<generator::ChangelogWrites> {
+    if config.changelog.per_package && is_monorepo {
+        generator::write_per_package_changelogs(plan, packages, &config.changelog, date)
+    } else {
+        generator::write_root_changelog(repo_root, plan, &config.changelog, date, is_monorepo)
+    }
+}
+
+fn remove_changesets(
+    changeset_dir: &Path,
+    changesets: &[crate::changeset::types::Changeset],
+) -> anyhow::Result<()> {
+    for name in changesets.iter().filter_map(|cs| cs.filename.as_ref()) {
+        let path = changeset_dir.join(format!("{name}.md"));
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Counts this release in pre mode, or leaves pre mode after an exit release.
+fn update_pre_state(
+    changeset_dir: &Path,
+    state: &crate::release::pre::PreState,
+    plan: &ReleasePlan,
+) -> anyhow::Result<()> {
+    match state.mode.as_str() {
+        "pre" => {
+            let mut updated = state.clone();
+            for release in &plan.releases {
+                *updated
+                    .packages_released
+                    .entry(release.name.clone())
+                    .or_insert(0) += 1;
+            }
+            crate::release::pre::write_pre_state(changeset_dir, &updated)
+        }
+        "exit" => crate::release::pre::remove_pre_state(changeset_dir),
+        _ => Ok(()),
+    }
 }
 
 fn apply_version_bump(
@@ -312,20 +344,20 @@ fn commit_version_changes(
 }
 
 fn print_dry_run(plan: &ReleasePlan, date: &str) {
-    println!("Dry run - the following changes would be made:\n");
+    eprintln!("Dry run - the following changes would be made:\n");
 
     for release in &plan.releases {
-        println!(
+        eprintln!(
             "  {} {} -> {} ({})",
             release.name, release.previous_version, release.version, release.bump
         );
     }
 
     for entry in &plan.none_entries {
-        println!("  {} (no version change)", entry.title);
+        eprintln!("  {} (no version change)", entry.title);
     }
 
-    println!("\nChangelog date: {date}");
+    eprintln!("\nChangelog date: {date}");
 }
 
 fn today() -> String {

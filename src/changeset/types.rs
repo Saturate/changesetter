@@ -28,6 +28,12 @@ pub struct Changeset {
     pub packages: BTreeMap<String, BumpLevel>,
     pub body: String,
     pub filename: Option<String>,
+    /// The conventional type from the front matter's `type:` key ("feat",
+    /// "fix", ...). It only decides where the entry is listed in a grouped
+    /// changelog; the bump alone decides the version.
+    pub kind: Option<String>,
+    /// The scope from the front matter's `scope:` key.
+    pub scope: Option<String>,
 }
 
 #[cfg(test)]
@@ -76,6 +82,8 @@ mod tests {
             packages: BTreeMap::from([("mylib".to_string(), BumpLevel::Patch)]),
             body: "Fixed a bug".to_string(),
             filename: Some("cool-dogs-dance".to_string()),
+            kind: None,
+            scope: None,
         };
         assert_eq!(cs.packages.len(), 1);
         assert_eq!(cs.packages["mylib"], BumpLevel::Patch);

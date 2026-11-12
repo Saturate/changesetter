@@ -26,6 +26,37 @@ pub struct AddArgs {
     /// Change description (non-interactive mode)
     #[arg(long, short)]
     pub message: Option<String>,
+
+    /// Conventional type (feat, fix, perf, docs, ...) for grouped changelogs
+    #[arg(long = "type")]
+    pub kind: Option<String>,
+
+    /// Scope shown in front of the entry in grouped changelogs
+    #[arg(long)]
+    pub scope: Option<String>,
+}
+
+/// Checks a `--type` or `--scope` value: it goes into the front matter
+/// unquoted, so it's kept to characters YAML reads as a plain string, and a
+/// bump level would be read as a package named "type" or "scope".
+fn validate_meta(flag: &str, value: &str, extra: &[char]) -> anyhow::Result<()> {
+    let ok = value
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || extra.contains(&c));
+    if !ok {
+        anyhow::bail!(
+            "--{flag} {value:?}: use letters, digits, '-' or '_'{}",
+            if extra.is_empty() { "" } else { ", '.' or '/'" }
+        );
+    }
+    if ["major", "minor", "patch", "none"].contains(&value) {
+        anyhow::bail!("--{flag} {value:?}: a bump level can't be a {flag}");
+    }
+    Ok(())
 }
 
 pub fn run(args: &AddArgs) -> anyhow::Result<()> {
@@ -37,41 +68,94 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
     let config = Config::load(repo_root)?;
     let changeset_dir = config.changeset_dir(repo_root);
 
-    if !changeset_dir.exists() {
-        std::fs::create_dir_all(&changeset_dir)?;
-    }
+    std::fs::create_dir_all(&changeset_dir)?;
 
     let is_tty = atty_check();
+    check_args(args, is_tty)?;
+    let packages = resolve_packages(repo_root, &config, args, is_tty)?;
 
-    if !is_tty && args.package.is_empty() && args.message.is_none() && !args.no_bump {
+    let body: String = match &args.message {
+        Some(msg) => msg.trim().to_string(),
+        None if is_tty => prompt_body()?,
+        None => String::default(),
+    };
+
+    let kind: Option<&str> = args.kind.as_deref();
+    let scope: Option<&str> = args.scope.as_deref();
+    let name = writer::write_changeset_typed(&changeset_dir, &packages, kind, scope, &body)?;
+    let file = format!("{name}.md");
+    eprintln!("Created {}/{file}", config.changeset_dir_relative());
+    crate::changelog::generator::warn_fenced_boundaries(&file, &body);
+    warn_breaking(&file, &body, &packages, args, &config);
+    Ok(())
+}
+
+/// The flag checks that don't need the packages: `--type`/`--scope` values,
+/// and the flags non-interactive mode can't do without.
+fn check_args(args: &AddArgs, is_tty: bool) -> anyhow::Result<()> {
+    if let Some(kind) = &args.kind {
+        validate_meta("type", kind, &[])?;
+    }
+    if let Some(scope) = &args.scope {
+        validate_meta("scope", scope, &['.', '/'])?;
+    }
+    if is_tty || !args.package.is_empty() {
+        return Ok(());
+    }
+    if args.message.is_none() && !args.no_bump {
         anyhow::bail!(
             "Non-interactive mode requires --package, --bump, and --message flags.\n\
              Run interactively in a terminal, or use:\n  \
              changesetter add --package <name> --bump <level> --message \"description\""
         );
     }
+    anyhow::bail!("--package is required in non-interactive mode");
+}
 
-    let packages = if !args.package.is_empty() {
-        resolve_packages_noninteractive(repo_root, &config, args)?
-    } else if is_tty {
-        resolve_packages_interactive(repo_root, &config, args)?
+/// The packages and bumps, from the flags or asked for in a terminal. A
+/// package named "type" or "scope" can't be combined with that flag, since
+/// both would be the same front matter key.
+fn resolve_packages(
+    repo_root: &Path,
+    config: &Config,
+    args: &AddArgs,
+    is_tty: bool,
+) -> anyhow::Result<BTreeMap<String, BumpLevel>> {
+    let packages = if args.package.is_empty() && is_tty {
+        resolve_packages_interactive(repo_root, config, args)?
     } else {
-        anyhow::bail!("--package is required in non-interactive mode");
+        resolve_packages_noninteractive(repo_root, config, args)?
     };
+    for (key, given) in [("type", &args.kind), ("scope", &args.scope)] {
+        if given.is_some() && packages.contains_key(key) {
+            anyhow::bail!("--{key} can't be used with a package named \"{key}\"");
+        }
+    }
+    Ok(packages)
+}
 
-    let body = if let Some(msg) = &args.message {
-        format!("#### {msg}")
-    } else if is_tty {
-        prompt_body()?
-    } else {
-        String::new()
-    };
-
-    let name = writer::write_changeset(&changeset_dir, &packages, &body)?;
-    eprintln!("Created {}/{name}.md", config.changeset_dir_relative());
-    crate::changelog::generator::warn_fenced_boundaries(&format!("{name}.md"), &body);
-
-    Ok(())
+/// The same warning `status` and `release` give, for a `breaking` type from
+/// --type or from a "feat!:" prefix on the message.
+fn warn_breaking(
+    file: &str,
+    body: &str,
+    packages: &BTreeMap<String, BumpLevel>,
+    args: &AddArgs,
+    config: &Config,
+) {
+    for (pkg, bump) in packages {
+        let kind = crate::changelog::groups::classify(
+            body,
+            args.kind.as_deref(),
+            args.scope.as_deref(),
+            *bump,
+            &config.changelog,
+        )
+        .kind;
+        if let Some(w) = crate::changelog::groups::breaking_warning(file, &kind, pkg, *bump) {
+            eprintln!("{w}");
+        }
+    }
 }
 
 fn resolve_packages_noninteractive(
@@ -190,7 +274,7 @@ fn prompt_body() -> anyhow::Result<String> {
     if input.is_empty() {
         open_editor()
     } else {
-        Ok(format!("#### {input}"))
+        Ok(input.to_string())
     }
 }
 
@@ -198,7 +282,7 @@ fn open_editor() -> anyhow::Result<String> {
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
     let path = std::env::temp_dir().join(format!("changesetter-{}.md", std::process::id()));
 
-    std::fs::write(&path, "#### \n\n")?;
+    std::fs::write(&path, "")?;
 
     let status = std::process::Command::new(&editor).arg(&path).status()?;
 
@@ -269,6 +353,8 @@ mod tests {
             bump: Some("patch".to_string()),
             no_bump: false,
             message: Some("Fixed a bug".to_string()),
+            kind: None,
+            scope: None,
         };
         run_in(dir.path(), &args).unwrap();
 
@@ -293,6 +379,8 @@ mod tests {
             bump: None,
             no_bump: true,
             message: Some("Docs update".to_string()),
+            kind: None,
+            scope: None,
         };
         run_in(dir.path(), &args).unwrap();
 
@@ -316,8 +404,79 @@ mod tests {
             bump: Some("patch".to_string()),
             no_bump: false,
             message: Some("Fix".to_string()),
+            kind: None,
+            scope: None,
         };
         let result = run_in(dir.path(), &args);
         assert!(result.is_err());
+    }
+
+    fn only_changeset(dir: &Path) -> String {
+        let changeset_dir = dir.join(".changeset");
+        let files: Vec<_> = std::fs::read_dir(&changeset_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        assert_eq!(files.len(), 1);
+        std::fs::read_to_string(files[0].path()).unwrap()
+    }
+
+    #[test]
+    fn add_message_is_plain_text() {
+        let dir = setup_repo();
+        let args = AddArgs {
+            package: vec!["testpkg".to_string()],
+            bump: Some("patch".to_string()),
+            no_bump: false,
+            message: Some("Fixed a bug".to_string()),
+            kind: None,
+            scope: None,
+        };
+        run_in(dir.path(), &args).unwrap();
+        assert_eq!(
+            only_changeset(dir.path()),
+            "---\ntestpkg: patch\n---\n\nFixed a bug\n"
+        );
+    }
+
+    #[test]
+    fn add_with_type_and_scope() {
+        let dir = setup_repo();
+        let args = AddArgs {
+            package: vec!["testpkg".to_string()],
+            bump: Some("minor".to_string()),
+            no_bump: false,
+            message: Some("New biome".to_string()),
+            kind: Some("feat".to_string()),
+            scope: Some("world/gen".to_string()),
+        };
+        run_in(dir.path(), &args).unwrap();
+        assert_eq!(
+            only_changeset(dir.path()),
+            "---\ntestpkg: minor\ntype: feat\nscope: world/gen\n---\n\nNew biome\n"
+        );
+    }
+
+    #[test]
+    fn add_rejects_bad_type_and_scope() {
+        for (kind, scope, expected) in [
+            (Some("fe at"), None, "--type \"fe at\""),
+            (Some("patch"), None, "a bump level can't be a type"),
+            (Some("x: y"), None, "--type"),
+            (None, Some("-ui"), "--scope \"-ui\""),
+        ] {
+            let dir = setup_repo();
+            let args = AddArgs {
+                package: vec!["testpkg".to_string()],
+                bump: Some("patch".to_string()),
+                no_bump: false,
+                message: Some("Fix".to_string()),
+                kind: kind.map(str::to_string),
+                scope: scope.map(str::to_string),
+            };
+            let err = run_in(dir.path(), &args).unwrap_err().to_string();
+            assert!(err.contains(expected), "{expected}: got {err}");
+        }
     }
 }

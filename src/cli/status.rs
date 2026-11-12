@@ -77,13 +77,14 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
                     "version": version,
                     "bump": r.bump.to_string(),
                     "tag": config.tag.format_tag(&r.name, &version, is_monorepo),
+                    "entries": r.entries.iter().map(|e| e.to_json()).collect::<Vec<_>>(),
                 })
             })
             .collect();
         let none_entries = release_plan
             .none_entries
             .iter()
-            .map(|n| serde_json::json!({ "title": n.title }))
+            .map(|n| n.to_json())
             .collect();
         (releases, none_entries)
     };
@@ -119,6 +120,9 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
     for cs in &changesets {
         let file = cs.filename.as_deref().unwrap_or("changeset");
         crate::changelog::generator::warn_fenced_boundaries(&format!("{file}.md"), &cs.body);
+    }
+    for warning in release_plan.breaking_warnings() {
+        eprintln!("{warning}");
     }
 
     println!("{} changeset(s) pending\n", changesets.len());
@@ -235,7 +239,7 @@ mod tests {
     fn status_with_changesets() {
         let dir = setup_repo();
         let changeset_dir = dir.path().join(".changeset");
-        std::fs::create_dir(&changeset_dir).unwrap();
+        std::fs::create_dir_all(&changeset_dir).unwrap();
         std::fs::write(
             changeset_dir.join("test.md"),
             "---\ntestpkg: minor\n---\n\n#### New feature\n",
@@ -284,7 +288,7 @@ mod tests {
 
         let status = json_status(dir.path()).unwrap();
         assert_eq!(status["pending"], serde_json::json!(["team/test"]));
-        assert_eq!(status["packages"][0]["tagged"], true);
+        assert_eq!(status["packages"][0]["tagged"].as_bool(), Some(true));
         assert_eq!(
             status["releases"],
             serde_json::json!([{
@@ -293,6 +297,15 @@ mod tests {
                 "version": "1.1.0",
                 "bump": "minor",
                 "tag": "v1.1.0",
+                "entries": [{
+                    "id": "team/test",
+                    "bump": "minor",
+                    "type": "feat",
+                    "scope": null,
+                    "group": null,
+                    "skip": false,
+                    "summary": "New feature",
+                }],
             }])
         );
     }
@@ -451,7 +464,7 @@ mod tests {
         assert_eq!(a["tag"], "@s/a@v1.0.0");
         assert_eq!(a["changelog"], "CHANGELOG.md");
         assert_eq!(status["releases"][0]["tag"], "@s/a@v1.1.0");
-        assert_eq!(status["tag_annotated"], true);
+        assert_eq!(status["tag_annotated"].as_bool(), Some(true));
     }
 
     #[test]
