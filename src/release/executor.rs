@@ -55,6 +55,9 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         pre_state.as_ref()
     };
     let mut release_plan = plan::assemble(&changesets, &packages, &config, pre_ref);
+    for warning in release_plan.breaking_warnings() {
+        eprintln!("{warning}");
+    }
 
     if release_plan.releases.is_empty() && release_plan.none_entries.is_empty() {
         eprintln!("No pending changesets, nothing to release.");
@@ -312,20 +315,20 @@ fn commit_version_changes(
 }
 
 fn print_dry_run(plan: &ReleasePlan, date: &str) {
-    println!("Dry run - the following changes would be made:\n");
+    eprintln!("Dry run - the following changes would be made:\n");
 
     for release in &plan.releases {
-        println!(
+        eprintln!(
             "  {} {} -> {} ({})",
             release.name, release.previous_version, release.version, release.bump
         );
     }
 
     for entry in &plan.none_entries {
-        println!("  {} (no version change)", entry.title);
+        eprintln!("  {} (no version change)", entry.title);
     }
 
-    println!("\nChangelog date: {date}");
+    eprintln!("\nChangelog date: {date}");
 }
 
 fn today() -> String {

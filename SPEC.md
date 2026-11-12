@@ -92,8 +92,11 @@ When stdin is not a TTY (headless CI), requires `--package`, `--bump`, and `--me
 ```
 changesetter add
 changesetter add --package mylib --bump patch --message "Fixed null handling"
+changesetter add --package mylib --bump minor --type feat --scope api --message "Batch endpoint"
 changesetter add --no-bump  # none-bump, opens editor for description
 ```
+
+`--message` is written as plain text, the body's first line. `--type` and `--scope` add `type:` and `scope:` to the front matter; they only decide where the entry is listed in a grouped changelog.
 
 To retract a changeset, delete the file from `.changeset/` manually. No dedicated command needed.
 
@@ -381,6 +384,12 @@ per_package = true               # monorepo: each package gets its own CHANGELOG
 none_bump = "section"            # "section" | "file" | "omit"
 none_bump_file = "CHANGELOG-internal.md"  # only if none_bump = "file"
 none_bump_heading = "Internal"   # heading for none-bump section, default "Internal"
+group = false                    # true: list entries under a heading per conventional type
+# [[changelog.groups]]           # ordered groups; listing any turns grouping on
+# title = "Features"
+# types = ["feat"]               # entry types this group takes (empty: any)
+# match = "*security*"           # optional case-insensitive glob over the summary
+# skip = false                   # true: leave matching entries out of the changelog
 
 # Tag format
 [tag]

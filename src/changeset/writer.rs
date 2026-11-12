@@ -9,6 +9,18 @@ pub fn write_changeset(
     packages: &BTreeMap<String, BumpLevel>,
     body: &str,
 ) -> anyhow::Result<String> {
+    write_changeset_typed(changeset_dir, packages, None, None, body)
+}
+
+/// Writes a changeset with an optional `type:` and `scope:` in its front
+/// matter, after the packages.
+pub fn write_changeset_typed(
+    changeset_dir: &Path,
+    packages: &BTreeMap<String, BumpLevel>,
+    kind: Option<&str>,
+    scope: Option<&str>,
+    body: &str,
+) -> anyhow::Result<String> {
     let mut name = words::generate_name();
     let mut path = changeset_dir.join(format!("{name}.md"));
 
@@ -29,6 +41,12 @@ pub fn write_changeset(
         } else {
             content.push_str(&format!("{pkg}: {bump}\n"));
         }
+    }
+    if let Some(kind) = kind {
+        content.push_str(&format!("type: {kind}\n"));
+    }
+    if let Some(scope) = scope {
+        content.push_str(&format!("scope: {scope}\n"));
     }
     content.push_str("---\n");
 
@@ -87,6 +105,28 @@ mod tests {
         let name = write_changeset(dir.path(), &packages, body).unwrap();
         let content = std::fs::read_to_string(dir.path().join(format!("{name}.md"))).unwrap();
         assert!(content.contains("\"@myorg/utils\": minor"));
+    }
+
+    #[test]
+    fn write_type_and_scope_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let packages = BTreeMap::from([("mylib".to_string(), BumpLevel::Minor)]);
+        let name = write_changeset_typed(
+            dir.path(),
+            &packages,
+            Some("feat"),
+            Some("world"),
+            "New biome",
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(dir.path().join(format!("{name}.md"))).unwrap();
+        assert_eq!(
+            content,
+            "---\nmylib: minor\ntype: feat\nscope: world\n---\n\nNew biome\n"
+        );
+        let cs = parser::parse(&content, Some(name)).unwrap();
+        assert_eq!(cs.kind.as_deref(), Some("feat"));
+        assert_eq!(cs.scope.as_deref(), Some("world"));
     }
 
     #[test]

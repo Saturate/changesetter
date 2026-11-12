@@ -77,13 +77,14 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
                     "version": version,
                     "bump": r.bump.to_string(),
                     "tag": config.tag.format_tag(&r.name, &version, is_monorepo),
+                    "entries": r.entries.iter().map(|e| e.to_json()).collect::<Vec<_>>(),
                 })
             })
             .collect();
         let none_entries = release_plan
             .none_entries
             .iter()
-            .map(|n| serde_json::json!({ "title": n.title }))
+            .map(|n| n.to_json())
             .collect();
         (releases, none_entries)
     };
@@ -119,6 +120,9 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
     for cs in &changesets {
         let file = cs.filename.as_deref().unwrap_or("changeset");
         crate::changelog::generator::warn_fenced_boundaries(&format!("{file}.md"), &cs.body);
+    }
+    for warning in release_plan.breaking_warnings() {
+        eprintln!("{warning}");
     }
 
     println!("{} changeset(s) pending\n", changesets.len());

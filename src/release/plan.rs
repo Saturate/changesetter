@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::changelog::groups;
 use crate::changeset::types::{BumpLevel, Changeset};
 use crate::config::Config;
 use crate::package::types::{Package, Version};
@@ -21,9 +22,31 @@ pub struct PlannedRelease {
     pub bump: BumpLevel,
     pub changelog: String,
     pub changesets: Vec<String>,
+    /// The entries behind `changelog`, in changeset order.
+    pub entries: Vec<ReleaseEntry>,
 }
 
+/// One changeset's entry in a release.
 #[derive(Debug, Clone)]
+pub struct ReleaseEntry {
+    /// The changeset's file name without `.md`, or a name changesetter made
+    /// up for an entry it wrote itself (`fixed-group`, `dependency-cascade`).
+    pub changeset: String,
+    /// The bump this changeset gives the package.
+    pub bump: BumpLevel,
+    pub kind: String,
+    pub scope: Option<String>,
+    pub summary: String,
+    /// The group it's listed under in a grouped changelog: `None` when the
+    /// changelog isn't grouped, or no group takes it.
+    pub group: Option<String>,
+    /// Left out of the changelog by a `skip` group.
+    pub skip: bool,
+    /// The body with its headings demoted, as the flat changelog has it.
+    body: String,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct NoneEntry {
     pub title: String,
     pub body: String,
@@ -31,9 +54,77 @@ pub struct NoneEntry {
     /// Packages the changeset names, with `default` resolved, so per-package
     /// changelogs can pick out their own entries.
     pub packages: Vec<String>,
+    pub kind: String,
+    pub scope: Option<String>,
+    pub summary: String,
+    /// Its group in a grouped changelog, as for `ReleaseEntry::group`. It's
+    /// still listed under the none-bump heading.
+    pub group: Option<String>,
+    /// Left out of the changelog by a `skip` group.
+    pub skip: bool,
 }
 
-type BumpMap = BTreeMap<String, (BumpLevel, Vec<(String, String)>)>;
+type BumpMap = BTreeMap<String, (BumpLevel, Vec<ReleaseEntry>)>;
+
+/// Where an entry goes in the changelog: its group (`None` when not grouped
+/// or for the fallback group) and whether a `skip` group takes it.
+fn place(config: &Config, kind: &str, summary: &str) -> (Option<String>, bool) {
+    if !config.changelog.is_grouped() {
+        return (None, false);
+    }
+    let groups = groups::groups(&config.changelog);
+    match groups::find_group(&groups, kind, summary) {
+        Some(g) => (Some(g.title.clone()), g.skip),
+        None => (None, false),
+    }
+}
+
+fn new_entry(
+    changeset: &str,
+    bump: BumpLevel,
+    body: &str,
+    kind: Option<&str>,
+    scope: Option<&str>,
+    config: &Config,
+) -> ReleaseEntry {
+    let c = groups::classify(body, kind, scope, bump, &config.changelog);
+    let (group, skip) = place(config, &c.kind, &c.summary);
+    ReleaseEntry {
+        changeset: changeset.to_string(),
+        bump,
+        kind: c.kind,
+        scope: c.scope,
+        summary: c.summary,
+        group,
+        skip,
+        body: crate::changelog::markdown::demote_headings(body),
+    }
+}
+
+/// A release's changelog text: the bodies one after another, or in a grouped
+/// changelog a list per group. Groups sit under a combined monorepo
+/// changelog's package headings, so they go a level deeper there.
+fn release_changelog(entries: &[ReleaseEntry], config: &Config, nested: bool) -> String {
+    if !config.changelog.is_grouped() {
+        return entries
+            .iter()
+            .map(|e| e.body.as_str())
+            .collect::<Vec<&str>>()
+            .join("\n\n");
+    }
+    let items: Vec<(Option<String>, String)> = entries
+        .iter()
+        .filter(|e| !e.skip && !e.summary.is_empty())
+        .map(|e| {
+            (
+                e.group.clone(),
+                groups::render_item(&e.body, &e.summary, e.scope.as_deref()),
+            )
+        })
+        .collect();
+    let groups = groups::groups(&config.changelog);
+    groups::render_sections(&groups, &items, if nested { 4 } else { 3 })
+}
 
 pub fn assemble(
     changesets: &[Changeset],
@@ -71,11 +162,29 @@ pub fn assemble(
 
         let has_real_bump = resolved.iter().any(|(_, b)| *b > BumpLevel::None);
         if !has_real_bump && !resolved.is_empty() {
+            let e = new_entry(
+                &cs_name,
+                BumpLevel::None,
+                &cs.body,
+                cs.kind.as_deref(),
+                cs.scope.as_deref(),
+                config,
+            );
+            let body = if config.changelog.is_grouped() && !e.summary.is_empty() {
+                groups::render_item(&e.body, &e.summary, e.scope.as_deref())
+            } else {
+                e.body
+            };
             none_entries.push(NoneEntry {
                 title: extract_title(&cs.body),
-                body: crate::changelog::markdown::demote_headings(&cs.body),
+                body,
                 changesets: vec![cs_name.clone()],
                 packages: resolved.iter().map(|(n, _)| n.clone()).collect(),
+                kind: e.kind,
+                scope: e.scope,
+                summary: e.summary,
+                group: e.group,
+                skip: e.skip,
             });
         }
 
@@ -89,9 +198,13 @@ pub fn assemble(
             }
 
             if bump > BumpLevel::None {
-                entry.1.push((
-                    cs_name.clone(),
-                    crate::changelog::markdown::demote_headings(&cs.body),
+                entry.1.push(new_entry(
+                    &cs_name,
+                    bump,
+                    &cs.body,
+                    cs.kind.as_deref(),
+                    cs.scope.as_deref(),
+                    config,
                 ));
             }
         }
@@ -100,6 +213,7 @@ pub fn assemble(
     apply_fixed_groups(&mut bumps_per_package, packages, config);
     apply_linked_groups(&mut bumps_per_package, config);
     apply_dependency_cascading(&mut bumps_per_package, packages, config);
+    let nested = packages.len() > 1 && !config.changelog.per_package;
 
     let mut releases = Vec::new();
 
@@ -108,7 +222,7 @@ pub fn assemble(
             continue;
         }
 
-        let changesets_names: Vec<String> = entries.iter().map(|(n, _)| n.clone()).collect();
+        let changesets_names: Vec<String> = entries.iter().map(|e| e.changeset.clone()).collect();
 
         let pkg = packages.iter().find(|p| &p.name == pkg_name);
         let previous_version = pkg
@@ -121,11 +235,7 @@ pub fn assemble(
         let new_version = apply_bump(&previous_version, *bump);
         let new_version = apply_pre_version(new_version, pkg_name, pre_state);
 
-        let changelog = entries
-            .iter()
-            .map(|(_, body)| body.as_str())
-            .collect::<Vec<&str>>()
-            .join("\n\n");
+        let changelog = release_changelog(entries, config, nested);
 
         releases.push(PlannedRelease {
             name: pkg_name.clone(),
@@ -135,6 +245,7 @@ pub fn assemble(
             bump: *bump,
             changelog,
             changesets: changesets_names,
+            entries: entries.clone(),
         });
     }
 
@@ -176,9 +287,13 @@ fn apply_fixed_groups(bumps: &mut BumpMap, packages: &[Package], config: &Config
                     .find(|p| &p.name == member)
                     .map(|p| p.version.to_string())
                     .unwrap_or_default();
-                entry.1.push((
-                    "fixed-group".to_string(),
-                    format!("#### Bumped as part of fixed group (was {pkg_version})"),
+                entry.1.push(new_entry(
+                    "fixed-group",
+                    highest_bump,
+                    &format!("#### Bumped as part of fixed group (was {pkg_version})"),
+                    Some(groups::DEPS_TYPE),
+                    None,
+                    config,
                 ));
             }
         }
@@ -244,13 +359,17 @@ fn apply_dependency_cascading(bumps: &mut BumpMap, packages: &[Package], config:
                     }
 
                     let already_has_cascade_entry =
-                        entry.1.iter().any(|(name, _)| name == "dependency-cascade");
+                        entry.1.iter().any(|e| e.changeset == "dependency-cascade");
                     if !already_has_cascade_entry {
-                        entry.1.push((
-                            "dependency-cascade".to_string(),
-                            format!(
+                        entry.1.push(new_entry(
+                            "dependency-cascade",
+                            mode,
+                            &format!(
                                 "#### Dependency update\n\nBumped due to dependency on {bumped_pkg}"
                             ),
+                            Some(groups::DEPS_TYPE),
+                            None,
+                            config,
                         ));
                     }
                 }
@@ -298,6 +417,66 @@ fn apply_bump(version: &Version, bump: BumpLevel) -> Version {
     }
 }
 
+impl ReleaseEntry {
+    /// The entry as `--output json` lists it.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.changeset,
+            "bump": self.bump.to_string(),
+            "type": self.kind,
+            "scope": self.scope,
+            "group": self.group,
+            "skip": self.skip,
+            "summary": self.summary,
+        })
+    }
+}
+
+impl NoneEntry {
+    /// The entry as `--output json` lists it, besides its title and body.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.changesets.first(),
+            "bump": BumpLevel::None.to_string(),
+            "type": self.kind,
+            "scope": self.scope,
+            "group": self.group,
+            "skip": self.skip,
+            "summary": self.summary,
+            "title": self.title,
+            "body": self.body,
+        })
+    }
+}
+
+impl ReleasePlan {
+    /// A warning per entry typed `breaking` whose bump isn't major.
+    pub fn breaking_warnings(&self) -> Vec<String> {
+        let releases = self.releases.iter().flat_map(|r| {
+            r.entries.iter().map(move |e| {
+                (
+                    e.changeset.as_str(),
+                    e.kind.as_str(),
+                    r.name.as_str(),
+                    e.bump,
+                )
+            })
+        });
+        let none = self.none_entries.iter().flat_map(|n| {
+            let id = n.changesets.first().map_or("changeset", String::as_str);
+            n.packages
+                .iter()
+                .map(move |p| (id, n.kind.as_str(), p.as_str(), BumpLevel::None))
+        });
+        releases
+            .chain(none)
+            .filter_map(|(id, kind, package, bump)| {
+                groups::breaking_warning(&format!("{id}.md"), kind, package, bump)
+            })
+            .collect()
+    }
+}
+
 fn extract_title(body: &str) -> String {
     body.lines()
         .find(|l| !l.trim().is_empty())
@@ -325,6 +504,8 @@ mod tests {
             packages: packages.iter().map(|(n, b)| (n.to_string(), *b)).collect(),
             body: body.to_string(),
             filename: Some(name.to_string()),
+            kind: None,
+            scope: None,
         }
     }
 
@@ -854,5 +1035,145 @@ mod tests {
         let plan = assemble(&changesets, &packages, &Config::default(), None);
         assert_eq!(plan.releases[0].version.to_string(), "1.0.1");
         assert!(plan.releases[0].version.pre.is_none());
+    }
+
+    fn grouped() -> Config {
+        let mut config = Config::default();
+        config.changelog.group = true;
+        config
+    }
+
+    fn typed(mut cs: Changeset, kind: &str) -> Changeset {
+        cs.kind = Some(kind.to_string());
+        cs
+    }
+
+    #[test]
+    fn flat_changelog_is_unchanged_but_entries_are_typed() {
+        let packages = vec![make_pkg("mylib", "1.0.0")];
+        let changesets = vec![
+            make_cs(
+                &[("mylib", BumpLevel::Patch)],
+                "#### fix(ui): Button",
+                "cs1",
+            ),
+            make_cs(&[("mylib", BumpLevel::Minor)], "Biomes", "cs2"),
+        ];
+        let plan = assemble(&changesets, &packages, &Config::default(), None);
+        let r = &plan.releases[0];
+        assert_eq!(r.changelog, "#### fix(ui): Button\n\nBiomes");
+        assert_eq!(r.entries[0].kind, "fix");
+        assert_eq!(r.entries[0].scope.as_deref(), Some("ui"));
+        assert_eq!(r.entries[0].summary, "Button");
+        assert_eq!(r.entries[0].group, None);
+        assert_eq!(r.entries[1].kind, "feat");
+        assert_eq!(r.entries[1].bump, BumpLevel::Minor);
+    }
+
+    #[test]
+    fn grouped_changelog_lists_by_type() {
+        let packages = vec![make_pkg("mylib", "1.0.0")];
+        let changesets = vec![
+            make_cs(&[("mylib", BumpLevel::Patch)], "Fix the crash", "cs1"),
+            make_cs(
+                &[("mylib", BumpLevel::Minor)],
+                "#### feat(world): Biomes\n\nThree of them.",
+                "cs2",
+            ),
+            typed(
+                make_cs(&[("mylib", BumpLevel::Patch)], "Faster saves", "cs3"),
+                "perf",
+            ),
+            typed(
+                make_cs(&[("mylib", BumpLevel::Patch)], "Odd one", "cs4"),
+                "wat",
+            ),
+        ];
+        let plan = assemble(&changesets, &packages, &grouped(), None);
+        assert_eq!(
+            plan.releases[0].changelog,
+            "### Features\n\n- **world:** Biomes\n\n  Three of them.\n\n\
+             ### Fixes\n\n- Fix the crash\n\n\
+             ### Performance\n\n- Faster saves\n\n\
+             ### Other changes\n\n- Odd one"
+        );
+        assert_eq!(plan.releases[0].bump, BumpLevel::Minor);
+        assert_eq!(
+            plan.releases[0].entries[1].group.as_deref(),
+            Some("Features")
+        );
+        assert_eq!(plan.releases[0].entries[3].group, None);
+    }
+
+    #[test]
+    fn grouped_skip_drops_from_changelog_but_still_bumps() {
+        let packages = vec![make_pkg("mylib", "1.0.0")];
+        let mut config = Config::default();
+        config.changelog.groups = vec![
+            crate::config::ChangelogGroup {
+                title: "Hidden".into(),
+                types: vec!["test".into()],
+                pattern: None,
+                skip: true,
+            },
+            crate::config::ChangelogGroup {
+                title: "Changes".into(),
+                types: vec![],
+                pattern: None,
+                skip: false,
+            },
+        ];
+        let changesets = vec![
+            typed(
+                make_cs(&[("mylib", BumpLevel::Minor)], "More tests", "cs1"),
+                "test",
+            ),
+            make_cs(&[("mylib", BumpLevel::Patch)], "A fix", "cs2"),
+            typed(
+                make_cs(&[("mylib", BumpLevel::None)], "Test CI", "cs3"),
+                "test",
+            ),
+        ];
+        let plan = assemble(&changesets, &packages, &config, None);
+        assert_eq!(plan.releases[0].version, Version::new(1, 1, 0));
+        assert_eq!(plan.releases[0].changelog, "### Changes\n\n- A fix");
+        assert!(plan.releases[0].entries[0].skip);
+        assert!(plan.none_entries[0].skip);
+    }
+
+    #[test]
+    fn grouped_none_entries_are_list_items() {
+        let packages = vec![make_pkg("mylib", "1.0.0")];
+        let changesets = vec![make_cs(
+            &[("mylib", BumpLevel::None)],
+            "ci(actions): Cache cargo",
+            "cs1",
+        )];
+        let plan = assemble(&changesets, &packages, &grouped(), None);
+        let n = &plan.none_entries[0];
+        assert_eq!(n.body, "- **actions:** Cache cargo");
+        assert_eq!(n.kind, "ci");
+        assert_eq!(n.group.as_deref(), Some("Under the hood"));
+    }
+
+    #[test]
+    fn grouped_combined_monorepo_nests_groups_under_packages() {
+        let packages = vec![make_pkg("a", "1.0.0"), make_pkg("b", "1.0.0")];
+        let changesets = vec![make_cs(&[("a", BumpLevel::Patch)], "Fix", "cs1")];
+        let plan = assemble(&changesets, &packages, &grouped(), None);
+        assert_eq!(plan.releases[0].changelog, "#### Fixes\n\n- Fix");
+    }
+
+    #[test]
+    fn breaking_type_below_major_warns() {
+        let packages = vec![make_pkg("mylib", "1.0.0")];
+        let changesets = vec![
+            make_cs(&[("mylib", BumpLevel::Minor)], "feat!: New saves", "cs1"),
+            make_cs(&[("mylib", BumpLevel::Major)], "Drop old saves", "cs2"),
+        ];
+        let plan = assemble(&changesets, &packages, &Config::default(), None);
+        let warnings = plan.breaking_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("cs1.md"), "{}", warnings[0]);
     }
 }

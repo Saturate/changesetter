@@ -24,11 +24,44 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
 
     let frontmatter = &input[after_start..after_start + end];
 
-    let packages: BTreeMap<String, BumpLevel> =
+    let entries: BTreeMap<String, serde_yaml::Value> =
         serde_yaml::from_str(frontmatter).map_err(|e| ChangesetterError::InvalidFrontmatter {
             path: err_path(),
             reason: e.to_string(),
         })?;
+
+    // `type:` and `scope:` are metadata unless their value is a bump level,
+    // which keeps a package that happens to be called "type" working.
+    let mut packages = BTreeMap::new();
+    let mut kind = None;
+    let mut scope = None;
+    for (key, value) in entries {
+        let bump: Result<BumpLevel, _> = serde_yaml::from_value(value.clone());
+        match (key.as_str(), bump) {
+            (_, Ok(bump)) => {
+                packages.insert(key, bump);
+            }
+            ("type" | "scope", Err(_)) => {
+                let Some(text) = value.as_str().map(str::trim).filter(|t| !t.is_empty()) else {
+                    return Err(ChangesetterError::InvalidFrontmatter {
+                        path: err_path(),
+                        reason: format!("{key}: expected a non-empty string"),
+                    });
+                };
+                if key == "type" {
+                    kind = Some(text.to_string());
+                } else {
+                    scope = Some(text.to_string());
+                }
+            }
+            (_, Err(e)) => {
+                return Err(ChangesetterError::InvalidFrontmatter {
+                    path: err_path(),
+                    reason: format!("{key}: {e}"),
+                });
+            }
+        }
+    }
 
     if packages.is_empty() {
         return Err(ChangesetterError::InvalidFrontmatter {
@@ -54,6 +87,8 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
         packages,
         body,
         filename,
+        kind,
+        scope,
     })
 }
 
@@ -173,6 +208,51 @@ mod tests {
         let input = "---\nmylib: patch\n---\n\n   \n\n";
         let cs = parse(input, None).unwrap();
         assert_eq!(cs.body, "");
+    }
+
+    #[test]
+    fn parse_type_and_scope() {
+        let input = "---\nmylib: minor\ntype: feat\nscope: world\n---\n\nNew biome\n";
+        let cs = parse(input, None).unwrap();
+        assert_eq!(cs.packages.len(), 1);
+        assert_eq!(cs.packages["mylib"], BumpLevel::Minor);
+        assert_eq!(cs.kind.as_deref(), Some("feat"));
+        assert_eq!(cs.scope.as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn parse_package_named_type() {
+        let input = "---\ntype: patch\n---\n\nFix\n";
+        let cs = parse(input, None).unwrap();
+        assert_eq!(cs.packages["type"], BumpLevel::Patch);
+        assert_eq!(cs.kind, None);
+    }
+
+    #[test]
+    fn parse_type_only_has_no_packages() {
+        let err = parse("---\ntype: feat\n---\n", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no package entries"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_empty_type() {
+        let err = parse("---\nmylib: patch\ntype: \"\"\n---\n", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("type: expected a non-empty string"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_unknown_bump_names_the_package() {
+        let err = parse("---\nmylib: breaking\n---\n", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mylib:"), "got: {err}");
     }
 
     #[test]

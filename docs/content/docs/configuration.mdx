@@ -110,8 +110,75 @@ none_bump_heading = "Internal"
 | `per_package` | `false` | When `true`, each package gets its own CHANGELOG.md in its directory |
 | `none_bump` | `"section"` | How to handle none-bump entries: `"section"` (under a heading), `"omit"` (exclude) |
 | `none_bump_heading` | `"Internal"` | Heading for none-bump entries when `none_bump = "section"` |
+| `group` | `false` | Group each version's entries by type, using the default groups |
+| `groups` | `[]` | Your own ordered groups (`[[changelog.groups]]`). Listing any turns grouping on |
 
 Single-package repos always use a single root CHANGELOG.md regardless of `per_package`.
+
+### Grouped changelogs
+
+By default a version section lists its changeset bodies one after another. With grouping on, each entry goes under a heading for its [type](/changeset-format#type-and-scope) and is written as a list item: its summary, with `**scope:**` in front when it has one, and the rest of its body indented below.
+
+```toml
+[changelog]
+group = true
+```
+
+```markdown
+## 1.3.0 - 2026-11-12
+
+### Breaking changes
+
+- New save format
+
+### Features
+
+- **world:** New biome generator
+
+### Fixes
+
+- Buttons no longer flicker
+
+### Internal
+
+- Cache cargo in CI
+```
+
+`group = true` uses these groups:
+
+| Title | Types |
+|---|---|
+| Breaking changes | `breaking` |
+| Features | `feat` |
+| Fixes | `fix` |
+| Performance | `perf` |
+| Reverts | `revert` |
+| Under the hood | `docs`, `refactor`, `test`, `ci`, `chore`, `build`, `style`, `deps` |
+
+To pick your own, list them in order. Each entry goes to the first group that takes it. A group takes an entry when the entry's type is in `types` (or `types` is left out) and its summary matches `match` (or `match` is left out). `match` is a case-insensitive glob: `*` matches any run of characters and `?` matches one. `skip = true` leaves matching entries out of the changelog, though they still count towards the bump.
+
+```toml
+[[changelog.groups]]
+title = "Security"
+match = "*security*"
+
+[[changelog.groups]]
+title = "Features"
+types = ["feat"]
+
+[[changelog.groups]]
+title = "Fixes"
+types = ["fix", "perf"]
+
+[[changelog.groups]]
+title = "Tests"
+types = ["test"]
+skip = true
+```
+
+An entry no group takes goes under `### Other changes` at the end. Groups come out in the order listed, and a group with no entries in that version is left out. Changelog entries changesetter writes itself (a package bumped by its fixed group or a dependency) have type `deps`.
+
+None-bump entries stay under the `none_bump_heading`, as list items too, so a group can't share its title. With `per_package = false` in a monorepo, the groups sit under each package's `###` heading, at `####`. Grouping changes only what new versions look like. Existing sections stay as written, and the release action's notes extraction reads both layouts.
 
 ### None-bump entries without a release
 
@@ -154,7 +221,7 @@ format = "v{version}"
 | `{version}` | The new version number (e.g. `0.2.0`) |
 | `{name}` | The package name |
 
-Defaults: `v{version}` for single-package repos, `{name}@v{version}` for monorepos.
+Defaults: `v{version}` for single-package repos, `{name}@v{version}` for monorepos. A repo counts as single-package when exactly one package is left after `ignore`, so a configured `[[package]]` with its helper manifests ignored gets plain `v1.2.3` tags.
 
 ## Release
 

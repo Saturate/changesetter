@@ -45,6 +45,36 @@ pub struct ChangelogConfig {
     pub none_bump: String,
     pub none_bump_file: Option<String>,
     pub none_bump_heading: String,
+    /// Group a version's entries by conventional type, using the default
+    /// groups unless `groups` lists its own.
+    pub group: bool,
+    /// Ordered groups for a grouped changelog. Listing any turns grouping on.
+    pub groups: Vec<ChangelogGroup>,
+}
+
+/// One `[[changelog.groups]]` entry. An entry goes to the first group it
+/// matches: its type is in `types` (or `types` is empty) and its summary
+/// matches `match` (or there's no `match`).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ChangelogGroup {
+    pub title: String,
+    #[serde(default)]
+    pub types: Vec<String>,
+    /// A case-insensitive glob (`*`, `?`) over the entry's summary.
+    #[serde(default, rename = "match")]
+    pub pattern: Option<String>,
+    /// Matching entries are left out of the changelog. They still count
+    /// towards the bump.
+    #[serde(default)]
+    pub skip: bool,
+}
+
+impl ChangelogConfig {
+    /// Whether version sections are grouped by type.
+    pub fn is_grouped(&self) -> bool {
+        self.group || !self.groups.is_empty()
+    }
 }
 
 impl Default for ChangelogConfig {
@@ -55,6 +85,8 @@ impl Default for ChangelogConfig {
             none_bump: "section".to_string(),
             none_bump_file: None,
             none_bump_heading: "Internal".to_string(),
+            group: false,
+            groups: Vec::new(),
         }
     }
 }
@@ -120,6 +152,7 @@ impl Config {
             .changeset_dir
             .map(|dir| validate_changeset_dir(&dir))
             .transpose()?;
+        validate_changelog_groups(&config.changelog)?;
         Ok(config)
     }
 
@@ -138,7 +171,7 @@ impl Config {
     }
 }
 
-fn glob_match(pattern: &str, text: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
     let (mut pi, mut ti) = (0, 0);
@@ -162,6 +195,23 @@ fn glob_match(pattern: &str, text: &str) -> bool {
         }
     }
     p[pi..].iter().all(|&c| c == '*')
+}
+
+// A group heading with the none-bump heading's title would read as the
+// none-bump section when the changelog is folded on a later release.
+fn validate_changelog_groups(changelog: &ChangelogConfig) -> anyhow::Result<()> {
+    for group in &changelog.groups {
+        if group.title.trim().is_empty() {
+            anyhow::bail!("[[changelog.groups]] entries need a non-empty title");
+        }
+        if group.title.trim() == changelog.none_bump_heading.trim() {
+            anyhow::bail!(
+                "[[changelog.groups]] title \"{}\" is also the none_bump_heading; give one of them another name",
+                group.title
+            );
+        }
+    }
+    Ok(())
 }
 
 // The dir is used both as a filesystem path and as a git pathspec, so it has
@@ -406,5 +456,67 @@ post_bump = ["cargo check", "cargo fmt"]
             format: Some("{name}-{version}".to_string()),
         };
         assert_eq!(tag.format_tag("mylib", "1.0.0", true), "mylib-1.0.0");
+    }
+
+    fn load_str(toml: &str) -> anyhow::Result<Config> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("changesetter.toml"), toml).unwrap();
+        Config::load(dir.path())
+    }
+
+    #[test]
+    fn changelog_groups_parse_in_order() {
+        let config = load_str(
+            r#"
+[[changelog.groups]]
+title = "Security"
+match = "*security*"
+
+[[changelog.groups]]
+title = "Features"
+types = ["feat"]
+
+[[changelog.groups]]
+title = "Hidden"
+types = ["test"]
+skip = true
+"#,
+        )
+        .unwrap();
+        let g = &config.changelog.groups;
+        assert!(config.changelog.is_grouped());
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[0].pattern.as_deref(), Some("*security*"));
+        assert!(g[0].types.is_empty());
+        assert_eq!(g[1].types, vec!["feat".to_string()]);
+        assert!(g[2].skip);
+    }
+
+    #[test]
+    fn changelog_is_flat_by_default() {
+        assert!(!load_str("").unwrap().changelog.is_grouped());
+        assert!(
+            load_str("[changelog]\ngroup = true\n")
+                .unwrap()
+                .changelog
+                .is_grouped()
+        );
+    }
+
+    #[test]
+    fn changelog_group_title_must_differ_from_none_heading() {
+        let err = load_str("[[changelog.groups]]\ntitle = \"Internal\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("none_bump_heading"), "{err}");
+        let err = load_str("[[changelog.groups]]\ntitle = \" \"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("non-empty title"), "{err}");
+    }
+
+    #[test]
+    fn changelog_group_rejects_unknown_keys() {
+        assert!(load_str("[[changelog.groups]]\ntitle = \"A\"\ntype = [\"feat\"]\n").is_err());
     }
 }

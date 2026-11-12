@@ -19,6 +19,8 @@ fn make_cs(packages: &[(&str, BumpLevel)], body: &str, name: &str) -> Changeset 
         packages: packages.iter().map(|(n, b)| (n.to_string(), *b)).collect(),
         body: body.to_string(),
         filename: Some(name.to_string()),
+        kind: None,
+        scope: None,
     }
 }
 

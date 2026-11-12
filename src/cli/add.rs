@@ -26,6 +26,37 @@ pub struct AddArgs {
     /// Change description (non-interactive mode)
     #[arg(long, short)]
     pub message: Option<String>,
+
+    /// Conventional type (feat, fix, perf, docs, ...) for grouped changelogs
+    #[arg(long = "type")]
+    pub kind: Option<String>,
+
+    /// Scope shown in front of the entry in grouped changelogs
+    #[arg(long)]
+    pub scope: Option<String>,
+}
+
+/// Checks a `--type` or `--scope` value: it goes into the front matter
+/// unquoted, so it's kept to characters YAML reads as a plain string, and a
+/// bump level would be read as a package named "type" or "scope".
+fn validate_meta(flag: &str, value: &str, extra: &[char]) -> anyhow::Result<()> {
+    let ok = value
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || extra.contains(&c));
+    if !ok {
+        anyhow::bail!(
+            "--{flag} {value:?}: use letters, digits, '-' or '_'{}",
+            if extra.is_empty() { "" } else { ", '.' or '/'" }
+        );
+    }
+    if ["major", "minor", "patch", "none"].contains(&value) {
+        anyhow::bail!("--{flag} {value:?}: a bump level can't be a {flag}");
+    }
+    Ok(())
 }
 
 pub fn run(args: &AddArgs) -> anyhow::Result<()> {
@@ -39,6 +70,13 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
 
     if !changeset_dir.exists() {
         std::fs::create_dir_all(&changeset_dir)?;
+    }
+
+    if let Some(kind) = &args.kind {
+        validate_meta("type", kind, &[])?;
+    }
+    if let Some(scope) = &args.scope {
+        validate_meta("scope", scope, &['.', '/'])?;
     }
 
     let is_tty = atty_check();
@@ -59,17 +97,43 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
         anyhow::bail!("--package is required in non-interactive mode");
     };
 
+    for key in ["type", "scope"] {
+        let given = if key == "type" {
+            &args.kind
+        } else {
+            &args.scope
+        };
+        if given.is_some() && packages.contains_key(key) {
+            anyhow::bail!("--{key} can't be used with a package named \"{key}\"");
+        }
+    }
+
     let body = if let Some(msg) = &args.message {
-        format!("#### {msg}")
+        msg.trim().to_string()
     } else if is_tty {
         prompt_body()?
     } else {
         String::new()
     };
 
-    let name = writer::write_changeset(&changeset_dir, &packages, &body)?;
+    let name = writer::write_changeset_typed(
+        &changeset_dir,
+        &packages,
+        args.kind.as_deref(),
+        args.scope.as_deref(),
+        &body,
+    )?;
     eprintln!("Created {}/{name}.md", config.changeset_dir_relative());
     crate::changelog::generator::warn_fenced_boundaries(&format!("{name}.md"), &body);
+    if let Some(kind) = &args.kind {
+        for (pkg, bump) in &packages {
+            if let Some(w) =
+                crate::changelog::groups::breaking_warning(&format!("{name}.md"), kind, pkg, *bump)
+            {
+                eprintln!("{w}");
+            }
+        }
+    }
 
     Ok(())
 }
@@ -190,7 +254,7 @@ fn prompt_body() -> anyhow::Result<String> {
     if input.is_empty() {
         open_editor()
     } else {
-        Ok(format!("#### {input}"))
+        Ok(input.to_string())
     }
 }
 
@@ -198,7 +262,7 @@ fn open_editor() -> anyhow::Result<String> {
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
     let path = std::env::temp_dir().join(format!("changesetter-{}.md", std::process::id()));
 
-    std::fs::write(&path, "#### \n\n")?;
+    std::fs::write(&path, "")?;
 
     let status = std::process::Command::new(&editor).arg(&path).status()?;
 
@@ -269,6 +333,8 @@ mod tests {
             bump: Some("patch".to_string()),
             no_bump: false,
             message: Some("Fixed a bug".to_string()),
+            kind: None,
+            scope: None,
         };
         run_in(dir.path(), &args).unwrap();
 
@@ -293,6 +359,8 @@ mod tests {
             bump: None,
             no_bump: true,
             message: Some("Docs update".to_string()),
+            kind: None,
+            scope: None,
         };
         run_in(dir.path(), &args).unwrap();
 
@@ -316,8 +384,79 @@ mod tests {
             bump: Some("patch".to_string()),
             no_bump: false,
             message: Some("Fix".to_string()),
+            kind: None,
+            scope: None,
         };
         let result = run_in(dir.path(), &args);
         assert!(result.is_err());
+    }
+
+    fn only_changeset(dir: &Path) -> String {
+        let changeset_dir = dir.join(".changeset");
+        let files: Vec<_> = std::fs::read_dir(&changeset_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        assert_eq!(files.len(), 1);
+        std::fs::read_to_string(files[0].path()).unwrap()
+    }
+
+    #[test]
+    fn add_message_is_plain_text() {
+        let dir = setup_repo();
+        let args = AddArgs {
+            package: vec!["testpkg".to_string()],
+            bump: Some("patch".to_string()),
+            no_bump: false,
+            message: Some("Fixed a bug".to_string()),
+            kind: None,
+            scope: None,
+        };
+        run_in(dir.path(), &args).unwrap();
+        assert_eq!(
+            only_changeset(dir.path()),
+            "---\ntestpkg: patch\n---\n\nFixed a bug\n"
+        );
+    }
+
+    #[test]
+    fn add_with_type_and_scope() {
+        let dir = setup_repo();
+        let args = AddArgs {
+            package: vec!["testpkg".to_string()],
+            bump: Some("minor".to_string()),
+            no_bump: false,
+            message: Some("New biome".to_string()),
+            kind: Some("feat".to_string()),
+            scope: Some("world/gen".to_string()),
+        };
+        run_in(dir.path(), &args).unwrap();
+        assert_eq!(
+            only_changeset(dir.path()),
+            "---\ntestpkg: minor\ntype: feat\nscope: world/gen\n---\n\nNew biome\n"
+        );
+    }
+
+    #[test]
+    fn add_rejects_bad_type_and_scope() {
+        for (kind, scope, expected) in [
+            (Some("fe at"), None, "--type \"fe at\""),
+            (Some("patch"), None, "a bump level can't be a type"),
+            (Some("x: y"), None, "--type"),
+            (None, Some("-ui"), "--scope \"-ui\""),
+        ] {
+            let dir = setup_repo();
+            let args = AddArgs {
+                package: vec!["testpkg".to_string()],
+                bump: Some("patch".to_string()),
+                no_bump: false,
+                message: Some("Fix".to_string()),
+                kind: kind.map(str::to_string),
+                scope: scope.map(str::to_string),
+            };
+            let err = run_in(dir.path(), &args).unwrap_err().to_string();
+            assert!(err.contains(expected), "{expected}: got {err}");
+        }
     }
 }

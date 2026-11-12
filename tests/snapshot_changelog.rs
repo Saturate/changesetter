@@ -21,6 +21,7 @@ fn make_release(
         bump,
         changelog: changelog.to_string(),
         changesets: vec!["cs1".to_string()],
+        entries: vec![],
     }
 }
 
@@ -134,6 +135,7 @@ fn release_with_none_entries() {
             body: "#### Updated CI configuration\n\nSwitched from ubuntu-20.04 to ubuntu-24.04 runners.".to_string(),
             changesets: vec!["cs2".to_string()],
             packages: vec!["mylib".to_string()],
+            ..Default::default()
         }],
     );
     let entry = entry_text(&plan, &ChangelogConfig::default(), "2026-07-25", false);
@@ -150,12 +152,14 @@ fn none_only() {
                 body: "#### Updated CI configuration\n\nSwitched runners.".to_string(),
                 changesets: vec!["cs1".to_string()],
                 packages: vec!["mylib".to_string()],
+                ..Default::default()
             },
             NoneEntry {
                 title: "Added CONTRIBUTING.md".to_string(),
                 body: "#### Added CONTRIBUTING.md".to_string(),
                 changesets: vec!["cs2".to_string()],
                 packages: vec!["mylib".to_string()],
+                ..Default::default()
             },
         ],
     );
@@ -201,6 +205,7 @@ fn custom_none_heading() {
             body: "#### Updated README".to_string(),
             changesets: vec!["cs1".to_string()],
             packages: vec!["mylib".to_string()],
+            ..Default::default()
         }],
     );
     let config = ChangelogConfig {
@@ -226,6 +231,7 @@ fn none_omit() {
             body: "#### CI update".to_string(),
             changesets: vec!["cs2".to_string()],
             packages: vec!["mylib".to_string()],
+            ..Default::default()
         }],
     );
     let config = ChangelogConfig {

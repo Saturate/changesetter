@@ -442,7 +442,7 @@ pub fn write_root_changelog(
 ) -> anyhow::Result<ChangelogWrites> {
     let path = repo_root.join(&config.file);
     let release = release_section(plan, date, is_monorepo, config);
-    let none: Vec<&NoneEntry> = plan.none_entries.iter().collect();
+    let none: Vec<&NoneEntry> = plan.none_entries.iter().filter(|n| !n.skip).collect();
     let mut writes = ChangelogWrites::default();
     if let Some(extra) = write_changelog(&path, release.as_deref(), &none, config)? {
         writes.paths.push(path);
@@ -510,7 +510,7 @@ pub fn write_per_package_changelogs(
     }
 
     let has_real_default = packages.iter().any(|p| p.name == REPO_WIDE_PACKAGE);
-    for entry in &plan.none_entries {
+    for entry in plan.none_entries.iter().filter(|n| !n.skip) {
         let repo_wide = !has_real_default && entry.packages.iter().any(|p| p == REPO_WIDE_PACKAGE);
         for t in targets.values_mut() {
             let named = t
@@ -586,6 +586,7 @@ mod tests {
             bump,
             changelog: changelog.to_string(),
             changesets: vec!["cs1".to_string()],
+            entries: vec![],
         }
     }
 
@@ -624,6 +625,7 @@ mod tests {
                 body: "#### Updated CI\n\nSwitched runners.".to_string(),
                 changesets: vec!["cs2".to_string()],
                 packages: vec!["mylib".to_string()],
+                ..Default::default()
             }],
         );
         let config = ChangelogConfig::default();
@@ -642,6 +644,7 @@ mod tests {
                 body: "#### CI".to_string(),
                 changesets: vec![],
                 packages: vec!["mylib".to_string()],
+                ..Default::default()
             }],
         );
         let config = ChangelogConfig {
@@ -676,6 +679,7 @@ mod tests {
                 body: "#### CI".to_string(),
                 changesets: vec!["cs3".to_string()],
                 packages: vec!["mylib".to_string()],
+                ..Default::default()
             }],
         );
         let config = ChangelogConfig {
@@ -730,6 +734,7 @@ mod tests {
             body: body.to_string(),
             changesets: vec!["cs".to_string()],
             packages: packages.iter().map(|p| p.to_string()).collect(),
+            ..Default::default()
         }
     }
 
@@ -1188,6 +1193,7 @@ mod tests {
                 body: "#### CI".to_string(),
                 changesets: vec![],
                 packages: vec!["mylib".to_string()],
+                ..Default::default()
             }],
         );
         let config = ChangelogConfig {
