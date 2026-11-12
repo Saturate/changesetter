@@ -297,6 +297,15 @@ mod tests {
                 "version": "1.1.0",
                 "bump": "minor",
                 "tag": "v1.1.0",
+                "entries": [{
+                    "id": "team/test",
+                    "bump": "minor",
+                    "type": "feat",
+                    "scope": null,
+                    "group": null,
+                    "skip": false,
+                    "summary": "New feature",
+                }],
             }])
         );
     }

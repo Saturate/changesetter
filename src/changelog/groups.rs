@@ -287,7 +287,7 @@ pub fn render_item(body: &str, summary: &str, scope: Option<&str>) -> String {
     let mut out = Vec::new();
     for line in &lines[first..=last] {
         if line.trim().is_empty() {
-            out.push(String::new());
+            out.push(String::default());
             continue;
         }
         if !nested {
