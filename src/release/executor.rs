@@ -30,7 +30,8 @@ pub struct ExecuteResult {
 pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Result<ExecuteResult> {
     let config = Config::load(repo_root)?;
     let changeset_dir = config.changeset_dir(repo_root);
-    let changesets = reader::read_changesets(&changeset_dir)?;
+    let mut changesets = reader::read_changesets(&changeset_dir)?;
+    crate::release::origin::annotate(repo_root, config.changeset_dir_relative(), &mut changesets)?;
 
     if changesets.is_empty() {
         eprintln!("No pending changesets, nothing to release.");

@@ -32,7 +32,8 @@ pub fn run(args: &StatusArgs) -> anyhow::Result<()> {
 pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
     let config = Config::load(repo_root)?;
     let changeset_dir = config.changeset_dir(repo_root);
-    let changesets = reader::read_changesets(&changeset_dir)?;
+    let mut changesets = reader::read_changesets(&changeset_dir)?;
+    crate::release::origin::annotate(repo_root, config.changeset_dir_relative(), &mut changesets)?;
     let packages = detector::detect_packages(repo_root, &config)?;
     let is_monorepo = packages.len() > 1;
 
@@ -305,6 +306,10 @@ mod tests {
                     "group": null,
                     "skip": false,
                     "summary": "New feature",
+                    // Not committed yet, so git can't say where it came from.
+                    "commit": null,
+                    "author": null,
+                    "pr": null,
                 }],
             }])
         );

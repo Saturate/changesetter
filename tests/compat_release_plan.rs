@@ -21,6 +21,7 @@ fn make_cs(packages: &[(&str, BumpLevel)], body: &str, name: &str) -> Changeset 
         filename: Some(name.to_string()),
         kind: None,
         scope: None,
+        origin: None,
     }
 }
 

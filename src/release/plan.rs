@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::changelog::groups;
-use crate::changeset::types::{BumpLevel, Changeset};
+use crate::changelog::links::Linker;
+use crate::changeset::types::{BumpLevel, Changeset, Origin};
 use crate::config::Config;
 use crate::package::types::{Package, Version};
 use crate::release::pre::PreState;
@@ -46,6 +47,8 @@ pub struct ReleaseEntry {
     body: String,
     /// The body as written, which a grouped changelog renders from.
     raw: String,
+    /// The commit and pull request that added the changeset.
+    pub origin: Option<Origin>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,6 +67,8 @@ pub struct NoneEntry {
     pub group: Option<String>,
     /// Left out of the changelog by a `skip` group.
     pub skip: bool,
+    /// The commit and pull request that added the changeset.
+    pub origin: Option<Origin>,
 }
 
 type BumpMap = BTreeMap<String, (BumpLevel, Vec<ReleaseEntry>)>;
@@ -87,6 +92,7 @@ fn new_entry(
     body: &str,
     kind: Option<&str>,
     scope: Option<&str>,
+    origin: Option<&Origin>,
     config: &Config,
 ) -> ReleaseEntry {
     let c = groups::classify(body, kind, scope, bump, &config.changelog);
@@ -101,6 +107,28 @@ fn new_entry(
         skip,
         body: crate::changelog::markdown::demote_headings(body),
         raw: body.to_string(),
+        origin: origin.cloned(),
+    }
+}
+
+impl ReleaseEntry {
+    /// The entry as the changelog has it: its body (with issue links when
+    /// `links` is on), or in a grouped changelog a list item, which also
+    /// gets its pull request and commit.
+    fn text(&self, config: &Config, linker: Option<&Linker>) -> String {
+        if !config.changelog.is_grouped() {
+            return linker.map_or_else(|| self.body.clone(), |l| l.linkify(&self.body));
+        }
+        let item = groups::render_item(&self.raw, &self.summary, self.scope.as_deref());
+        let Some(linker) = linker else {
+            return item;
+        };
+        let item = linker.linkify(&item);
+        let suffix = linker.origin_suffix(self.origin.as_ref());
+        match item.split_once('\n') {
+            Some((first, rest)) => format!("{first}{suffix}\n{rest}"),
+            None => format!("{item}{suffix}"),
+        }
     }
 }
 
@@ -108,22 +136,18 @@ fn new_entry(
 /// changelog a list per group. Groups sit under a combined monorepo
 /// changelog's package headings, so they go a level deeper there.
 fn release_changelog(entries: &[ReleaseEntry], config: &Config, nested: bool) -> String {
+    let linker = Linker::new(&config.changelog);
     if !config.changelog.is_grouped() {
         return entries
             .iter()
-            .map(|e| e.body.as_str())
-            .collect::<Vec<&str>>()
+            .map(|e| e.text(config, linker.as_ref()))
+            .collect::<Vec<String>>()
             .join("\n\n");
     }
     let items: Vec<(Option<String>, String)> = entries
         .iter()
         .filter(|e| !e.skip && !e.raw.trim().is_empty())
-        .map(|e| {
-            (
-                e.group.clone(),
-                groups::render_item(&e.raw, &e.summary, e.scope.as_deref()),
-            )
-        })
+        .map(|e| (e.group.clone(), e.text(config, linker.as_ref())))
         .collect();
     let groups = groups::groups(&config.changelog);
     groups::render_sections(&groups, &items, if nested { 4 } else { 3 })
@@ -171,12 +195,13 @@ pub fn assemble(
                 &cs.body,
                 cs.kind.as_deref(),
                 cs.scope.as_deref(),
+                cs.origin.as_ref(),
                 config,
             );
-            let body = if config.changelog.is_grouped() && !e.raw.trim().is_empty() {
-                groups::render_item(&e.raw, &e.summary, e.scope.as_deref())
+            let body = if !config.changelog.is_grouped() || !e.raw.trim().is_empty() {
+                e.text(config, Linker::new(&config.changelog).as_ref())
             } else {
-                e.body
+                e.body.clone()
             };
             none_entries.push(NoneEntry {
                 title: extract_title(&cs.body),
@@ -188,6 +213,7 @@ pub fn assemble(
                 summary: e.summary,
                 group: e.group,
                 skip: e.skip,
+                origin: e.origin,
             });
         }
 
@@ -207,6 +233,7 @@ pub fn assemble(
                     &cs.body,
                     cs.kind.as_deref(),
                     cs.scope.as_deref(),
+                    cs.origin.as_ref(),
                     config,
                 ));
             }
@@ -296,6 +323,7 @@ fn apply_fixed_groups(bumps: &mut BumpMap, packages: &[Package], config: &Config
                     &format!("#### Bumped as part of fixed group (was {pkg_version})"),
                     Some(groups::DEPS_TYPE),
                     None,
+                    None,
                     config,
                 ));
             }
@@ -372,6 +400,7 @@ fn apply_dependency_cascading(bumps: &mut BumpMap, packages: &[Package], config:
                             ),
                             Some(groups::DEPS_TYPE),
                             None,
+                            None,
                             config,
                         ));
                     }
@@ -431,6 +460,9 @@ impl ReleaseEntry {
             "group": self.group,
             "skip": self.skip,
             "summary": self.summary,
+            "commit": self.origin.as_ref().map(|o| &o.commit),
+            "author": self.origin.as_ref().map(|o| &o.author),
+            "pr": self.origin.as_ref().and_then(|o| o.pr),
         })
     }
 }
@@ -446,6 +478,9 @@ impl NoneEntry {
             "group": self.group,
             "skip": self.skip,
             "summary": self.summary,
+            "commit": self.origin.as_ref().map(|o| &o.commit),
+            "author": self.origin.as_ref().map(|o| &o.author),
+            "pr": self.origin.as_ref().and_then(|o| o.pr),
             "title": self.title,
             "body": self.body,
         })
@@ -509,6 +544,7 @@ mod tests {
             filename: Some(name.to_string()),
             kind: None,
             scope: None,
+            origin: None,
         }
     }
 
@@ -1178,5 +1214,94 @@ mod tests {
         let warnings = plan.breaking_warnings();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("cs1.md"), "{}", warnings[0]);
+    }
+
+    fn linked(grouped: bool) -> Config {
+        let mut config = Config::default();
+        config.changelog.group = grouped;
+        config.changelog.links = true;
+        config.changelog.repo_url = Some("git@github.com:o/r.git".to_string());
+        config
+    }
+
+    fn from_pr(mut cs: Changeset, pr: Option<u64>) -> Changeset {
+        cs.origin = Some(Origin {
+            commit: "a1b2c3d4e5f60718".into(),
+            author: "Ada".into(),
+            pr,
+        });
+        cs
+    }
+
+    #[test]
+    fn grouped_links_show_pr_commit_and_issues() {
+        let packages = vec![make_pkg("mylib", "1.0.0")];
+        let changesets = vec![
+            from_pr(
+                make_cs(
+                    &[("mylib", BumpLevel::Patch)],
+                    "Fix #12\n\nMore on #13.",
+                    "cs1",
+                ),
+                Some(24),
+            ),
+            make_cs(&[("mylib", BumpLevel::Patch)], "Local fix", "cs2"),
+        ];
+        let plan = assemble(&changesets, &packages, &linked(true), None);
+        assert_eq!(
+            plan.releases[0].changelog,
+            "### Fixes\n\n\
+             - Fix [#12](https://github.com/o/r/issues/12) \
+             ([#24](https://github.com/o/r/pull/24), [a1b2c3d](https://github.com/o/r/commit/a1b2c3d4e5f60718))\n\n  \
+             More on [#13](https://github.com/o/r/issues/13).\n\n\
+             - Local fix"
+        );
+        let json = plan.releases[0].entries[0].to_json();
+        assert_eq!(json["pr"], 24);
+        assert_eq!(json["commit"], "a1b2c3d4e5f60718");
+        assert_eq!(json["author"], "Ada");
+        assert_eq!(
+            plan.releases[0].entries[1].to_json()["pr"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn flat_links_only_link_issues() {
+        let packages = vec![make_pkg("mylib", "1.0.0")];
+        let changesets = vec![from_pr(
+            make_cs(&[("mylib", BumpLevel::Patch)], "#### Fix #12", "cs1"),
+            Some(24),
+        )];
+        let plan = assemble(&changesets, &packages, &linked(false), None);
+        assert_eq!(
+            plan.releases[0].changelog,
+            "#### Fix [#12](https://github.com/o/r/issues/12)"
+        );
+    }
+
+    #[test]
+    fn links_off_leave_text_alone() {
+        let packages = vec![make_pkg("mylib", "1.0.0")];
+        let changesets = vec![from_pr(
+            make_cs(&[("mylib", BumpLevel::Patch)], "Fix #12", "cs1"),
+            Some(24),
+        )];
+        let plan = assemble(&changesets, &packages, &grouped(), None);
+        assert_eq!(plan.releases[0].changelog, "### Fixes\n\n- Fix #12");
+    }
+
+    #[test]
+    fn grouped_none_entries_get_links_too() {
+        let packages = vec![make_pkg("mylib", "1.0.0")];
+        let changesets = vec![from_pr(
+            make_cs(&[("mylib", BumpLevel::None)], "ci: Cache", "cs1"),
+            None,
+        )];
+        let plan = assemble(&changesets, &packages, &linked(true), None);
+        assert_eq!(
+            plan.none_entries[0].body,
+            "- Cache ([a1b2c3d](https://github.com/o/r/commit/a1b2c3d4e5f60718))"
+        );
     }
 }

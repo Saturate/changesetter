@@ -34,6 +34,17 @@ pub struct Changeset {
     pub kind: Option<String>,
     /// The scope from the front matter's `scope:` key.
     pub scope: Option<String>,
+    /// Where the changeset came from in git, when that's known.
+    pub origin: Option<Origin>,
+}
+
+/// The commit that added a changeset, and the pull request that brought it
+/// in when the history names one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Origin {
+    pub commit: String,
+    pub author: String,
+    pub pr: Option<u64>,
 }
 
 #[cfg(test)]
@@ -84,6 +95,7 @@ mod tests {
             filename: Some("cool-dogs-dance".to_string()),
             kind: None,
             scope: None,
+            origin: None,
         };
         assert_eq!(cs.packages.len(), 1);
         assert_eq!(cs.packages["mylib"], BumpLevel::Patch);

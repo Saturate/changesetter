@@ -50,6 +50,23 @@ pub struct ChangelogConfig {
     pub group: bool,
     /// Ordered groups for a grouped changelog. Listing any turns grouping on.
     pub groups: Vec<ChangelogGroup>,
+    /// Link each grouped entry to its pull request and commit, and turn
+    /// issue references into links.
+    pub links: bool,
+    /// The repository's web URL for links. Read from the `origin` remote
+    /// when `links` is on and this isn't set.
+    pub repo_url: Option<String>,
+    /// Extra issue references to link, like `PROJ-42` to a tracker.
+    pub issue_links: Vec<IssueLink>,
+}
+
+/// One `[[changelog.issue_links]]` entry: `prefix` followed by digits links
+/// to `url` with `{id}` replaced by the digits.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct IssueLink {
+    pub prefix: String,
+    pub url: String,
 }
 
 /// One `[[changelog.groups]]` entry. An entry goes to the first group it
@@ -87,6 +104,9 @@ impl Default for ChangelogConfig {
             none_bump_heading: "Internal".to_string(),
             group: false,
             groups: Vec::new(),
+            links: false,
+            repo_url: None,
+            issue_links: Vec::new(),
         }
     }
 }
@@ -153,6 +173,15 @@ impl Config {
             .map(|dir| validate_changeset_dir(&dir))
             .transpose()?;
         validate_changelog_groups(&config.changelog)?;
+        validate_issue_links(&config.changelog)?;
+        if config.changelog.links && config.changelog.repo_url.is_none() {
+            config.changelog.repo_url =
+                crate::git::run_git(repo_root, &["remote", "get-url", "origin"])
+                    .ok()
+                    .flatten()
+                    .map(|url| url.trim().to_string())
+                    .filter(|url| !url.is_empty());
+        }
         Ok(config)
     }
 
@@ -226,6 +255,29 @@ fn validate_changelog_groups(changelog: &ChangelogConfig) -> anyhow::Result<()> 
             anyhow::bail!(
                 "none_bump_heading \"{none}\" is also {source}; give the none_bump_heading another name"
             );
+        }
+    }
+    Ok(())
+}
+
+fn validate_issue_links(changelog: &ChangelogConfig) -> anyhow::Result<()> {
+    for link in &changelog.issue_links {
+        if link.prefix.is_empty() || link.prefix.chars().any(char::is_whitespace) {
+            anyhow::bail!(
+                "[[changelog.issue_links]] prefix {:?} must be non-empty with no spaces",
+                link.prefix
+            );
+        }
+        if !link.url.contains("{id}") {
+            anyhow::bail!(
+                "[[changelog.issue_links]] url {:?} needs an {{id}} placeholder",
+                link.url
+            );
+        }
+    }
+    if let Some(url) = &changelog.repo_url {
+        if crate::changelog::links::Repo::parse(url).is_none() {
+            anyhow::bail!("[changelog] repo_url {url:?} isn't a repository URL");
         }
     }
     Ok(())
@@ -556,6 +608,65 @@ none_bump_heading = \"Other changes\"
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn links_read_the_origin_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "git@github.com:o/r.git"]);
+        std::fs::write(
+            dir.path().join("changesetter.toml"),
+            "[changelog]\nlinks = true\n",
+        )
+        .unwrap();
+        let config = Config::load(dir.path()).unwrap();
+        assert_eq!(
+            config.changelog.repo_url.as_deref(),
+            Some("git@github.com:o/r.git")
+        );
+
+        // An explicit repo_url wins, and without links nothing is read.
+        std::fs::write(
+            dir.path().join("changesetter.toml"),
+            "[changelog]\nlinks = true\nrepo_url = \"https://gitlab.com/g/r\"\n",
+        )
+        .unwrap();
+        let config = Config::load(dir.path()).unwrap();
+        assert_eq!(
+            config.changelog.repo_url.as_deref(),
+            Some("https://gitlab.com/g/r")
+        );
+        std::fs::write(dir.path().join("changesetter.toml"), "").unwrap();
+        assert_eq!(Config::load(dir.path()).unwrap().changelog.repo_url, None);
+    }
+
+    #[test]
+    fn issue_links_are_checked() {
+        let ok = load_str(
+            "[changelog]\nlinks = true\n[[changelog.issue_links]]\nprefix = \"PROJ-\"\nurl = \"https://j/browse/PROJ-{id}\"\n",
+        )
+        .unwrap();
+        assert_eq!(ok.changelog.issue_links[0].prefix, "PROJ-");
+        let err = load_str("[[changelog.issue_links]]\nprefix = \"PROJ-\"\nurl = \"https://j\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("{id}"), "{err}");
+        let err = load_str("[[changelog.issue_links]]\nprefix = \"\"\nurl = \"https://j/{id}\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("prefix"), "{err}");
+        let err = load_str("[changelog]\nrepo_url = \"not a url\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("repo_url"), "{err}");
     }
 
     #[test]
