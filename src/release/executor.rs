@@ -33,14 +33,7 @@ pub struct ExecuteResult {
 pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Result<ExecuteResult> {
     let config = Config::load(repo_root)?;
     let changeset_dir = config.changeset_dir(repo_root);
-    let mut changesets = reader::read_changesets(&changeset_dir)?;
-    if opts.origins || config.changelog.links {
-        crate::release::origin::annotate(
-            repo_root,
-            config.changeset_dir_relative(),
-            &mut changesets,
-        )?;
-    }
+    let changesets = read_changesets(repo_root, &config, opts)?;
 
     if changesets.is_empty() {
         eprintln!("No pending changesets, nothing to release.");
@@ -144,6 +137,24 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         is_monorepo,
         config,
     })
+}
+
+/// The pending changesets, with where each came from in git when the JSON
+/// output or `[changelog] links` will use it.
+fn read_changesets(
+    repo_root: &Path,
+    config: &Config,
+    opts: &ExecuteOptions,
+) -> anyhow::Result<Vec<crate::changeset::types::Changeset>> {
+    let mut changesets = reader::read_changesets(&config.changeset_dir(repo_root))?;
+    if opts.origins || config.changelog.links {
+        crate::release::origin::annotate(
+            repo_root,
+            config.changeset_dir_relative(),
+            &mut changesets,
+        )?;
+    }
+    Ok(changesets)
 }
 
 fn run_post_bump_hooks(repo_root: &Path, config: &Config) -> anyhow::Result<()> {
