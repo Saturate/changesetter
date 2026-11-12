@@ -297,7 +297,9 @@ fn validate_changeset_dir(dir: &str) -> Result<String, ChangesetterError> {
         return Err(invalid("must use `/` as the path separator"));
     }
 
-    let mut has_normal = false;
+    // Rebuilt from its parts, so `./changes` and `changes/` read as `changes`,
+    // the way git prints paths.
+    let mut parts = Vec::new();
     for component in Path::new(dir).components() {
         match component {
             Component::Prefix(_) | Component::RootDir => {
@@ -306,16 +308,16 @@ fn validate_changeset_dir(dir: &str) -> Result<String, ChangesetterError> {
             Component::ParentDir => {
                 return Err(invalid("must not contain `..`"));
             }
-            Component::Normal(_) => has_normal = true,
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
             Component::CurDir => {}
         }
     }
 
-    if !has_normal {
+    if parts.is_empty() {
         return Err(invalid("must name a directory below the repository root"));
     }
 
-    Ok(dir.trim_end_matches('/').to_string())
+    Ok(parts.join("/"))
 }
 
 #[cfg(test)]
@@ -476,6 +478,19 @@ post_bump = ["cargo check", "cargo fmt"]
 
         let config = load_changeset_dir("docs/changesets//").unwrap();
         assert_eq!(config.changeset_dir_relative(), "docs/changesets");
+    }
+
+    #[test]
+    fn changeset_dir_reads_as_git_prints_it() {
+        assert_eq!(validate_changeset_dir("./changes").unwrap(), "changes");
+        assert_eq!(
+            validate_changeset_dir("meta/./changes/").unwrap(),
+            "meta/changes"
+        );
+        assert_eq!(
+            validate_changeset_dir("meta//changes").unwrap(),
+            "meta/changes"
+        );
     }
 
     #[test]

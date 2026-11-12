@@ -192,7 +192,9 @@ impl Linker {
         while i < line.len() {
             let rest = &line[i..];
             // A run to copy as it is: a bare URL, or a link's "](".
-            let verbatim = if state.plain() && starts_bare_url(bytes, i) {
+            // Not inside link text: there a URL is just text, and copying it
+            // whole would swallow the link's "](".
+            let verbatim = if state.plain() && state.bracket == 0 && starts_bare_url(bytes, i) {
                 bare_url_len(rest)
             } else {
                 state.step(rest)
@@ -202,7 +204,7 @@ impl Linker {
                 i += verbatim;
                 continue;
             }
-            if state.free() && starts_token(bytes, i) {
+            if state.free() && starts_token(line, i) {
                 if let Some(link) = self.link_at(rest) {
                     out.push_str(&link.markdown);
                     i += link.len;
@@ -231,9 +233,15 @@ impl Linker {
         self.rules.iter().find_map(|(prefix, url)| {
             let after = rest.strip_prefix(prefix.as_str())?;
             let digits = after.bytes().take_while(u8::is_ascii_digit).count();
-            let next = after.as_bytes().get(digits).copied();
-            (digits > 0 && !next.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_'))
-                .then_some((prefix.as_str(), url.as_str(), digits))
+            // A word character right after the digits makes it part of a word
+            // ("#4a", "#4_x"); a closing "_" for emphasis ("_#4_") does not.
+            let tail = &after.as_bytes()[digits..];
+            let joined = match tail {
+                [b, ..] if b.is_ascii_alphanumeric() => true,
+                [b'_', b, ..] => b.is_ascii_alphanumeric() || *b == b'_',
+                _ => false,
+            };
+            (digits > 0 && !joined).then_some((prefix.as_str(), url.as_str(), digits))
         })
     }
 }
@@ -241,10 +249,12 @@ impl Linker {
 /// Whether a reference may start at byte `i`: at the start of the line, or
 /// after a character that can't be part of a word, path, URL or entity, or
 /// escape it (`\#12`).
-fn starts_token(bytes: &[u8], i: usize) -> bool {
-    i == 0 || {
-        let prev = bytes[i - 1];
-        !(prev.is_ascii_alphanumeric() || b"_/-&#.:@=\\".contains(&prev) || prev >= 0x80)
+fn starts_token(line: &str, i: usize) -> bool {
+    match line[..i].chars().next_back() {
+        None => true,
+        // Any letter or digit, in any script, makes it part of a word;
+        // punctuation like "—" or "“" doesn't.
+        Some(prev) => !(prev.is_alphanumeric() || "/-&#.:@=\\".contains(prev)),
     }
 }
 
@@ -348,11 +358,21 @@ fn is_tag_start(rest: &str) -> bool {
 }
 
 /// `[label]: url`, indented at most 3 spaces.
+/// Its destination has to look like one (a URL, path or anchor), so a line
+/// like `[BREAKING]: drop node (#22)` is still text.
 fn is_link_definition(line: &str) -> bool {
     let t = line.trim_start_matches(' ');
-    line.len() - t.len() <= 3
-        && t.starts_with('[')
-        && t.find("]:").is_some_and(|i| !t[1..i].is_empty())
+    if line.len() - t.len() > 3 || !t.starts_with('[') {
+        return false;
+    }
+    let Some(close) = t.find("]:").filter(|&i| i > 1) else {
+        return false;
+    };
+    let dest = t[close + 2..].split_whitespace().next().unwrap_or("");
+    dest.contains("://")
+        || dest.starts_with(['/', '#', '<', '.'])
+        || dest.to_ascii_lowercase().starts_with("www.")
+        || dest.starts_with("mailto:")
 }
 
 /// Tracks which lines are indented code, outside fences: 4 or more spaces
@@ -509,6 +529,26 @@ mod tests {
         ] {
             assert_eq!(l.linkify(text), text, "{text:?}");
         }
+    }
+
+    #[test]
+    fn linkify_review_misses() {
+        let l = gh();
+        let link = |n: u32| format!("[#{n}](https://github.com/o/r/issues/{n})");
+        assert_eq!(
+            l.linkify("[see https://x.com](u) fixes #10"),
+            format!("[see https://x.com](u) fixes {}", link(10))
+        );
+        assert_eq!(l.linkify("_#4_"), format!("_{}_", link(4)));
+        assert_eq!(l.linkify("Fix—#15"), format!("Fix—{}", link(15)));
+        assert_eq!(l.linkify("“#16”"), format!("“{}”", link(16)));
+        assert_eq!(l.linkify("café#3"), "café#3");
+        assert_eq!(
+            l.linkify("[BREAKING]: drop node (#22)"),
+            format!("[BREAKING]: drop node ({})", link(22))
+        );
+        let def = "[ref]: ./docs/a.md#12";
+        assert_eq!(l.linkify(def), def);
     }
 
     #[test]

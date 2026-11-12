@@ -8,7 +8,6 @@ use std::path::Path;
 
 use crate::changeset::types::{Changeset, Origin};
 
-const RECORD: char = '\u{1e}';
 const FIELD: char = '\u{1f}';
 const END: char = '\u{1d}';
 
@@ -68,56 +67,74 @@ fn shallow_boundary(repo_root: &Path) -> anyhow::Result<HashSet<String>> {
         .collect())
 }
 
-/// The newest commit that added each file under `dir`, by repo-relative
-/// path. A changeset file that exists now came from its latest add: a name
-/// can be reused after a release deleted the old file.
-fn added_commits(repo_root: &Path, dir: &str) -> anyhow::Result<BTreeMap<String, Added>> {
-    let boundary = shallow_boundary(repo_root)?;
-    let format = format!("--format={RECORD}%H{FIELD}%an{FIELD}%s{FIELD}%b{END}");
+/// The files under `dir` that HEAD tracks. A changeset that isn't committed
+/// has no origin, even when an older file once had its name.
+fn tracked(repo_root: &Path, dir: &str) -> anyhow::Result<HashSet<String>> {
     let pathspec = format!("{dir}/");
-    let Some(out) = crate::git::run_git(
+    let out = crate::git::run_git(
         repo_root,
         &[
-            "-c",
-            "core.quotePath=false",
-            "log",
-            "--no-show-signature",
-            "--diff-filter=A",
-            "--no-renames",
+            "--literal-pathspecs",
+            "ls-tree",
+            "-r",
+            "-z",
             "--name-only",
-            &format,
+            "HEAD",
             "--",
             &pathspec,
         ],
     )?
+    .unwrap_or_default();
+    Ok(out
+        .split('\0')
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// The commit that added the file at `path` as HEAD has it. A per-file log
+/// follows the side of each merge the file came from, so a name reused after
+/// a release deleted the old file gets the commit that added this one.
+fn added_commit(
+    repo_root: &Path,
+    path: &str,
+    boundary: &HashSet<String>,
+) -> anyhow::Result<Option<Added>> {
+    let format = format!("--format=%H{FIELD}%an{FIELD}%s{FIELD}%b{END}");
+    let Some(out) = crate::git::run_git(
+        repo_root,
+        &[
+            "--literal-pathspecs",
+            "log",
+            "-1",
+            "--no-show-signature",
+            "--diff-filter=A",
+            "--no-renames",
+            &format,
+            "--",
+            path,
+        ],
+    )?
     else {
-        return Ok(BTreeMap::new());
+        return Ok(None);
     };
-    let mut added = BTreeMap::new();
-    // Newest first, so the first record for a path wins.
-    for record in out.split(RECORD).filter(|r| !r.trim().is_empty()) {
-        let Some((header, files)) = record.split_once(END) else {
-            continue;
-        };
-        let mut fields = header.splitn(4, FIELD);
-        let (Some(commit), Some(author), Some(subject), Some(body)) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        if boundary.contains(commit) {
-            continue;
-        }
-        for file in files.lines().map(str::trim).filter(|f| !f.is_empty()) {
-            added.entry(file.to_string()).or_insert_with(|| Added {
-                commit: commit.to_string(),
-                author: author.to_string(),
-                subject: subject.to_string(),
-                body: body.to_string(),
-            });
-        }
+    let header = out.split_once(END).map_or(out.as_str(), |(h, _)| h);
+    let mut fields = header.splitn(4, FIELD);
+    let (Some(commit), Some(author), Some(subject), Some(body)) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return Ok(None);
+    };
+    let commit = commit.trim();
+    if commit.is_empty() || boundary.contains(commit) {
+        return Ok(None);
     }
-    Ok(added)
+    Ok(Some(Added {
+        commit: commit.to_string(),
+        author: author.to_string(),
+        subject: subject.to_string(),
+        body: body.to_string(),
+    }))
 }
 
 /// How deep `merged_by` follows merges of merges (a feature merged into
@@ -201,7 +218,11 @@ impl History<'_> {
 /// Fills in each changeset's `origin`. `dir` is the changeset directory
 /// relative to the repo root, with `/` separators.
 pub fn annotate(repo_root: &Path, dir: &str, changesets: &mut [Changeset]) -> anyhow::Result<()> {
-    let added = added_commits(repo_root, dir)?;
+    let tracked = tracked(repo_root, dir)?;
+    if tracked.is_empty() {
+        return Ok(());
+    }
+    let boundary = shallow_boundary(repo_root)?;
     let mut history = History {
         repo_root,
         lines: HashMap::new(),
@@ -211,8 +232,11 @@ pub fn annotate(repo_root: &Path, dir: &str, changesets: &mut [Changeset]) -> an
         let Some(name) = &cs.filename else {
             continue;
         };
-        let name = name.replace('\\', "/");
-        let Some(a) = added.get(&format!("{dir}/{name}.md")) else {
+        let path = format!("{dir}/{name}.md");
+        if !tracked.contains(&path) {
+            continue;
+        }
+        let Some(a) = added_commit(repo_root, &path, &boundary)? else {
             continue;
         };
         let pr = match pr_number(&a.subject, &a.body) {
@@ -450,5 +474,53 @@ mod tests {
         annotate(clone.path(), ".changeset", &mut changesets).unwrap();
         assert_eq!(changesets[0].origin, None);
         assert_eq!(changesets[1].origin, None);
+    }
+
+    #[test]
+    fn uncommitted_file_with_a_reused_name_has_no_origin() {
+        let dir = repo();
+        let d = dir.path();
+        add(d, "fix", "old fix (#3)");
+        git(d, &["rm", "-q", ".changeset/fix.md"]);
+        git(d, &["commit", "-qm", "release"]);
+        std::fs::create_dir_all(d.join(".changeset")).unwrap();
+        std::fs::write(d.join(".changeset/fix.md"), "---\nx: patch\n---\n").unwrap();
+        let mut changesets = vec![changeset("fix")];
+        annotate(d, ".changeset", &mut changesets).unwrap();
+        assert_eq!(changesets[0].origin, None);
+    }
+
+    #[test]
+    fn reused_name_from_an_older_branch_commit() {
+        let dir = repo();
+        let d = dir.path();
+        git(d, &["checkout", "-qb", "f"]);
+        add(d, "fix", "new fix on feature");
+        git(d, &["checkout", "-q", "main"]);
+        add(d, "fix", "old fix (#3)");
+        add(d, "other", "other (#4)");
+        git(d, &["rm", "-q", ".changeset/fix.md"]);
+        git(d, &["commit", "-qm", "release"]);
+        git(
+            d,
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "f",
+                "-m",
+                "Merge pull request #10 from o/f",
+            ],
+        );
+        assert_eq!(pr_of(d, "fix"), Some(10));
+        assert_eq!(pr_of(d, "other"), Some(4));
+    }
+
+    #[test]
+    fn names_with_glob_characters() {
+        let dir = repo();
+        add(dir.path(), "a[1]", "add (#6)");
+        add(dir.path(), "a1", "other (#7)");
+        assert_eq!(pr_of(dir.path(), "a[1]"), Some(6));
     }
 }
