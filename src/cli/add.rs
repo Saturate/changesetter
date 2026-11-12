@@ -89,12 +89,13 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
         );
     }
 
-    let packages = if !args.package.is_empty() {
-        resolve_packages_noninteractive(repo_root, &config, args)?
-    } else if is_tty {
+    if args.package.is_empty() && !is_tty {
+        anyhow::bail!("--package is required in non-interactive mode");
+    }
+    let packages: BTreeMap<String, BumpLevel> = if args.package.is_empty() {
         resolve_packages_interactive(repo_root, &config, args)?
     } else {
-        anyhow::bail!("--package is required in non-interactive mode");
+        resolve_packages_noninteractive(repo_root, &config, args)?
     };
 
     for key in ["type", "scope"] {
