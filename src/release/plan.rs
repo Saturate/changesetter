@@ -255,12 +255,8 @@ pub fn assemble(
         let changesets_names: Vec<String> = entries.iter().map(|e| e.changeset.clone()).collect();
 
         let pkg = packages.iter().find(|p| &p.name == pkg_name);
-        let previous_version = pkg
-            .map(|p| p.version.clone())
-            .unwrap_or_else(|| Version::new(0, 0, 0));
-        let pkg_path = pkg
-            .map(|p| p.path.clone())
-            .unwrap_or_else(|| PathBuf::from("."));
+        let previous_version = pkg.map_or_else(|| Version::new(0, 0, 0), |p| p.version.clone());
+        let pkg_path = pkg.map_or_else(|| PathBuf::from("."), |p| p.path.clone());
 
         let new_version = apply_bump(&previous_version, *bump);
         let new_version = apply_pre_version(new_version, pkg_name, pre_state);
