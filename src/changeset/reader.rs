@@ -60,7 +60,9 @@ fn collect_md_files(
         }
 
         let rel = path.strip_prefix(base).unwrap_or(&path).with_extension("");
-        let rel_stem = rel.to_string_lossy().to_string();
+        // `/` on every platform: the name goes into JSON and is matched against
+        // git paths.
+        let rel_stem = rel.to_string_lossy().replace('\\', "/");
 
         out.push((rel_stem, path));
     }

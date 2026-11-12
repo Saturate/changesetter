@@ -95,7 +95,7 @@ fn merge_base(repo_root: &Path, base: &str) -> anyhow::Result<String> {
 }
 
 /// Runs git and returns stdout, or `None` if git exited with an error.
-fn run_git(repo_root: &Path, args: &[&str]) -> anyhow::Result<Option<String>> {
+pub(crate) fn run_git(repo_root: &Path, args: &[&str]) -> anyhow::Result<Option<String>> {
     let output = Command::new("git")
         .args(args)
         .current_dir(repo_root)

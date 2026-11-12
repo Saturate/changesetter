@@ -109,6 +109,9 @@ Each entry in `releases[].entries` and `none_entries` has these fields:
 | `group` | The group title it's listed under in a grouped changelog. `null` when grouping is off or no group takes it, in which case it goes under "Other changes" |
 | `skip` | Whether a `skip` group leaves it out of the changelog |
 | `summary` | The body's first heading, paragraph (on one line) or list item, without heading hashes or a conventional prefix. Empty when the body starts with code or a table |
+| `commit` | The full hash of the latest commit that added the changeset file, or `null` when it isn't committed or a shallow clone's history doesn't reach it |
+| `author` | That commit's author name, or `null` |
+| `pr` | The pull request number that brought the changeset in, or `null`. See [Links](/configuration#links) for how it's found |
 
 ```json
 {

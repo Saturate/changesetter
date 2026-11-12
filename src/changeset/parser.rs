@@ -97,6 +97,7 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
         filename,
         kind,
         scope,
+        origin: None,
     })
 }
 

@@ -18,6 +18,9 @@ pub struct ExecuteOptions {
     pub dry_run: bool,
     pub no_commit: bool,
     pub snapshot: Option<String>,
+    /// Read where each changeset came from in git, for `--output json`.
+    /// Always done when `[changelog] links` is on.
+    pub origins: bool,
 }
 
 pub struct ExecuteResult {
@@ -30,7 +33,7 @@ pub struct ExecuteResult {
 pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Result<ExecuteResult> {
     let config = Config::load(repo_root)?;
     let changeset_dir = config.changeset_dir(repo_root);
-    let changesets = reader::read_changesets(&changeset_dir)?;
+    let changesets = read_changesets(repo_root, &config, opts)?;
 
     if changesets.is_empty() {
         eprintln!("No pending changesets, nothing to release.");
@@ -134,6 +137,24 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         is_monorepo,
         config,
     })
+}
+
+/// The pending changesets, with where each came from in git when the JSON
+/// output or `[changelog] links` will use it.
+fn read_changesets(
+    repo_root: &Path,
+    config: &Config,
+    opts: &ExecuteOptions,
+) -> anyhow::Result<Vec<crate::changeset::types::Changeset>> {
+    let mut changesets = reader::read_changesets(&config.changeset_dir(repo_root))?;
+    if opts.origins || config.changelog.links {
+        crate::release::origin::annotate(
+            repo_root,
+            config.changeset_dir_relative(),
+            &mut changesets,
+        )?;
+    }
+    Ok(changesets)
 }
 
 fn run_post_bump_hooks(repo_root: &Path, config: &Config) -> anyhow::Result<()> {
@@ -475,6 +496,7 @@ mod tests {
             dry_run: false,
             no_commit: true,
             snapshot: None,
+            origins: false,
         };
         let result = execute_version(dir.path(), &opts).unwrap();
         assert!(result.plan.releases.is_empty());
@@ -493,6 +515,7 @@ mod tests {
             dry_run: true,
             no_commit: false,
             snapshot: None,
+            origins: false,
         };
         let result = execute_version(dir.path(), &opts).unwrap();
         assert_eq!(result.plan.releases.len(), 1);
@@ -515,6 +538,7 @@ mod tests {
             dry_run: false,
             no_commit: true,
             snapshot: None,
+            origins: false,
         };
         let result = execute_version(dir.path(), &opts).unwrap();
         assert_eq!(result.plan.releases.len(), 1);
@@ -558,6 +582,7 @@ mod tests {
             dry_run: false,
             no_commit: false,
             snapshot: None,
+            origins: false,
         };
         execute_version(dir.path(), &opts).unwrap();
 
@@ -584,6 +609,7 @@ mod tests {
             dry_run: false,
             no_commit: true,
             snapshot: Some("canary".to_string()),
+            origins: false,
         };
         execute_version(dir.path(), &opts).unwrap();
 

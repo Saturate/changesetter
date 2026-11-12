@@ -112,6 +112,9 @@ none_bump_heading = "Internal"
 | `none_bump_heading` | `"Internal"` | Heading for none-bump entries when `none_bump = "section"` |
 | `group` | `false` | Group each version's entries by type, using the default groups |
 | `groups` | `[]` | Your own ordered groups (`[[changelog.groups]]`). Listing any turns grouping on |
+| `links` | `false` | Link entries to their pull request and commit, and issue references to their issues. See [Links](#links) |
+| `repo_url` | the `origin` remote | The repository's web URL for links |
+| `issue_links` | `[]` | More issue references to link (`[[changelog.issue_links]]`) |
 
 Single-package repos always use a single root CHANGELOG.md regardless of `per_package`.
 
@@ -183,6 +186,40 @@ An entry no group takes goes under `### Other changes` at the end. Groups come o
 The summary is the body's first block on one line: a heading's text, or a paragraph's lines joined. When a body starts with a list, its first item is the summary and the other items join the group's list. A body that starts with code or a table has no summary, and goes whole under an item of its own.
 
 None-bump entries stay under the `none_bump_heading`, as list items too. So no group, default or your own, can have that title, and neither can `Other changes`: loading the config fails if one does. With `per_package = false` in a monorepo, the groups sit under each package's `###` heading, at `####`. Grouping changes only what new versions look like. Existing sections stay as written, and the release action's notes extraction reads both layouts.
+
+### Links
+
+```toml
+[changelog]
+group = true
+links = true
+
+[[changelog.issue_links]]
+prefix = "GAME-"
+url = "https://jira.example.com/browse/GAME-{id}"
+```
+
+With `links = true`, each entry in a grouped changelog ends with the pull request and commit it came from, and issue references in entries become links:
+
+```markdown
+### Features
+
+- **world:** New biomes, closes [#12](https://github.com/acme/game/issues/12) and [GAME-7](https://jira.example.com/browse/GAME-7) ([#31](https://github.com/acme/game/pull/31), [63c42f2](https://github.com/acme/game/commit/63c42f2…))
+```
+
+The links point at `repo_url`, which defaults to the `origin` remote turned into a web URL (credentials and `.git` dropped). GitHub, GitLab (any host with `gitlab` in its name) and Azure DevOps URLs are understood; other hosts get GitHub-style paths. Without a usable URL, the pull request and commit are written as plain text: `(#31, 63c42f2)`.
+
+Where an entry came from is read from local git, with no network calls:
+
+- The commit is the latest one that added the changeset file, so a name reused after an earlier release deleted it gets its new commit. Its author goes into `--output json` as `author`.
+- The pull request number comes from that commit's message when it was squash-merged (`Title (#31)`). Otherwise it comes from the merge commit that brought it into the current branch: `Merge pull request #31 from ...`, GitLab's `See merge request group/project!31` or Azure DevOps' `Merged PR 31: ...`. When a feature branch was merged into another branch (say `develop`) that was then merged in, the feature's pull request wins over the later one. A changeset committed straight to the branch, or brought in by a rebase or fast-forward merge, has no pull request.
+- This needs the history, so check out with `fetch-depth: 0` in CI. A changeset that isn't committed yet, or whose commit is beyond a shallow clone's history, gets no pull request or commit.
+
+Issue references are a prefix followed by digits, standing alone: not inside a word or after a `\`. Code (fenced, indented or in backticks), existing links, link reference definitions, URLs written out in the text and HTML tags and anchors are left alone. `#123` links to the repo's issues on GitHub and GitLab. `[[changelog.issue_links]]` adds other prefixes, and the digits replace `{id}` in `url`. A `#` entry there replaces the default.
+
+The pull request and commit are added only in grouped changelogs, where every entry is one list item. In a flat changelog, `links = true` links issue references only. `status --output json` and `release --output json` have `commit`, `author` and `pr` for every entry either way. Without `--output json` or `links`, the history isn't read at all.
+
+`repo_url` defaults to the `origin` remote. A remote with no web pages (a local path or `file://`) gives no links, and an SSH host alias from `~/.ssh/config` can't be turned into the real host, so set `repo_url` in those cases.
 
 ### None-bump entries without a release
 

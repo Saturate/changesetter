@@ -390,6 +390,11 @@ group = false                    # true: list entries under a heading per conven
 # types = ["feat"]               # entry types this group takes (empty: any)
 # match = "*security*"           # optional case-insensitive glob over the summary
 # skip = false                   # true: leave matching entries out of the changelog
+links = false                    # true: PR/commit after each grouped entry, #123 -> issue links
+# repo_url = "https://github.com/o/r"  # web URL for links; default: the origin remote
+# [[changelog.issue_links]]      # more issue references: prefix + digits -> url with {id}
+# prefix = "PROJ-"
+# url = "https://jira.example.com/browse/PROJ-{id}"
 
 # Tag format
 [tag]

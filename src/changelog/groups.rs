@@ -54,7 +54,7 @@ pub struct Lead {
 
 /// A list item's text after its marker ("- ", "* ", "+ ", "1. ", "1) "),
 /// indented at most 3 spaces.
-fn list_item_text(line: &str) -> Option<&str> {
+pub(crate) fn list_item_text(line: &str) -> Option<&str> {
     let t = line.trim_start_matches(' ');
     if line.len() - t.len() > 3 {
         return None;
