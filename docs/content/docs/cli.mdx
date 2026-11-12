@@ -108,7 +108,7 @@ Each entry in `releases[].entries` and `none_entries` has these fields:
 | `scope` | The scope, or `null` |
 | `group` | The group title it's listed under in a grouped changelog. `null` when grouping is off or no group takes it, in which case it goes under "Other changes" |
 | `skip` | Whether a `skip` group leaves it out of the changelog |
-| `summary` | The body's first line, without heading hashes or a conventional prefix |
+| `summary` | The body's first heading, paragraph (on one line) or list item, without heading hashes or a conventional prefix. Empty when the body starts with code or a table |
 
 ```json
 {

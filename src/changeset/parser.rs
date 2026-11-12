@@ -42,16 +42,24 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
                 packages.insert(key, bump);
             }
             ("type" | "scope", Err(_)) => {
-                let Some(text) = value.as_str().map(str::trim).filter(|t| !t.is_empty()) else {
+                // A hand-written `scope: 2024` or `type: true` reads as a
+                // number or bool; it's still the text that was meant.
+                let text = match &value {
+                    serde_yaml::Value::String(s) => Some(s.trim().to_string()),
+                    serde_yaml::Value::Number(n) => Some(n.to_string()),
+                    serde_yaml::Value::Bool(b) => Some(b.to_string()),
+                    _ => None,
+                };
+                let Some(text) = text.filter(|t| !t.is_empty()) else {
                     return Err(ChangesetterError::InvalidFrontmatter {
                         path: err_path(),
-                        reason: format!("{key}: expected a non-empty string"),
+                        reason: format!("{key}: expected a non-empty string, number or true/false"),
                     });
                 };
                 if key == "type" {
-                    kind = Some(text.to_string());
+                    kind = Some(text);
                 } else {
-                    scope = Some(text.to_string());
+                    scope = Some(text);
                 }
             }
             (_, Err(e)) => {
@@ -234,6 +242,13 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("no package entries"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_scalar_scope_and_type() {
+        let cs = parse("---\nmylib: patch\nscope: 2024\ntype: true\n---\n", None).unwrap();
+        assert_eq!(cs.scope.as_deref(), Some("2024"));
+        assert_eq!(cs.kind.as_deref(), Some("true"));
     }
 
     #[test]

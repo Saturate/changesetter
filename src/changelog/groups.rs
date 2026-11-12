@@ -39,14 +39,106 @@ pub fn kind_for_bump(bump: BumpLevel) -> &'static str {
     }
 }
 
-/// The first non-blank line of a body, without heading hashes.
-pub fn first_line(body: &str) -> &str {
-    body.lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-        .trim_start_matches('#')
-        .trim()
+/// A body split into its summary and the rest.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Lead {
+    /// The first block's text on one line: a heading's text, a paragraph's
+    /// lines joined, or a list item's or quote's first line. Empty when the
+    /// body starts with code or a table, which have no summary to give.
+    pub summary: String,
+    /// What follows the summary, as written.
+    pub rest: String,
+    /// The summary came from a list item, so the rest may hold its siblings.
+    pub list: bool,
+}
+
+/// A list item's text after its marker ("- ", "* ", "+ ", "1. ", "1) "),
+/// indented at most 3 spaces.
+fn list_item_text(line: &str) -> Option<&str> {
+    let t = line.trim_start_matches(' ');
+    if line.len() - t.len() > 3 {
+        return None;
+    }
+    if let Some(rest) = ["- ", "* ", "+ "].iter().find_map(|m| t.strip_prefix(m)) {
+        return Some(rest);
+    }
+    let digits = t.bytes().take_while(u8::is_ascii_digit).count();
+    if !(1..=9).contains(&digits) {
+        return None;
+    }
+    [". ", ") "]
+        .iter()
+        .find_map(|m| t[digits..].strip_prefix(m))
+}
+
+/// An ATX heading's text, without an optional closing run of `#`.
+fn heading_text(line: &str) -> Option<&str> {
+    let (_, _, after) = crate::changelog::markdown::atx_heading(line)?;
+    let after = after.trim_matches([' ', '\t']);
+    let open = after.trim_end_matches('#');
+    if open.is_empty() {
+        return Some("");
+    }
+    if open.len() < after.len() && open.ends_with([' ', '\t']) {
+        return Some(open.trim_end_matches([' ', '\t']));
+    }
+    Some(after)
+}
+
+/// Splits a body into its summary and the rest. Only a real heading loses
+/// its `#`s, so "#123 crash on save" stays as written, and a paragraph that
+/// wraps over several lines is the summary as a whole.
+pub fn split_summary(body: &str) -> Lead {
+    use crate::changelog::markdown;
+    let lines: Vec<&str> = body.lines().collect();
+    let Some(start) = lines.iter().position(|l| !l.trim().is_empty()) else {
+        return Lead::default();
+    };
+    let code = markdown::fenced_lines(body);
+    let rest_from = |i: usize| lines[i.min(lines.len())..].join("\n");
+    let lead = |summary: &str, from: usize, list: bool| Lead {
+        summary: summary.trim().to_string(),
+        rest: rest_from(from),
+        list,
+    };
+    let first = lines[start];
+    let indent = first.len() - first.trim_start_matches(' ').len();
+    if code.get(start) == Some(&true) || indent >= 4 || first.starts_with('\t') {
+        return lead("", start, false);
+    }
+    if let Some(text) = heading_text(first) {
+        return lead(text, start + 1, false);
+    }
+    if let Some(text) = list_item_text(first) {
+        return lead(text, start + 1, true);
+    }
+    let trimmed = first.trim_start();
+    if let Some(quote) = trimmed.strip_prefix('>') {
+        return lead(quote, start + 1, false);
+    }
+    if trimmed.starts_with('|') {
+        return lead("", start, false);
+    }
+    let mut parts = vec![first.trim()];
+    let mut end = start + 1;
+    while let Some(line) = lines.get(end) {
+        if line.trim().is_empty() {
+            break;
+        }
+        if markdown::is_setext_underline(line) {
+            end += 1;
+            break;
+        }
+        if markdown::starts_other_block(line)
+            || markdown::atx_heading(line).is_some()
+            || markdown::fence_marker(line).is_some()
+        {
+            break;
+        }
+        parts.push(line.trim());
+        end += 1;
+    }
+    lead(&parts.join(" "), end, false)
 }
 
 /// Reads a conventional prefix: `type`, optional `(scope)`, optional `!`,
@@ -87,7 +179,8 @@ pub fn classify(
         .iter()
         .flat_map(|g| g.types.iter().map(String::as_str))
         .collect();
-    let line = first_line(body);
+    let lead = split_summary(body);
+    let line = lead.summary.as_str();
     let prefix = split_prefix(line, &extra);
     let summary = prefix.map_or(line, |(_, _, _, rest)| rest).to_string();
     let prefix_kind = prefix.map(|(k, _, bang, _)| if bang { "breaking" } else { k });
@@ -153,39 +246,71 @@ pub fn find_group<'a>(
     })
 }
 
-/// Renders an entry as a list item: "- **scope:** summary", then the rest of
-/// its body indented under it. `demoted` is the body as
-/// `markdown::demote_headings` left it.
-pub fn render_item(demoted: &str, summary: &str, scope: Option<&str>) -> String {
+/// Leading tabs as 4 spaces each, so a tab-indented line keeps its meaning
+/// once it's indented under a list item.
+fn expand_leading_tabs(line: &str) -> String {
+    let tabs = line.len() - line.trim_start_matches('\t').len();
+    format!("{}{}", "    ".repeat(tabs), &line[tabs..])
+}
+
+/// Renders an entry from its body as written: "- **scope:** summary" (the
+/// summary as `classify` left it), then the rest of the body. Its headings
+/// are demoted and it's indented under the item, except that when the body
+/// starts with a list, the list's other items stay siblings in the group's
+/// list. A body with no summary (it starts with code or a table) is put
+/// whole under an item of its own.
+pub fn render_item(body: &str, summary: &str, scope: Option<&str>) -> String {
+    let lead = split_summary(body);
     let mut item = match scope {
-        Some(scope) => format!("- **{scope}:** {summary}"),
-        None => format!("- {summary}"),
+        Some(scope) => format!("- **{scope}:**"),
+        None => "-".to_string(),
     };
-    let mut lines = demoted.lines().skip_while(|l| l.trim().is_empty());
-    lines.next();
-    let rest: Vec<&str> = lines.collect();
-    let rest = rest
-        .iter()
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>();
-    let end = rest
+    if !summary.is_empty() {
+        item.push(' ');
+        item.push_str(summary);
+    }
+    let immediate = lead
+        .rest
+        .lines()
+        .next()
+        .is_some_and(|l| !l.trim().is_empty());
+    let demoted = crate::changelog::markdown::demote_headings(&lead.rest);
+    let lines: Vec<String> = demoted.lines().map(expand_leading_tabs).collect();
+    let Some(first) = lines.iter().position(|l| !l.trim().is_empty()) else {
+        return item;
+    };
+    let last = lines
         .iter()
         .rposition(|l| !l.trim().is_empty())
-        .map_or(0, |i| i + 1);
-    if end > 0 {
-        item.push_str("\n\n");
-        let body: Vec<String> = rest[..end]
-            .iter()
-            .map(|l| {
-                if l.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!("  {l}")
-                }
-            })
-            .collect();
-        item.push_str(&body.join("\n"));
+        .unwrap_or(first);
+    let mut nested = !lead.list;
+    let mut out = Vec::new();
+    for line in &lines[first..=last] {
+        if line.trim().is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        if !nested {
+            if line.starts_with(' ') {
+                // Belongs to the item above it, sibling or summary.
+                out.push(line.clone());
+                continue;
+            }
+            if let Some(text) = list_item_text(line) {
+                out.push(format!("- {text}"));
+                continue;
+            }
+            nested = true;
+        }
+        out.push(format!("  {line}"));
     }
+    let separator = if summary.is_empty() || (lead.list && immediate) {
+        "\n"
+    } else {
+        "\n\n"
+    };
+    item.push_str(separator);
+    item.push_str(&out.join("\n"));
     item
 }
 
@@ -215,7 +340,9 @@ pub fn render_sections(
         if list.is_empty() {
             continue;
         }
-        let separator = if list.iter().any(|i| i.contains('\n')) {
+        // Blank lines inside an item make the list loose in markdown anyway,
+        // so the items get them between too; otherwise it stays tight.
+        let separator = if list.iter().any(|i| i.contains("\n\n")) {
             "\n\n"
         } else {
             "\n"
@@ -365,6 +492,82 @@ mod tests {
         assert_eq!(
             render_item("Just one line", "Just one line", None),
             "- Just one line"
+        );
+    }
+
+    fn summary(body: &str) -> String {
+        split_summary(body).summary
+    }
+
+    #[test]
+    fn summary_only_strips_real_headings() {
+        assert_eq!(summary("#123 crash on save"), "#123 crash on save");
+        assert_eq!(summary("#### Title"), "Title");
+        assert_eq!(summary("## Title ##"), "Title");
+        assert_eq!(summary("## C#"), "C#");
+        assert_eq!(summary("####\n\nBody"), "");
+    }
+
+    #[test]
+    fn summary_of_wrapped_paragraph_and_setext_title() {
+        assert_eq!(
+            summary("A long summary that wraps\nonto a second line.\n\nMore."),
+            "A long summary that wraps onto a second line."
+        );
+        let lead = split_summary("Sub part\none\n---\n\nDetails");
+        assert_eq!(lead.summary, "Sub part one");
+        assert_eq!(lead.rest.trim(), "Details");
+    }
+
+    #[test]
+    fn summary_of_list_quote_and_code() {
+        let lead = split_summary("- Fixed X\n- Fixed Y");
+        assert_eq!(lead.summary, "Fixed X");
+        assert!(lead.list);
+        assert_eq!(summary("1. First"), "First");
+        assert_eq!(summary("> Quoted"), "Quoted");
+        assert_eq!(summary("```\ncode\n```"), "");
+        assert_eq!(summary("    indented code"), "");
+        assert_eq!(summary("| a | b |"), "");
+    }
+
+    #[test]
+    fn list_body_keeps_its_items_as_siblings() {
+        assert_eq!(
+            render_item("- Fixed X\n- Fixed Y", "Fixed X", None),
+            "- Fixed X\n- Fixed Y"
+        );
+        assert_eq!(
+            render_item("1. One\n   more\n2. Two\n\nAfter.", "One", Some("ui")),
+            "- **ui:** One\n   more\n- Two\n\n  After."
+        );
+    }
+
+    #[test]
+    fn wrapped_summary_is_not_split() {
+        assert_eq!(
+            render_item("Wraps\nhere.", "Wraps here.", None),
+            "- Wraps here."
+        );
+    }
+
+    #[test]
+    fn body_without_summary_goes_under_its_own_item() {
+        assert_eq!(
+            render_item("```\ncode\n```", "", None),
+            "-\n  ```\n  code\n  ```"
+        );
+        assert_eq!(
+            render_item("####\n\nBody", "", Some("ui")),
+            "- **ui:**\n  Body"
+        );
+    }
+
+    #[test]
+    fn tabs_keep_code_indentation() {
+        assert_eq!(
+            render_item("Title\n\n\tcode", "Title", None),
+            "- Title\n\n      code"
         );
     }
 

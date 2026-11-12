@@ -125,13 +125,21 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
     )?;
     eprintln!("Created {}/{name}.md", config.changeset_dir_relative());
     crate::changelog::generator::warn_fenced_boundaries(&format!("{name}.md"), &body);
-    if let Some(kind) = &args.kind {
-        for (pkg, bump) in &packages {
-            if let Some(w) =
-                crate::changelog::groups::breaking_warning(&format!("{name}.md"), kind, pkg, *bump)
-            {
-                eprintln!("{w}");
-            }
+    // The same warning `status` and `release` give, for a `breaking` type
+    // from --type or from a "feat!:" prefix on the message.
+    for (pkg, bump) in &packages {
+        let kind = crate::changelog::groups::classify(
+            &body,
+            args.kind.as_deref(),
+            args.scope.as_deref(),
+            *bump,
+            &config.changelog,
+        )
+        .kind;
+        if let Some(w) =
+            crate::changelog::groups::breaking_warning(&format!("{name}.md"), &kind, pkg, *bump)
+        {
+            eprintln!("{w}");
         }
     }
 

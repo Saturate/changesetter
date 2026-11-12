@@ -118,11 +118,11 @@ mylib: patch
 fix(ui): Buttons no longer flicker
 ```
 
-That entry gets type `fix` and scope `ui`, and its summary is `Buttons no longer flicker`. `feat!: ...` (with `!`) gives type `breaking`. Only known types and the types your groups name count as a prefix, so `Note: ...` stays part of the summary. A `type:` or `scope:` in the front matter wins over the prefix, and the prefix is still stripped.
+That entry gets type `fix` and scope `ui`, and its summary is `Buttons no longer flicker`. The summary is the body's first heading or paragraph, joined onto one line, or its first list item. Only a real heading loses its `#`s, so `#123 crash on save` stays as written. `feat!: ...` (with `!`) gives type `breaking`. Only known types and the types your groups name count as a prefix, so `Note: ...` stays part of the summary. A `type:` or `scope:` in the front matter wins over the prefix, and the prefix is still stripped.
 
 With neither, the type follows the bump: `major` is `breaking`, `minor` is `feat`, `patch` is `fix` and `none` is `chore`. A changeset typed `breaking` that doesn't bump major gets a warning from `add`, `status` and `release`. It isn't an error, because the bump still decides the version.
 
-`type` and `scope` are keys in the same map as the packages. A value that's a bump level (`type: patch`) still names a package called `type`. The original changesets tool doesn't know these keys, so leave them out if it also reads your changesets.
+`type` and `scope` are keys in the same map as the packages. A value that's a bump level (`type: patch`, or `scope: none`) still names a package called `type` or `scope`, so leave the key out rather than writing `none`. A number or `true`/`false` is read as its text (`scope: 2024`). The original changesets tool doesn't know these keys, so leave them out if it also reads your changesets.
 
 ## Frontmatter rules
 

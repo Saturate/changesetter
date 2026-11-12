@@ -10,7 +10,7 @@
 /// tildes. A backtick fence's info string can't contain a backtick. Returns
 /// the character, the run length, and whether nothing follows the run (only
 /// such a line can close a fence).
-fn fence_marker(line: &str) -> Option<(char, usize, bool)> {
+pub(crate) fn fence_marker(line: &str) -> Option<(char, usize, bool)> {
     let line = line.trim_end_matches(['\n', '\r']);
     let indent = line.len() - line.trim_start_matches(' ').len();
     if indent > 3 {
@@ -65,7 +65,7 @@ fn split_eol(line: &str) -> (&str, &str) {
 
 /// An ATX heading ("## Title", indented at most 3 spaces): its indent, level
 /// and the text after its hashes.
-fn atx_heading(text: &str) -> Option<(&str, usize, &str)> {
+pub(crate) fn atx_heading(text: &str) -> Option<(&str, usize, &str)> {
     let rest = text.trim_start_matches(' ');
     let indent = &text[..text.len() - rest.len()];
     if indent.len() > 3 {
@@ -78,7 +78,7 @@ fn atx_heading(text: &str) -> Option<(&str, usize, &str)> {
 }
 
 /// A Setext underline: "===" or "---" (any length), indented at most 3 spaces.
-fn is_setext_underline(text: &str) -> bool {
+pub(crate) fn is_setext_underline(text: &str) -> bool {
     let rest = text.trim_start_matches(' ');
     if text.len() - rest.len() > 3 {
         return false;
@@ -91,7 +91,7 @@ fn is_setext_underline(text: &str) -> bool {
 /// quote or table row. It can't be part of a Setext heading's text, and in
 /// CommonMark a list item or quote interrupts a paragraph, so a "---" or "==="
 /// below one isn't a Setext underline.
-fn starts_other_block(text: &str) -> bool {
+pub(crate) fn starts_other_block(text: &str) -> bool {
     let t = text.trim_start_matches(' ');
     if t.starts_with('>') || t.starts_with('|') {
         return true;

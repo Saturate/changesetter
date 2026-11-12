@@ -197,17 +197,34 @@ pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     p[pi..].iter().all(|&c| c == '*')
 }
 
-// A group heading with the none-bump heading's title would read as the
-// none-bump section when the changelog is folded on a later release.
+// A group with the none-bump heading's title would put two sections of that
+// name in one version, and the none-bump one is found by its title when an
+// Unreleased section is folded.
 fn validate_changelog_groups(changelog: &ChangelogConfig) -> anyhow::Result<()> {
-    for group in &changelog.groups {
-        if group.title.trim().is_empty() {
-            anyhow::bail!("[[changelog.groups]] entries need a non-empty title");
-        }
-        if group.title.trim() == changelog.none_bump_heading.trim() {
+    if changelog.groups.iter().any(|g| g.title.trim().is_empty()) {
+        anyhow::bail!("[[changelog.groups]] entries need a non-empty title");
+    }
+    if !changelog.is_grouped() {
+        return Ok(());
+    }
+    let none = changelog.none_bump_heading.trim();
+    let configured = !changelog.groups.is_empty();
+    let groups = crate::changelog::groups::groups(changelog);
+    let titles = groups
+        .iter()
+        .map(|g| g.title.trim())
+        .chain([crate::changelog::groups::FALLBACK_TITLE]);
+    for title in titles {
+        if title == none {
+            let source = if title == crate::changelog::groups::FALLBACK_TITLE {
+                "the group for entries no other group takes"
+            } else if configured {
+                "a [[changelog.groups]] title"
+            } else {
+                "one of the default groups (group = true)"
+            };
             anyhow::bail!(
-                "[[changelog.groups]] title \"{}\" is also the none_bump_heading; give one of them another name",
-                group.title
+                "none_bump_heading \"{none}\" is also {source}; give the none_bump_heading another name"
             );
         }
     }
@@ -513,6 +530,32 @@ skip = true
             .unwrap_err()
             .to_string();
         assert!(err.contains("non-empty title"), "{err}");
+    }
+
+    #[test]
+    fn none_heading_must_differ_from_default_and_fallback_groups() {
+        for heading in ["Under the hood", "Other changes"] {
+            let toml = format!(
+                "[changelog]
+group = true
+none_bump_heading = \"{heading}\"
+"
+            );
+            let err = load_str(&toml).unwrap_err().to_string();
+            assert!(
+                err.contains("give the none_bump_heading another name"),
+                "{err}"
+            );
+        }
+        // Without grouping, any heading is fine.
+        assert!(
+            load_str(
+                "[changelog]
+none_bump_heading = \"Other changes\"
+"
+            )
+            .is_ok()
+        );
     }
 
     #[test]

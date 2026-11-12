@@ -44,6 +44,8 @@ pub struct ReleaseEntry {
     pub skip: bool,
     /// The body with its headings demoted, as the flat changelog has it.
     body: String,
+    /// The body as written, which a grouped changelog renders from.
+    raw: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -98,6 +100,7 @@ fn new_entry(
         group,
         skip,
         body: crate::changelog::markdown::demote_headings(body),
+        raw: body.to_string(),
     }
 }
 
@@ -114,11 +117,11 @@ fn release_changelog(entries: &[ReleaseEntry], config: &Config, nested: bool) ->
     }
     let items: Vec<(Option<String>, String)> = entries
         .iter()
-        .filter(|e| !e.skip && !e.summary.is_empty())
+        .filter(|e| !e.skip && !e.raw.trim().is_empty())
         .map(|e| {
             (
                 e.group.clone(),
-                groups::render_item(&e.body, &e.summary, e.scope.as_deref()),
+                groups::render_item(&e.raw, &e.summary, e.scope.as_deref()),
             )
         })
         .collect();
@@ -170,8 +173,8 @@ pub fn assemble(
                 cs.scope.as_deref(),
                 config,
             );
-            let body = if config.changelog.is_grouped() && !e.summary.is_empty() {
-                groups::render_item(&e.body, &e.summary, e.scope.as_deref())
+            let body = if config.changelog.is_grouped() && !e.raw.trim().is_empty() {
+                groups::render_item(&e.raw, &e.summary, e.scope.as_deref())
             } else {
                 e.body
             };

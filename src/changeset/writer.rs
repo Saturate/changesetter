@@ -42,11 +42,10 @@ pub fn write_changeset_typed(
             content.push_str(&format!("{pkg}: {bump}\n"));
         }
     }
-    if let Some(kind) = kind {
-        content.push_str(&format!("type: {kind}\n"));
-    }
-    if let Some(scope) = scope {
-        content.push_str(&format!("scope: {scope}\n"));
+    for (key, value) in [("type", kind), ("scope", scope)] {
+        if let Some(value) = value {
+            content.push_str(&format!("{key}: {}\n", yaml_text(value)));
+        }
     }
     content.push_str("---\n");
 
@@ -60,6 +59,18 @@ pub fn write_changeset_typed(
 
     std::fs::write(&path, &content)?;
     Ok(name)
+}
+
+/// A value as YAML text that reads back as the same string: plain when it
+/// does (`fix`), quoted when YAML would read it as something else, like a
+/// number (`1.10`), bool (`true`) or null.
+fn yaml_text(value: &str) -> String {
+    match serde_yaml::from_str::<serde_yaml::Value>(value) {
+        Ok(serde_yaml::Value::String(s)) if s == value => value.to_string(),
+        _ => serde_yaml::to_string(value)
+            .map(|s| s.trim_end().to_string())
+            .unwrap_or_else(|_| format!("{value:?}")),
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +138,21 @@ mod tests {
         let cs = parser::parse(&content, Some(name)).unwrap();
         assert_eq!(cs.kind.as_deref(), Some("feat"));
         assert_eq!(cs.scope.as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn write_quotes_values_yaml_would_misread() {
+        let dir = tempfile::tempdir().unwrap();
+        let packages = BTreeMap::from([("mylib".to_string(), BumpLevel::Patch)]);
+        for scope in ["2024", "1.10", "true", "null", "no", "world"] {
+            let name =
+                write_changeset_typed(dir.path(), &packages, Some("fix"), Some(scope), "Fix")
+                    .unwrap();
+            let content = std::fs::read_to_string(dir.path().join(format!("{name}.md"))).unwrap();
+            let cs = parser::parse(&content, Some(name)).unwrap();
+            assert_eq!(cs.scope.as_deref(), Some(scope), "{content}");
+            assert_eq!(cs.kind.as_deref(), Some("fix"));
+        }
     }
 
     #[test]

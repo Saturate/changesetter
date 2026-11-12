@@ -176,9 +176,13 @@ types = ["test"]
 skip = true
 ```
 
+`match` sees the summary as listed, after a conventional prefix and its scope are taken off, so `fix(security): ...` has the summary `...` and scope `security`. To group by scope, give those changesets a type of their own.
+
 An entry no group takes goes under `### Other changes` at the end. Groups come out in the order listed, and a group with no entries in that version is left out. Changelog entries changesetter writes itself (a package bumped by its fixed group or a dependency) have type `deps`.
 
-None-bump entries stay under the `none_bump_heading`, as list items too, so a group can't share its title. With `per_package = false` in a monorepo, the groups sit under each package's `###` heading, at `####`. Grouping changes only what new versions look like. Existing sections stay as written, and the release action's notes extraction reads both layouts.
+The summary is the body's first block on one line: a heading's text, or a paragraph's lines joined. When a body starts with a list, its first item is the summary and the other items join the group's list. A body that starts with code or a table has no summary, and goes whole under an item of its own.
+
+None-bump entries stay under the `none_bump_heading`, as list items too. So no group, default or your own, can have that title, and neither can `Other changes`: loading the config fails if one does. With `per_package = false` in a monorepo, the groups sit under each package's `###` heading, at `####`. Grouping changes only what new versions look like. Existing sections stay as written, and the release action's notes extraction reads both layouts.
 
 ### None-bump entries without a release
 
