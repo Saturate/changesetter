@@ -42,7 +42,7 @@ Entries can use `*` (any run of characters, including none) and `?` (exactly one
 ignore = ["*_core", "*_gd", "example-?"]
 ```
 
-An entry without wildcards must match the whole name. A nameless package, such as a Cargo workspace root with no `[workspace.package]` version, has the empty name `""`, which `ignore = [""]` excludes. `*` matches the empty name too, so `"*"` ignores every package.
+An entry without wildcards must match the whole name. A nameless package, such as a Cargo workspace root with a shared version but no workspace name, has the empty name `""`, which `ignore = [""]` excludes. `*` matches the empty name too, so `"*"` ignores every package.
 
 Ignored packages are excluded from the release plan, changelogs, and tagging.
 

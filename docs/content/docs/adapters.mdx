@@ -20,7 +20,7 @@ changesetter auto-detects packages by scanning for known manifest files using `g
 
 ## Cargo
 
-Detects single crates and workspaces. When a Cargo.toml has `workspace.package.version`, the workspace is treated as a single package by default.
+Detects single crates and workspaces. When a Cargo.toml has `workspace.package.version`, the workspace is treated as a single package by default. A virtual workspace root without that version is skipped; its member crates are still detected.
 
 Member crates with `version.workspace = true` are skipped (they inherit the workspace version). To bump workspace members independently, list them in `changesetter.toml`:
 

@@ -1968,3 +1968,38 @@ fn rust_and_release_notes_agree_on_section_ends() {
         );
     }
 }
+
+#[test]
+fn status_lists_members_but_not_an_unversioned_workspace_root() {
+    let dir = setup_repo();
+    let root = dir.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/member\"]\n\n[workspace.package]\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("crates/member")).unwrap();
+    std::fs::write(
+        root.join("crates/member/Cargo.toml"),
+        "[package]\nname = \"member\"\nversion = \"1.2.3\"\nedition.workspace = true\n",
+    )
+    .unwrap();
+    git_add_commit(root, "add virtual workspace");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_changesetter"))
+        .args(["status", "--output", "json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let packages = json["packages"].as_array().unwrap();
+    assert_eq!(packages.len(), 1, "{packages:?}");
+    assert_eq!(packages[0]["name"], "member");
+    assert_eq!(packages[0]["version"], "1.2.3");
+    assert_eq!(packages[0]["tag"], "v1.2.3");
+}
