@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.2, 0.1.2 - 2026-11-23
+
+### changesetter-azure-pipelines
+
+Release pushes are atomic, so a rejected branch push no longer leaves its tags behind on origin
+
+### changesetter-release-task
+
+Release pushes are atomic, so a rejected branch push no longer leaves its tags behind on origin
+
+### Internal
+
+Release pushes are atomic, so a rejected branch push no longer leaves its tags behind on origin
+
 ## 0.8.0, 0.1.1, 0.1.1 - 2026-11-23
 
 ### changesetter

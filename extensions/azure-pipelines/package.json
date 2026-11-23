@@ -1,6 +1,6 @@
 {
   "name": "changesetter-azure-pipelines",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Changesetter Azure Pipelines extension",
   "scripts": {
