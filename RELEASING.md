@@ -42,3 +42,4 @@ gh release create v1.2.0 --verify-tag --latest=false --title "Actions v1.2.0" --
 - Always pass `--latest=false`. An action release marked latest has no binaries, so the README's quick install and the Azure DevOps snippets would download nothing. (`actions/install` only looks at `changesetter@v*` releases, so it would keep working.)
 - Plain `vX.Y.Z` tags don't trigger the binary build; only `changesetter@v*` tags do.
 - In the release notes, call out behaviour changes that make a job fail where it used to pass.
+- When an action starts using a new CLI feature, move `v1` only after the CLI release with that feature has all its binaries attached. Until then `actions/install` keeps installing the older CLI for `version: latest`.

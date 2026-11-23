@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use anyhow::Context;
+
 use crate::errors::ChangesetterError;
 
 pub fn find_repo_root() -> anyhow::Result<PathBuf> {
@@ -27,27 +29,39 @@ pub fn is_working_tree_clean(repo_root: &Path) -> anyhow::Result<bool> {
     Ok(output.stdout.is_empty())
 }
 
-/// Changeset files added since `base`: committed on this branch, staged, or
-/// still untracked. Local gates run before the commit, so committed-only
-/// would miss the changeset they are meant to find; CI checkouts are clean,
-/// so for them this is the same as comparing `base...HEAD`.
+/// A file under the changeset dir that differs between a base and the
+/// working tree.
+#[derive(Debug)]
+pub struct ChangedFile {
+    pub path: String,
+    pub deleted: bool,
+}
+
+/// Changeset files added, changed or deleted since `base`: committed on this
+/// branch, staged, unstaged or still untracked. Local gates run before the
+/// commit, so committed-only would miss the changeset they are meant to find;
+/// CI checkouts are clean, so for them this is the same as `base...HEAD`.
 pub fn diff_changeset_files(
     repo_root: &Path,
     base: &str,
     changeset_dir: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Vec<ChangedFile>> {
     let dir_arg = format!("{changeset_dir}/");
 
     let merge_base = merge_base(repo_root, base)?;
-    let merge_base = merge_base.as_str();
 
-    let added = run_git(
+    // -z, because without it git quotes any path with non-ASCII or `"` in
+    // it, and the quoted name no longer ends in `.md`. --no-renames turns a
+    // rename into a delete plus an add, so the new name is read like any
+    // other added file.
+    let tracked = run_git(
         repo_root,
         &[
             "diff",
-            "--name-only",
-            "--diff-filter=A",
-            merge_base,
+            "--name-status",
+            "-z",
+            "--no-renames",
+            &merge_base,
             "--",
             &dir_arg,
         ],
@@ -56,17 +70,45 @@ pub fn diff_changeset_files(
 
     let untracked = run_git(
         repo_root,
-        &["ls-files", "--others", "--exclude-standard", "--", &dir_arg],
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--",
+            &dir_arg,
+        ],
     )?
     .ok_or_else(|| anyhow::anyhow!("git ls-files failed"))?;
 
-    let files: std::collections::BTreeSet<String> = added
-        .lines()
-        .chain(untracked.lines())
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect();
-    Ok(files.into_iter().collect())
+    let mut files = std::collections::BTreeMap::new();
+    let mut fields = tracked.split('\0').filter(|f| !f.is_empty());
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
+        files.insert(path.to_string(), status == "D");
+    }
+    for path in untracked.split('\0').filter(|f| !f.is_empty()) {
+        files.insert(path.to_string(), false);
+    }
+    Ok(files
+        .into_iter()
+        .map(|(path, deleted)| ChangedFile { path, deleted })
+        .collect())
+}
+
+/// Reads a changeset file the diff reported, relative to the repo root. The
+/// content ends up in a PR comment, so a symlink is refused instead of
+/// followed out of the repo.
+pub fn read_changeset_file(repo_root: &Path, path: &str) -> anyhow::Result<String> {
+    let full = repo_root.join(path);
+    let meta = std::fs::symlink_metadata(&full).with_context(|| format!("reading {path}"))?;
+    if !meta.is_file() {
+        anyhow::bail!("{path} is not a regular file");
+    }
+    let root = repo_root.canonicalize()?;
+    if !full.canonicalize()?.starts_with(&root) {
+        anyhow::bail!("{path} resolves outside the repository");
+    }
+    std::fs::read_to_string(&full).with_context(|| format!("{path} is not valid UTF-8"))
 }
 
 /// Whether anything changed since the branch left `base`: committed, staged,
