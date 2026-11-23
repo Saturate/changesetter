@@ -155,6 +155,8 @@ Azure DevOps doesn't have a "GitHub Releases" equivalent. The release is the git
 
 Instead of releasing on every merge, create a PR that batches pending changesets. Merging that PR triggers the release.
 
+Only the build for the version PR's merge commit releases, so leave `batch` off in the trigger. With `batch: true`, a push that lands while that build is queued folds the merge commit into a later build, and the release never happens.
+
 ```yaml
 trigger:
   branches:
@@ -188,22 +190,55 @@ steps:
     displayName: Configure git
 
   - script: |
+      set -eo pipefail
       BRANCH="changesetter/version-packages"
       ORG_URL=$(System.CollectionUri)
       PROJECT=$(System.TeamProject)
       REPO=$(Build.Repository.Name)
 
-      # Check for pending changesets
-      if ! ls .changeset/*.md 1>/dev/null 2>&1; then
-        echo "No pending changesets"
+      # Release only when this build's commit is a completed version PR's merge
+      # commit. Matching the newest completed version PR instead would make
+      # every later push look like a release, and an active PR's
+      # lastMergeCommit is the test merge its PR validation builds run on.
+      # curl -f fails the step on API errors so a bad token does not quietly
+      # skip the release.
+      COMMIT=$(Build.SourceVersion)
+      MERGED_PR=$(curl -sSf -X POST \
+        "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequestquery?api-version=7.1" \
+        -H "Authorization: Bearer $(System.AccessToken)" \
+        -H "Content-Type: application/json" \
+        -d "{\"queries\":[{\"type\":\"lastMergeCommit\",\"items\":[\"${COMMIT}\"]}]}" \
+        | jq -er --arg sha "$COMMIT" --arg ref "refs/heads/${BRANCH}" \
+          '[(.results // error("no results in response"))[0][$sha][]? | select(.sourceRefName == $ref and .status == "completed" and .lastMergeCommit.commitId == $sha) | .pullRequestId] | first // ""')
 
-        # Check if this push is a version-PR merge
-        COMMIT_MSG=$(git log -1 --format=%s)
-        if echo "$COMMIT_MSG" | grep -q "chore: version packages"; then
-          echo "Version PR merge detected, creating tags"
-          changesetter release --output json || true
-          git push origin main --follow-tags
+      if [ -n "$MERGED_PR" ]; then
+        echo "Commit is the merge of version PR #${MERGED_PR}, tagging"
+        VERSION=$(grep -E '^version[[:space:]]*=[[:space:]]*"' Cargo.toml 2>/dev/null | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
+        [ -n "$VERSION" ] || VERSION=$(jq -r '.version // empty' package.json 2>/dev/null || true)
+        [ -n "$VERSION" ] || { echo "Could not determine version"; exit 1; }
+
+        # The peeled ^{} line, when present, sorts last and names the commit.
+        TAG_COMMIT=$(git ls-remote --tags origin "refs/tags/v${VERSION}" "refs/tags/v${VERSION}^{}" | sort -k2 | tail -1 | cut -f1)
+        if [ -z "$TAG_COMMIT" ]; then
+          # -f: a self-hosted agent can keep a local tag from a run that
+          # never pushed it.
+          git tag -a -f "v${VERSION}" -m "Release ${VERSION}" "$COMMIT"
+          git push origin "refs/tags/v${VERSION}"
+        elif [ "$TAG_COMMIT" = "$COMMIT" ]; then
+          echo "Tag v${VERSION} already exists at this commit, skipping"
+        else
+          echo "Version collision: tag v${VERSION} already exists at ${TAG_COMMIT}, not at ${COMMIT}"
+          exit 1
         fi
+      fi
+
+      # Changesets merged while the version PR was open still need a version
+      # PR, even right after a release.
+      # Nested dirs count, README.md doesn't, matching changesetter itself.
+      # -print -quit rather than `| grep -q`: with pipefail, a long listing
+      # makes find die of SIGPIPE and the check would read "none pending".
+      if [ -z "$(find .changeset -type f -name '*.md' ! -name README.md -print -quit 2>/dev/null)" ]; then
+        echo "No pending changesets"
         exit 0
       fi
 
@@ -212,34 +247,37 @@ steps:
 
       # Create version branch and apply changes
       git checkout -B "$BRANCH"
-      changesetter version --no-commit || true
+      changesetter version --no-commit
       git add -A
       git commit -m "chore: version packages" --allow-empty
       git push origin "$BRANCH" --force
       git checkout -
 
       # Create or update PR via Azure DevOps REST API
-      PR_BODY="This PR was opened by changesetter. Merging it will release the following packages.\n\n\`\`\`\n${STATUS}\n\`\`\`"
+      PR_BODY=$(printf 'This PR was opened by changesetter. Merging it will release the following packages.\n\n```\n%s\n```' "$STATUS")
 
       # Check for existing PR
-      EXISTING=$(curl -s \
+      EXISTING=$(curl -sSf \
         "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequests?searchCriteria.sourceRefName=refs/heads/${BRANCH}&searchCriteria.status=active&api-version=7.1" \
         -H "Authorization: Bearer $(System.AccessToken)" \
         | jq -r '.value[0].pullRequestId // empty')
 
       if [ -n "$EXISTING" ]; then
-        curl -s -X PATCH \
+        # jq builds the JSON so quotes and newlines in the status stay valid.
+        jq -n --arg d "$PR_BODY" '{description: $d}' | curl -sSf -o /dev/null -X PATCH \
           "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequests/${EXISTING}?api-version=7.1" \
           -H "Authorization: Bearer $(System.AccessToken)" \
           -H "Content-Type: application/json" \
-          -d "{\"description\":\"${PR_BODY}\"}"
+          --data-binary @-
         echo "Updated PR #${EXISTING}"
       else
-        curl -s -X POST \
+        jq -n --arg src "refs/heads/${BRANCH}" --arg d "$PR_BODY" \
+          '{sourceRefName: $src, targetRefName: "refs/heads/main", title: "Next Release", description: $d}' \
+          | curl -sSf -o /dev/null -X POST \
           "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequests?api-version=7.1" \
           -H "Authorization: Bearer $(System.AccessToken)" \
           -H "Content-Type: application/json" \
-          -d "{\"sourceRefName\":\"refs/heads/${BRANCH}\",\"targetRefName\":\"refs/heads/main\",\"title\":\"Next Release\",\"description\":\"${PR_BODY}\"}"
+          --data-binary @-
         echo "Created version PR"
       fi
     displayName: Create version PR or release
@@ -252,6 +290,8 @@ steps:
 For a more integrated experience, changesetter provides an Azure Pipelines extension with custom tasks for checking and releasing. See `extensions/azure-pipelines/` in the changesetter repository.
 
 The extension wraps the same CLI commands with native Azure DevOps integration: PR comment threads, work item linking, and pipeline variables.
+
+In version-PR mode, the `ChangsetterRelease` task releases only when the commit being built (`Build.SourceVersion`) is the merge commit of a completed `changesetter/version-packages` PR. It reads the version from `Cargo.toml` or `package.json` and creates and pushes the `v<version>` tag on that commit. If the tag already exists on origin at the same commit, it skips the tag and still reports the release, so re-running a failed release build is safe. If the tag exists at a different commit, the task fails with a version collision instead of reporting a release. If changesets were merged while the version PR was open, the same run then opens or updates a new version PR for them. A failed Azure DevOps API call fails the task instead of skipping the release, and so does a failing `changesetter version`, so a half-bumped tree never becomes a version PR.
 
 ## Permissions
 
