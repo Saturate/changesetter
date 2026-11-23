@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.8.0, 0.1.1, 0.1.1 - 2026-11-23
+
+### changesetter
+
+`changesetter check --output json` reports the changesets a branch adds, changes or deletes, with their bumps and text
+
+`check --base` now also fails on a changeset it can't parse, instead of only counting files, refuses a changeset that is a symlink, and no longer skips changesets with non-ASCII characters or quotes in their name. Staged and untracked changesets still count. The check action uses the report to show each changeset's text and bumps in a collapsed section of the PR comment, and needs this release or newer.
+
+Skip Cargo workspace roots without a shared version
+
+A root `Cargo.toml` with `[workspace.package]` but no `version` was detected as a nameless package at `0.0.0`, which `changesetter version` then failed to bump. That root is now skipped and its member crates are still detected. A virtual workspace with a single member crate now counts as a single-package repo, so its tags change from `member@v1.2.3` to `v1.2.3`.
+
+### changesetter-azure-pipelines
+
+Fix the Azure Pipelines release task treating every push after the first
+release as a version PR merge and failing on the already existing tag. It now
+releases only when the built commit is a completed version PR's merge commit,
+skips the tag if it already exists on origin at that commit so a re-run works,
+fails on a tag at a different commit (a version collision), and still opens a
+version PR for changesets merged while the version PR was open. Changesets in
+subdirectories now count, and a lone `.changeset/README.md` no longer opens an
+empty version PR. A failed
+Azure DevOps API call now fails the task instead of skipping the release. The
+version-PR pipeline example in the Azure DevOps docs uses the same merge commit
+lookup.
+
+### changesetter-release-task
+
+Fix the Azure Pipelines release task treating every push after the first
+release as a version PR merge and failing on the already existing tag. It now
+releases only when the built commit is a completed version PR's merge commit,
+skips the tag if it already exists on origin at that commit so a re-run works,
+fails on a tag at a different commit (a version collision), and still opens a
+version PR for changesets merged while the version PR was open. Changesets in
+subdirectories now count, and a lone `.changeset/README.md` no longer opens an
+empty version PR. A failed
+Azure DevOps API call now fails the task instead of skipping the release. The
+version-PR pipeline example in the Azure DevOps docs uses the same merge commit
+lookup.
+
 ## 0.7.0 - 2026-11-12
 
 ### changesetter
