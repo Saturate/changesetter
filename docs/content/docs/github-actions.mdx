@@ -54,7 +54,7 @@ jobs:
 
 The comment is updated on subsequent pushes rather than creating duplicates. It uses an HTML marker (`<!-- changesetter-check -->`) to find the existing bot comment. If the token can't write to the PR (a pull request from a fork, or no `pull-requests: write`), the job logs a warning instead of the comment, and the check still passes or fails. A changeset that can't be parsed fails the check, and the comment shows the error.
 
-Requires changesetter 0.5.0 or newer (`changesetter check --output json`). The default `version: latest` covers this.
+Requires changesetter 0.8.0 or newer (`changesetter check --output json`). The default `version: latest` covers this.
 
 `fetch-depth: 0` is required for the `--base` diff to work.
 

@@ -76,6 +76,7 @@ changesetter walks the repo (via `git ls-files`) and detects packages from manif
 | `pyproject.toml` | Python | `project.version` or `tool.poetry.version` |
 | `*.csproj` | .NET | `<Version>` in `<PropertyGroup>` |
 | `Chart.yaml` | Helm | `version` |
+| `project.godot` | Godot | `config/version` |
 
 No config needed for single-package repos. For monorepos, auto-detection finds all packages. Override with `changesetter.toml` if needed:
 
@@ -91,6 +92,8 @@ ignore = ["examples", "internal-tools"]
 per_package = true
 none_bump_heading = "Internal"
 ```
+
+Set `group = true` under `[changelog]` to list each version's entries under headings by conventional type (Features, Fixes, ...), or define your own `[[changelog.groups]]`. See [Configuration](https://changesetter-delta.vercel.app/configuration#grouped-changelogs).
 
 ## Pre-release mode
 
@@ -225,4 +228,4 @@ post_bump = ["cargo check", "cargo fmt"]
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

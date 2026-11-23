@@ -29,75 +29,124 @@ pub fn is_working_tree_clean(repo_root: &Path) -> anyhow::Result<bool> {
     Ok(output.stdout.is_empty())
 }
 
-/// A file under the changeset dir that differs between a base and HEAD.
+/// A file under the changeset dir that differs between a base and the
+/// working tree.
+#[derive(Debug)]
 pub struct ChangedFile {
     pub path: String,
     pub deleted: bool,
 }
 
+/// Changeset files added, changed or deleted since `base`: committed on this
+/// branch, staged, unstaged or still untracked. Local gates run before the
+/// commit, so committed-only would miss the changeset they are meant to find;
+/// CI checkouts are clean, so for them this is the same as `base...HEAD`.
 pub fn diff_changeset_files(
     repo_root: &Path,
     base: &str,
     changeset_dir: &str,
 ) -> anyhow::Result<Vec<ChangedFile>> {
     let dir_arg = format!("{changeset_dir}/");
+
+    let merge_base = merge_base(repo_root, base)?;
+
     // -z, because without it git quotes any path with non-ASCII or `"` in
     // it, and the quoted name no longer ends in `.md`. --no-renames turns a
     // rename into a delete plus an add, so the new name is read like any
     // other added file.
-    let output = Command::new("git")
-        .args([
+    let tracked = run_git(
+        repo_root,
+        &[
             "diff",
             "--name-status",
             "-z",
             "--no-renames",
-            &format!("{base}...HEAD"),
+            &merge_base,
             "--",
             &dir_arg,
-        ])
-        .current_dir(repo_root)
-        .output()
-        .map_err(|_| ChangesetterError::GitNotFound)?;
+        ],
+    )?
+    .ok_or_else(|| anyhow::anyhow!("git diff against {base} failed"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("unknown revision") || stderr.contains("bad revision") {
-            anyhow::bail!(ChangesetterError::BaseRefUnavailable {
-                base: base.to_string()
-            });
-        }
-        anyhow::bail!("git diff failed: {stderr}");
-    }
+    let untracked = run_git(
+        repo_root,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--",
+            &dir_arg,
+        ],
+    )?
+    .ok_or_else(|| anyhow::anyhow!("git ls-files failed"))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut fields = stdout.split('\0').filter(|f| !f.is_empty());
-    let mut files = Vec::new();
+    let mut files = std::collections::BTreeMap::new();
+    let mut fields = tracked.split('\0').filter(|f| !f.is_empty());
     while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
-        files.push(ChangedFile {
-            path: path.to_string(),
-            deleted: status == "D",
-        });
+        files.insert(path.to_string(), status == "D");
     }
-    Ok(files)
+    for path in untracked.split('\0').filter(|f| !f.is_empty()) {
+        files.insert(path.to_string(), false);
+    }
+    Ok(files
+        .into_iter()
+        .map(|(path, deleted)| ChangedFile { path, deleted })
+        .collect())
 }
 
-/// The content of `path` as committed at HEAD. Reading the commit rather
-/// than the working tree keeps it to what the diff compared, and a
-/// committed symlink comes back as its target path instead of being
+/// Reads a changeset file the diff reported, relative to the repo root. The
+/// content ends up in a PR comment, so a symlink is refused instead of
 /// followed out of the repo.
-pub fn read_at_head(repo_root: &Path, path: &str) -> anyhow::Result<String> {
+pub fn read_changeset_file(repo_root: &Path, path: &str) -> anyhow::Result<String> {
+    let full = repo_root.join(path);
+    let meta = std::fs::symlink_metadata(&full).with_context(|| format!("reading {path}"))?;
+    if !meta.is_file() {
+        anyhow::bail!("{path} is not a regular file");
+    }
+    let root = repo_root.canonicalize()?;
+    if !full.canonicalize()?.starts_with(&root) {
+        anyhow::bail!("{path} resolves outside the repository");
+    }
+    std::fs::read_to_string(&full).with_context(|| format!("{path} is not valid UTF-8"))
+}
+
+/// Whether anything changed since the branch left `base`: committed, staged,
+/// unstaged or untracked (and not gitignored).
+pub fn has_changes_since(repo_root: &Path, base: &str) -> anyhow::Result<bool> {
+    let merge_base = merge_base(repo_root, base)?;
+    let changed = run_git(repo_root, &["diff", "--name-only", &merge_base])?
+        .ok_or_else(|| anyhow::anyhow!("git diff against {base} failed"))?;
+    if !changed.trim().is_empty() {
+        return Ok(true);
+    }
+    let untracked = run_git(repo_root, &["ls-files", "--others", "--exclude-standard"])?
+        .ok_or_else(|| anyhow::anyhow!("git ls-files failed"))?;
+    Ok(!untracked.trim().is_empty())
+}
+
+/// The commit where HEAD's branch left `base`. `base...HEAD` diffs against
+/// it; diffing it against the working tree also takes in uncommitted changes.
+fn merge_base(repo_root: &Path, base: &str) -> anyhow::Result<String> {
+    let out = run_git(repo_root, &["merge-base", base, "HEAD"])?.ok_or_else(|| {
+        ChangesetterError::BaseRefUnavailable {
+            base: base.to_string(),
+        }
+    })?;
+    Ok(out.trim().to_string())
+}
+
+/// Runs git and returns stdout, or `None` if git exited with an error.
+pub(crate) fn run_git(repo_root: &Path, args: &[&str]) -> anyhow::Result<Option<String>> {
     let output = Command::new("git")
-        .args(["show", &format!("HEAD:{path}")])
+        .args(args)
         .current_dir(repo_root)
         .output()
         .map_err(|_| ChangesetterError::GitNotFound)?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "git show failed for {path}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    String::from_utf8(output.stdout).with_context(|| format!("{path} is not valid UTF-8"))
+    Ok(output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned()))
 }
 
 pub fn git_add(repo_root: &Path, paths: &[&str]) -> anyhow::Result<()> {

@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod cargo;
 pub mod detector;
 pub mod dotnet;
+pub mod godot;
 pub mod helm;
 pub mod npm;
 pub mod python;

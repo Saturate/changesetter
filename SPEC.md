@@ -92,8 +92,11 @@ When stdin is not a TTY (headless CI), requires `--package`, `--bump`, and `--me
 ```
 changesetter add
 changesetter add --package mylib --bump patch --message "Fixed null handling"
+changesetter add --package mylib --bump minor --type feat --scope api --message "Batch endpoint"
 changesetter add --no-bump  # none-bump, opens editor for description
 ```
+
+`--message` is written as plain text, the body's first line. `--type` and `--scope` add `type:` and `scope:` to the front matter; they only decide where the entry is listed in a grouped changelog.
 
 To retract a changeset, delete the file from `.changeset/` manually. No dedicated command needed.
 
@@ -280,6 +283,7 @@ Walk the repo for known manifest files and register each as a package:
 | `pyproject.toml` | Python | `project.version` or `tool.poetry.version` |
 | `*.csproj` | .NET | `PropertyGroup > Version` (XML; requires `quick-xml`, must preserve structure/comments/conditionals) |
 | `Chart.yaml` | Helm | `version` |
+| `project.godot` | Godot | `config/version` |
 
 Package name is derived from the manifest (crate name, npm name, etc.).
 
@@ -380,6 +384,17 @@ per_package = true               # monorepo: each package gets its own CHANGELOG
 none_bump = "section"            # "section" | "file" | "omit"
 none_bump_file = "CHANGELOG-internal.md"  # only if none_bump = "file"
 none_bump_heading = "Internal"   # heading for none-bump section, default "Internal"
+group = false                    # true: list entries under a heading per conventional type
+# [[changelog.groups]]           # ordered groups; listing any turns grouping on
+# title = "Features"
+# types = ["feat"]               # entry types this group takes (empty: any)
+# match = "*security*"           # optional case-insensitive glob over the summary
+# skip = false                   # true: leave matching entries out of the changelog
+links = false                    # true: PR/commit after each grouped entry, #123 -> issue links
+# repo_url = "https://github.com/o/r"  # web URL for links; default: the origin remote
+# [[changelog.issue_links]]      # more issue references: prefix + digits -> url with {id}
+# prefix = "PROJ-"
+# url = "https://jira.example.com/browse/PROJ-{id}"
 
 # Tag format
 [tag]
@@ -425,13 +440,20 @@ Initial release.
 - Entries grouped under the version heading
 - `none`-bump entries go under the configured heading (default: "Internal")
 - Newest version at the top
-- Unreleased changes can optionally go under an `## Unreleased` heading
+- `none`-bump entries with no version section to live in (a release run with only `none` changesets, or a package that isn't released this time) go under an `## Unreleased` heading at the top of the changelog, with the none-bump heading inside it. Later runs append to it
+- The next release written to that changelog folds the `## Unreleased` section into its new version section and removes the heading, so the entries ship with that version's notes
+- `## Unreleased` is never a version: release-notes extraction skips it, and ends a version's notes at it, at other tools' version headings (`## [1.0.0]`, `## v1.0.0`) and at Keep a Changelog link references (`[1.0.0]: https://...`)
+- Absorbed Unreleased entries are part of the release's changelog text, so tag messages and GitHub release notes carry them too
+- A run with only `none` changesets creates no tags and commits as `chore: add unreleased changelog notes`
+- With `none_bump = "omit"`, none of this is written
 
 ### Monorepo changelogs
 
 When `changelog.per_package = true` (default for monorepos), each package gets its own `CHANGELOG.md` in its package directory.
 
 A changeset that references multiple packages (e.g. `mylib: patch` and `my-api: minor` in one file) has its full markdown body written to every referenced package's changelog. This matches changesets' behavior. If a user wants different descriptions per package, they write separate changeset files.
+
+A `none`-bump changeset goes to each named package's changelog, in the version section when that package is released in the same run and under `## Unreleased` otherwise. There's no root changelog in this mode, so a repo-wide `default: none` goes to every package's changelog (not to a private workspace root or an unnamed manifest). A changeset that bumps `a` and is `none` for `b` is listed only in `a`'s release.
 
 When `changelog.per_package = false`, a single root `CHANGELOG.md` groups entries by package:
 
@@ -647,7 +669,7 @@ Useful in CI to publish canary packages from feature branches for integration te
 
 ## Documentation site
 
-A [fumadocs](https://fumadocs.vercel.app/) site lives in `docs/`. This is a Next.js app with MDX content, deployed to GitHub Pages (or Vercel).
+A [fumadocs](https://fumadocs.vercel.app/) site lives in `docs/`. This is a Next.js app with MDX content, deployed to Vercel (https://changesetter-delta.vercel.app).
 
 Content structure:
 - **Getting started**: install, init, first changeset, first release

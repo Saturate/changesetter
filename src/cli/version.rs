@@ -24,6 +24,7 @@ pub fn run(args: &VersionArgs) -> anyhow::Result<()> {
         dry_run: args.dry_run,
         no_commit: args.no_commit,
         snapshot: args.snapshot.clone(),
+        origins: false,
     };
 
     executor::execute_version(&repo_root, &opts)?;

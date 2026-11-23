@@ -8,7 +8,9 @@ use crate::errors::ChangesetterError;
 
 #[derive(Args)]
 pub struct CheckArgs {
-    /// Base branch to compare against
+    /// Base branch to compare against. Counts changesets added since the
+    /// merge base, including staged and untracked ones. Passes when nothing
+    /// at all changed since the base.
     #[arg(long)]
     pub base: Option<String>,
 
@@ -32,6 +34,13 @@ pub fn run_in(repo_root: &Path, args: &CheckArgs) -> anyhow::Result<()> {
     }
 
     if found.is_empty() {
+        // Nothing to describe, e.g. a gate run on main against itself.
+        if let Some(base) = args.base.as_deref()
+            && !crate::git::has_changes_since(repo_root, base)?
+        {
+            eprintln!("No changes since {base}; no changeset needed.");
+            return Ok(());
+        }
         eprintln!("Run `changesetter add` to create one.");
         anyhow::bail!(ChangesetterError::NoChangesets);
     }
@@ -82,7 +91,7 @@ fn find_changesets(repo_root: &Path, base: Option<&str>) -> anyhow::Result<Vec<F
                     changeset: None,
                 });
             }
-            let content = crate::git::read_at_head(repo_root, &f.path)?;
+            let content = crate::git::read_changeset_file(repo_root, &f.path)?;
             let changeset = parser::parse(&content, Some(f.path.clone()))?;
             Ok(Found {
                 file: f.path,
@@ -402,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn json_reads_quoted_paths_and_renames_from_head() {
+    fn json_reads_quoted_paths_and_renames() {
         let dir = setup_repo();
         let changeset_dir = dir.path().join(".changeset");
         std::fs::create_dir(&changeset_dir).unwrap();
@@ -429,8 +438,6 @@ mod tests {
         )
         .unwrap();
         commit_all(dir.path(), "rename and add");
-        // Uncommitted edits must not change what the check sees.
-        std::fs::write(changeset_dir.join("fooREADME.md"), "garbage").unwrap();
 
         let report = find(dir.path(), Some("main"));
         let files: Vec<_> = report["changesets"]
@@ -481,21 +488,210 @@ mod tests {
         );
     }
 
-    #[test]
-    fn check_with_base_no_changesets_fails() {
-        let dir = setup_repo();
+    fn check_main(dir: &Path) -> anyhow::Result<()> {
+        run_in(
+            dir,
+            &CheckArgs {
+                base: Some("main".to_string()),
+                output: None,
+            },
+        )
+    }
 
+    #[test]
+    fn check_with_base_no_changes_passes() {
+        let dir = setup_repo();
         Command::new("git")
-            .args(["checkout", "-b", "feature"])
+            .args(["checkout", "-q", "-b", "feature"])
             .current_dir(dir.path())
             .output()
             .unwrap();
+        assert!(check_main(dir.path()).is_ok());
+    }
 
+    #[test]
+    fn check_base_against_itself_passes() {
+        let dir = setup_repo();
+        assert!(check_main(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn check_with_base_committed_change_without_changeset_fails() {
+        let dir = feature_branch();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "fn main() {}
+",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "code"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let err = check_main(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("no changeset"), "{err}");
+    }
+
+    #[test]
+    fn check_with_base_uncommitted_change_without_changeset_fails() {
+        let dir = feature_branch();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "fn main() {}
+",
+        )
+        .unwrap();
+        assert!(check_main(dir.path()).is_err());
+    }
+
+    #[test]
+    fn check_with_base_gitignored_change_only_passes() {
+        let dir = setup_repo();
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            "target/
+",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "ignore"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::fs::create_dir_all(dir.path().join("target")).unwrap();
+        std::fs::write(dir.path().join("target/out"), "x").unwrap();
+        assert!(check_main(dir.path()).is_ok());
+    }
+
+    fn feature_branch() -> tempfile::TempDir {
+        let dir = setup_repo();
+        std::fs::create_dir_all(dir.path().join(".changeset")).unwrap();
+        Command::new("git")
+            .args(["checkout", "-q", "-b", "feature"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        dir
+    }
+
+    fn write_changeset(dir: &Path, name: &str) {
+        std::fs::write(
+            dir.join(".changeset").join(name),
+            "---
+mylib: patch
+---
+
+#### Fix
+",
+        )
+        .unwrap();
+    }
+
+    fn files(dir: &Path) -> Vec<String> {
+        crate::git::diff_changeset_files(dir, "main", ".changeset")
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .collect()
+    }
+
+    #[test]
+    fn check_with_base_counts_untracked_changeset() {
+        let dir = feature_branch();
+        write_changeset(dir.path(), "untracked.md");
+
+        assert_eq!(files(dir.path()), [".changeset/untracked.md"]);
         let args = CheckArgs {
             base: Some("main".to_string()),
             output: None,
         };
-        let result = run_in(dir.path(), &args);
-        assert!(result.is_err());
+        assert!(run_in(dir.path(), &args).is_ok());
+    }
+
+    #[test]
+    fn check_with_base_counts_staged_and_committed_once() {
+        let dir = feature_branch();
+        write_changeset(dir.path(), "committed.md");
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "cs"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        write_changeset(dir.path(), "staged.md");
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            files(dir.path()),
+            [".changeset/committed.md", ".changeset/staged.md"]
+        );
+    }
+
+    #[test]
+    fn check_with_base_skips_ignored_and_deleted() {
+        let dir = feature_branch();
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            ".changeset/ignored.md
+",
+        )
+        .unwrap();
+        write_changeset(dir.path(), "ignored.md");
+        write_changeset(dir.path(), "gone.md");
+        Command::new("git")
+            .args(["add", ".changeset/gone.md"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "cs"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::fs::remove_file(dir.path().join(".changeset/gone.md")).unwrap();
+
+        assert!(files(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn check_with_unknown_base_reports_unavailable() {
+        let dir = feature_branch();
+        let err = crate::git::diff_changeset_files(dir.path(), "nope", ".changeset").unwrap_err();
+        assert!(err.to_string().contains("\"nope\""), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_with_base_refuses_symlinked_changeset() {
+        let dir = feature_branch();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.md");
+        std::fs::write(&secret, "---\nmylib: patch\n---\n\nsecret\n").unwrap();
+        std::os::unix::fs::symlink(&secret, dir.path().join(".changeset/link.md")).unwrap();
+        commit_all(dir.path(), "symlink");
+
+        let err = find_changesets(dir.path(), Some("main"))
+            .err()
+            .expect("symlink must be refused");
+        assert!(err.to_string().contains("not a regular file"), "{err}");
     }
 }

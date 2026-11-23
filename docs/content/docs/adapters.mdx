@@ -16,6 +16,7 @@ changesetter auto-detects packages by scanning for known manifest files using `g
 | `pyproject.toml` | Python (Poetry) | `tool.poetry.name` | `tool.poetry.version` |
 | `*.csproj` | .NET | `AssemblyName` or filename | `PropertyGroup > Version` |
 | `Chart.yaml` | Helm | `name` | `version` |
+| `project.godot` | Godot | `config/name` under `[application]` | `config/version` under `[application]` |
 
 ## Cargo
 
@@ -71,8 +72,27 @@ Version writes use targeted string replacement to preserve XML comments, conditi
 
 Reads `name` and `version` from `Chart.yaml`. Version writes replace only the `version:` line, preserving field ordering and other fields like `appVersion`.
 
+## Godot
+
+Reads `config/name` and `config/version` from the `[application]` section of `project.godot`. Version writes replace only the `config/version` line and keep the rest of the file byte for byte, line endings included.
+
+Godot leaves `config/version` out until a version is set. Auto-detection skips a project without it, the same way `.csproj` files without `<Version>` are skipped, so a demo or example project inside a library repo doesn't become a package. To start versioning a project that has no version yet, list it under `[[package]]`: it then reads as `0.0.0`, and the first release inserts `config/version="x.y.z"` directly after `config/name`. After that it is auto-detected like any other manifest.
+
+The version must be semver (`x.y.z`). A value such as `"1.0"` stops changesetter with an error naming the file.
+
+`config/name` is usually a display name such as `"My Game"`. To use a shorter key in changesets, set `name` in `changesetter.toml`:
+
+```toml
+[[package]]
+name = "my-game"
+path = "."
+type = "godot"
+```
+
+Changesets then use `my-game: minor`. A Godot project has no dependency list, so it never takes part in dependency cascades.
+
 ## Detection
 
 Detection uses `git ls-files` to scan only tracked files, avoiding `node_modules/`, `target/`, `vendor/`, and other gitignored directories. Falls back to a filesystem walk with a hardcoded exclude list if not in a git repo.
 
-To override auto-detection, list packages explicitly in `changesetter.toml`. Config-defined packages are merged with auto-detected ones. Use the `ignore` list to exclude auto-detected packages you don't want versioned.
+To override auto-detection, list packages explicitly in `changesetter.toml`. Config-defined packages are merged with auto-detected ones. A configured `name` replaces the name read from the manifest, and `type` picks which adapter reads the path when a directory holds more than one manifest. Use the `ignore` list to exclude auto-detected packages you don't want versioned.

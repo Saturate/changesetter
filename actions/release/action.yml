@@ -101,18 +101,26 @@ runs:
           DRAFT_FLAG="--draft"
         fi
 
-        echo "$RELEASES" | jq -c '.[]' | while read -r release; do
-          TAG=$(echo "$release" | jq -r '.tag')
-          NAME=$(echo "$release" | jq -r '.name')
-          VERSION=$(echo "$release" | jq -r '.version')
-          CHANGELOG=$(echo "$release" | jq -r '.changelog')
+        while read -r release; do
+          TAG=$(jq -r '.tag' <<<"$release")
+          NAME=$(jq -r '.name' <<<"$release")
+          VERSION=$(jq -r '.version' <<<"$release")
+          CHANGELOG=$(jq -r '.changelog' <<<"$release")
 
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "GitHub Release ${TAG} already exists"
+            continue
+          fi
+
+          FLAGS=()
+          if [ "$DRAFT" = "true" ]; then FLAGS+=(--draft); fi
+          case "$VERSION" in *-*) FLAGS+=(--prerelease) ;; esac
           gh release create "$TAG" \
-            --title "${NAME} v${VERSION}" \
+            --title "${NAME:+${NAME} }v${VERSION}" \
             --notes "$CHANGELOG" \
-            $DRAFT_FLAG \
-            --verify-tag || true
-        done
+            "${FLAGS[@]}" \
+            --verify-tag
+        done < <(jq -c '.[]' <<<"$RELEASES")
 
     # Version PR mode (version-pr: true)
     - name: Find version PR merge to release
@@ -209,9 +217,10 @@ runs:
           # recovery check on a later push doesn't re-trigger publish steps
           # gated on `released`.
           ACTED=false
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null; then
+          LS_RC=0; git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null 2>&1 || LS_RC=$?
+          if [ "$LS_RC" -eq 0 ]; then
             echo "${TAG} is already on origin"
-          else
+          elif [ "$LS_RC" -eq 2 ]; then
             # Tag the way `changesetter release` would ([release] tag_annotated).
             if [ "$(jq -r '.tag_annotated' "$WORK/after.json")" = "true" ]; then
               git tag -a -f "$TAG" "$RELEASE_SHA" -m "$NOTES" --cleanup=verbatim
@@ -221,6 +230,9 @@ runs:
             git push origin "refs/tags/${TAG}"
             echo "Tagged ${TAG}"
             ACTED=true
+          else
+            echo "::error::Failed to check tag ${TAG} (git ls-remote exit $LS_RC)"
+            exit 1
           fi
 
           if [ "$GITHUB_RELEASE" = "true" ]; then
@@ -231,7 +243,7 @@ runs:
               if [ "$DRAFT" = "true" ]; then FLAGS+=(--draft); fi
               case "$VERSION" in *-*) FLAGS+=(--prerelease) ;; esac
               gh release create "$TAG" --verify-tag \
-                --title "${NAME} v${VERSION}" --notes "$NOTES" "${FLAGS[@]}"
+                --title "${NAME:+${NAME} }v${VERSION}" --notes "$NOTES" "${FLAGS[@]}"
               ACTED=true
             fi
           fi
@@ -286,6 +298,7 @@ runs:
 
         # Compute what would change
         STATUS=$(changesetter status 2>&1 || true)
+        PLAN=$(changesetter status --output json)
 
         # Create or reset the version branch
         git checkout -B "$BRANCH"
@@ -295,13 +308,55 @@ runs:
         # would open a version PR that releases nothing when merged.
         changesetter version --no-commit
 
-        # New changelog entries, from every changelog file the packages write
-        # to (per-package changelogs included).
-        mapfile -t CHANGELOGS < <(changesetter status --output json | jq -r '[.packages[].changelog] | unique | .[]')
-        CHANGELOG_DIFF=$(git diff -- "${CHANGELOGS[@]}" | grep "^+" | grep -v "^+++" | sed 's/^+//' || true)
-
         # Stage and commit
         git add -A
+
+        # The preview is each release's new version section, read the way the
+        # release after the merge reads it. A diff would miss notes folded in
+        # from "## Unreleased", which are unchanged lines that only moved.
+        # Read from the working tree, so a first release's new CHANGELOG.md is
+        # covered. Releases sharing one section (a grouped monorepo changelog)
+        # are shown once under all their names.
+        # One compact JSON object per release, not tab-separated fields: tab
+        # is IFS whitespace, so read collapses an empty name (a Cargo
+        # workspace root with [workspace.package] has none) and shifts the
+        # version and changelog path into the wrong fields.
+        PREVIEW_LABELS=(); BODIES=(); KEYS=()
+        while read -r release; do
+          name=$(jq -r '.name' <<<"$release")
+          version=$(jq -r '.version' <<<"$release")
+          file=$(jq -r '.changelog' <<<"$release")
+          PKG_LABEL="${name:+${name}@}${version}"
+          NOTES=$("${GITHUB_ACTION_PATH}/release-notes.sh" "$version" "$file")
+          KEY="${file}"$'\n'"${NOTES}"
+          FOUND=""
+          for i in "${!KEYS[@]}"; do
+            if [ "${KEYS[$i]}" = "$KEY" ]; then FOUND=$i; break; fi
+          done
+          if [ -n "$FOUND" ]; then
+            PREVIEW_LABELS[FOUND]="${PREVIEW_LABELS[$FOUND]}, ${PKG_LABEL}"
+          else
+            KEYS+=("$KEY"); PREVIEW_LABELS+=("$PKG_LABEL"); BODIES+=("$NOTES")
+          fi
+        # A release with no matching package has no changelog of its own to
+        # read; release-notes.sh would fall back to the root CHANGELOG.md.
+        done < <(jq -c '.packages as $p | .releases[] | . as $r
+          | ([$p[] | select(.name == $r.name) | .changelog][0]) as $c
+          | select($c != null) | {name: $r.name, version: $r.version, changelog: $c}' <<<"$PLAN")
+
+        CHANGELOG_PREVIEW=""
+        for i in "${!KEYS[@]}"; do
+          CHANGELOG_PREVIEW+="### ${PREVIEW_LABELS[$i]}"$'\n\n'"${BODIES[$i]}"$'\n\n'
+        done
+        if [ ${#KEYS[@]} -eq 0 ]; then
+          # Nothing to release, only none-bump notes going under Unreleased:
+          # the changelog lines this run adds. Diffed from the index, which
+          # covers a changelog that's a new, untracked file.
+          CHANGELOGS=()
+          while IFS= read -r file; do CHANGELOGS+=("$file"); done < <(jq -r '[.packages[].changelog] | unique | .[]' <<<"$PLAN")
+          CHANGELOG_PREVIEW=$(git diff --cached -- "${CHANGELOGS[@]}" | grep "^+" | grep -v "^+++" | sed 's/^+//' || true)
+        fi
+
         git commit -m "chore: version packages" --allow-empty
 
         # Force push the version branch
@@ -327,12 +382,12 @@ runs:
 
         ## Changelog preview
 
-        ${CHANGELOG_DIFF}
+        ${CHANGELOG_PREVIEW}
         PREOF
         )
 
         if [ -n "$EXISTING_PR" ]; then
-          gh pr edit "$EXISTING_PR" --body "$PR_BODY"
+          gh pr edit "$EXISTING_PR" --body "$PR_BODY" --add-label "$LABEL"
           PR_URL=$(gh pr view "$EXISTING_PR" --json url --jq '.url')
           echo "Updated existing PR #${EXISTING_PR}"
         else

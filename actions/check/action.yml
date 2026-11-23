@@ -94,6 +94,8 @@ runs:
             if (errors) body += `\n\n\`\`\`\`\n${errors.slice(-4000)}\n\`\`\`\``;
           } else if (process.env.CHECK_EXIT_CODE !== '0') {
             body = `${marker}\n### Changeset Check: Missing\n\nNo changeset found. Run \`changesetter add\` to create one.`;
+          } else if (!(report.changesets ?? []).length) {
+            body = `${marker}\n### Changeset Check: Passed\n\nNo changes since the base branch; no changeset needed.`;
           } else {
             const changesets = report.changesets ?? [];
             const added = changesets.filter((cs) => !cs.deleted).length;
