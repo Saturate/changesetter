@@ -23,9 +23,9 @@ type = "npm"
 
 | Field | Description |
 |---|---|
-| `name` | Package name (used in changeset frontmatter) |
+| `name` | Package name (used in changeset frontmatter). Replaces the name read from the manifest. Keep it equal to the manifest name for packages that other packages depend on, since dependency cascades match on manifest names |
 | `path` | Path to the package directory, relative to repo root |
-| `type` | Ecosystem type: `cargo`, `cargo-workspace`, `npm`, `python`, `dotnet`, `helm` |
+| `type` | Ecosystem type: `cargo`, `cargo-workspace`, `npm`, `python`, `dotnet`, `helm`, `godot`. Picks the adapter that reads `path`; without it the first adapter that finds a manifest wins |
 | `members` | For workspace types: `"all"` to bump all members together |
 
 ## Ignore
@@ -35,6 +35,14 @@ Packages that are auto-detected but should never be versioned:
 ```toml
 ignore = ["examples", "internal-tools", "test-fixtures"]
 ```
+
+Entries can use `*` (any run of characters, including none) and `?` (exactly one character), so one entry can cover a family of packages that grows over time:
+
+```toml
+ignore = ["*_core", "*_gd", "example-?"]
+```
+
+An entry without wildcards must match the whole name. A nameless package, such as a Cargo workspace root with no `[workspace.package]` version, has the empty name `""`, which `ignore = [""]` excludes. `*` matches the empty name too, so `"*"` ignores every package.
 
 Ignored packages are excluded from the release plan, changelogs, and tagging.
 
@@ -102,8 +110,145 @@ none_bump_heading = "Internal"
 | `per_package` | `false` | When `true`, each package gets its own CHANGELOG.md in its directory |
 | `none_bump` | `"section"` | How to handle none-bump entries: `"section"` (under a heading), `"omit"` (exclude) |
 | `none_bump_heading` | `"Internal"` | Heading for none-bump entries when `none_bump = "section"` |
+| `group` | `false` | Group each version's entries by type, using the default groups |
+| `groups` | `[]` | Your own ordered groups (`[[changelog.groups]]`). Listing any turns grouping on |
+| `links` | `false` | Link entries to their pull request and commit, and issue references to their issues. See [Links](#links) |
+| `repo_url` | the `origin` remote | The repository's web URL for links |
+| `issue_links` | `[]` | More issue references to link (`[[changelog.issue_links]]`) |
 
 Single-package repos always use a single root CHANGELOG.md regardless of `per_package`.
+
+### Grouped changelogs
+
+By default a version section lists its changeset bodies one after another. With grouping on, each entry goes under a heading for its [type](/changeset-format#type-and-scope) and is written as a list item: its summary, with `**scope:**` in front when it has one, and the rest of its body indented below.
+
+```toml
+[changelog]
+group = true
+```
+
+```markdown
+## 1.3.0 - 2026-11-12
+
+### Breaking changes
+
+- New save format
+
+### Features
+
+- **world:** New biome generator
+
+### Fixes
+
+- Buttons no longer flicker
+
+### Internal
+
+- Cache cargo in CI
+```
+
+`group = true` uses these groups:
+
+| Title | Types |
+|---|---|
+| Breaking changes | `breaking` |
+| Features | `feat` |
+| Fixes | `fix` |
+| Performance | `perf` |
+| Reverts | `revert` |
+| Under the hood | `docs`, `refactor`, `test`, `ci`, `chore`, `build`, `style`, `deps` |
+
+To pick your own, list them in order. Each entry goes to the first group that takes it. A group takes an entry when the entry's type is in `types` (or `types` is left out) and its summary matches `match` (or `match` is left out). `match` is a case-insensitive glob: `*` matches any run of characters and `?` matches one. `skip = true` leaves matching entries out of the changelog, though they still count towards the bump. A breaking entry (type `breaking`) is never skipped: a `skip` group passes it on to the next group that takes it, or to "Other changes".
+
+```toml
+[[changelog.groups]]
+title = "Security"
+match = "*security*"
+
+[[changelog.groups]]
+title = "Features"
+types = ["feat"]
+
+[[changelog.groups]]
+title = "Fixes"
+types = ["fix", "perf"]
+
+[[changelog.groups]]
+title = "Tests"
+types = ["test"]
+skip = true
+```
+
+`match` sees the summary as listed, after a conventional prefix and its scope are taken off, so `fix(security): ...` has the summary `...` and scope `security`. To group by scope, give those changesets a type of their own.
+
+An entry no group takes goes under `### Other changes` at the end. Groups come out in the order listed, and a group with no entries in that version is left out. Changelog entries changesetter writes itself (a package bumped by its fixed group or a dependency) have type `deps`.
+
+The summary is the body's first block on one line: a heading's text, or a paragraph's lines joined. When a body starts with a list, its first item is the summary and the other items join the group's list. A body that starts with code or a table has no summary, and goes whole under an item of its own.
+
+None-bump entries stay under the `none_bump_heading`, as list items too. So no group, default or your own, can have that title, and neither can `Other changes`: loading the config fails if one does. With `per_package = false` in a monorepo, the groups sit under each package's `###` heading, at `####`. Grouping changes only what new versions look like. Existing sections stay as written, and the release action's notes extraction reads both layouts.
+
+### Links
+
+```toml
+[changelog]
+group = true
+links = true
+
+[[changelog.issue_links]]
+prefix = "GAME-"
+url = "https://jira.example.com/browse/GAME-{id}"
+```
+
+With `links = true`, each entry in a grouped changelog ends with the pull request and commit it came from, and issue references in entries become links:
+
+```markdown
+### Features
+
+- **world:** New biomes, closes [#12](https://github.com/acme/game/issues/12) and [GAME-7](https://jira.example.com/browse/GAME-7) ([#31](https://github.com/acme/game/pull/31), [63c42f2](https://github.com/acme/game/commit/63c42f2…))
+```
+
+The links point at `repo_url`, which defaults to the `origin` remote turned into a web URL (credentials and `.git` dropped). GitHub, GitLab (any host with `gitlab` in its name) and Azure DevOps URLs are understood; other hosts get GitHub-style paths. Without a usable URL, the pull request and commit are written as plain text: `(#31, 63c42f2)`.
+
+Where an entry came from is read from local git, with no network calls:
+
+- The commit is the latest one that added the changeset file, so a name reused after an earlier release deleted it gets its new commit. Its author goes into `--output json` as `author`.
+- The pull request number comes from that commit's message when it was squash-merged (`Title (#31)`). Otherwise it comes from the merge commit that brought it into the current branch: `Merge pull request #31 from ...`, GitLab's `See merge request group/project!31` or Azure DevOps' `Merged PR 31: ...`. When a feature branch was merged into another branch (say `develop`) that was then merged in, the feature's pull request wins over the later one. A changeset committed straight to the branch, or brought in by a rebase or fast-forward merge, has no pull request.
+- This needs the history, so check out with `fetch-depth: 0` in CI. A changeset that isn't committed yet, or whose commit is beyond a shallow clone's history, gets no pull request or commit.
+
+Issue references are a prefix followed by digits, standing alone: not inside a word or after a `\`. Code (fenced, indented or in backticks), existing links, link reference definitions, URLs written out in the text and HTML tags and anchors are left alone. `#123` links to the repo's issues on GitHub and GitLab. `[[changelog.issue_links]]` adds other prefixes, and the digits replace `{id}` in `url`. A `#` entry there replaces the default.
+
+The pull request and commit are added only in grouped changelogs, where every entry is one list item. In a flat changelog, `links = true` links issue references only. `status --output json` and `release --output json` have `commit`, `author` and `pr` for every entry either way. Without `--output json` or `links`, the history isn't read at all.
+
+`repo_url` defaults to the `origin` remote. A remote with no web pages (a local path or `file://`) gives no links, and an SSH host alias from `~/.ssh/config` can't be turned into the real host, so set `repo_url` in those cases.
+
+### None-bump entries without a release
+
+None-bump entries normally go under the `none_bump_heading` inside the version section being released. When a changelog gets none-bump entries but no new version (a release run with only `none` changesets, or with `per_package = true`, a package that isn't released this time), they go under an `## Unreleased` heading at the top of that changelog instead:
+
+```markdown
+# Changelog
+
+## Unreleased
+
+### Internal
+
+#### Updated CI configuration
+
+## 1.2.0 - 2026-07-25
+...
+```
+
+Later runs add to the same section: new entries go under its none-bump heading, next to any hand-written subsections like `### Added`. A Keep a Changelog style `## [Unreleased]` heading is kept as spelled, and a new one uses brackets when the file's version headings do. New sections always go at the top, above every existing version.
+
+The next release written to that changelog moves the section's contents into its new version section and removes the Unreleased heading. They then reach every place the release's notes go, exactly once: the changelog, the annotated tag message, the `changelog` field of `release --output json` and the GitHub release the release action creates. The release action's notes extraction never treats an Unreleased heading as a version.
+
+A release run with only none-bump changesets creates no tags or GitHub releases. Its commit is `chore: add unreleased changelog notes` (or `chore: remove none-bump changesets` when `omit` leaves nothing to write), since there are no versions for `commit_message` to name.
+
+With `per_package = true`, each package named in the changeset gets the entry in its own changelog. A repo-wide `default: none` changeset goes to every package's changelog, since this mode writes no root changelog. A private workspace root (`"private": true` with `"workspaces"`) or a manifest with no name doesn't count as a package here.
+
+A changeset that bumps one package and is `none` for another (`a: minor`, `b: none`) is listed only in `a`'s release, in per-package mode too: `b`'s changelog doesn't get it.
+
+With `none_bump = "omit"`, no Unreleased section is written.
 
 ## Tag format
 
@@ -117,7 +262,7 @@ format = "v{version}"
 | `{version}` | The new version number (e.g. `0.2.0`) |
 | `{name}` | The package name |
 
-Defaults: `v{version}` for single-package repos, `{name}@v{version}` for monorepos.
+Defaults: `v{version}` for single-package repos, `{name}@v{version}` for monorepos. A repo counts as single-package when exactly one package is left after `ignore`, so a configured `[[package]]` with its helper manifests ignored gets plain `v1.2.3` tags.
 
 ## Release
 

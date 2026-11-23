@@ -72,7 +72,7 @@ default: patch
 #### Fixed a bug
 ```
 
-`default` resolves to the single detected package name. In monorepos (more than one package), `default` is not valid; use the real package names.
+`default` resolves to the single detected package name. In monorepos (more than one package), `default` can't take a version bump; use the real package names. `default: none` is still allowed and marks a repo-wide change: with `per_package = true` it goes to every package's changelog, otherwise to the root changelog.
 
 ## None-bump changesets
 
@@ -90,11 +90,53 @@ Switched from ubuntu-20.04 to ubuntu-24.04 runners.
 
 None-bump entries appear in the changelog under a configurable heading (default: "Internal"). They pass `changesetter check` but don't trigger a version bump.
 
+A changeset that bumps one package and is `none` for another is listed only in the bumped package's release, also with `per_package = true`.
+
+When the changelog gets no new version in the same release run, the entries go under an `## Unreleased` heading at the top and move into the next version that changelog gets. See [Configuration](/configuration#none-bump-entries-without-a-release).
+
+## Type and scope
+
+A changeset can name a conventional type and a scope. They decide only where the entry is listed in a [grouped changelog](/configuration#grouped-changelogs) and what `--output json` reports. The bump alone decides the version.
+
+```markdown
+---
+mylib: minor
+type: feat
+scope: world
+---
+
+New biome generator
+```
+
+`changesetter add --type feat --scope world` writes the same front matter. The type can be any word: `feat`, `fix`, `perf`, `docs`, `refactor`, `test`, `ci`, `chore`, `revert`, `build`, `style` or one of your own. Without a `type:`, it's read from a conventional prefix on the summary (the body's first line), like git-cliff reads commit messages:
+
+```markdown
+---
+mylib: patch
+---
+
+fix(ui): Buttons no longer flicker
+```
+
+That entry gets type `fix` and scope `ui`, and its summary is `Buttons no longer flicker`. The summary is the body's first heading or paragraph, joined onto one line, or its first list item. Only a real heading loses its `#`s, so `#123 crash on save` stays as written. `feat!: ...` (with `!`) gives type `breaking`. Only known types and the types your groups name count as a prefix, so `Note: ...` stays part of the summary. A `type:` or `scope:` in the front matter wins over the prefix, and the prefix is still stripped.
+
+With neither, the type follows the bump: `major` is `breaking`, `minor` is `feat`, `patch` is `fix` and `none` is `chore`. A changeset typed `breaking` that doesn't bump major gets a warning from `add`, `status` and `release`. It isn't an error, because the bump still decides the version.
+
+`type` and `scope` are keys in the same map as the packages. A value that's a bump level (`type: patch`, or `scope: none`) still names a package called `type` or `scope`, so leave the key out rather than writing `none`. A number or `true`/`false` is read as its text (`scope: 2024`). The original changesets tool doesn't know these keys, so leave them out if it also reads your changesets.
+
 ## Frontmatter rules
 
-- Keys are package names as defined in config or auto-detected from manifests
-- Values must be one of: `none`, `patch`, `minor`, `major`
+- Keys are package names as defined in config or auto-detected from manifests, plus the optional `type` and `scope`
+- Package values must be one of: `none`, `patch`, `minor`, `major`
 - Keys with `@` or `/` must be quoted
 - Multiple packages allowed in one changeset
 - Empty frontmatter is an error
-- The body after the closing `---` is markdown; the first heading becomes the changelog entry title
+- The body after the closing `---` is markdown. Its first line is the entry's summary, whether it's plain text (what `changesetter add -m` writes) or a heading
+
+## Headings in the body
+
+The changelog finds its version, Unreleased and none-bump sections by their `## ` and `### ` headings, so headings in a changeset body are moved below them when the body is written to the changelog (and to tag messages and release notes). A heading on the body's first line becomes the entry heading, `####`. Every other heading of level 1 to 4 becomes `#####`, one level below the entry heading: `## Migration` later in a body renders as `##### Migration`. This covers `#` headings indented up to 3 spaces (the indent is kept) and underlined (Setext) headings, where a plain paragraph sits over `===` or `---`. A `---` after a blank line, a list item, a quote or a table row is a thematic break or part of that block, and is left alone. Levels 5 and 6 are left as written. A version or Unreleased link reference definition at the start of a line (`[1.0.0]: https://...`) gets one space of indent, so the changelog doesn't read it as Keep a Changelog's trailing links; it's still the same link.
+
+Code is left as written too: changing a line in a fenced code block (```` ``` ```` or `~~~`) would change the sample. A code block the body never closes is closed at the end of the body, so the rest of the changelog doesn't render as code.
+
+The changelog is read line by line, without tracking code blocks, so one case isn't supported: a line inside a code block in a changeset body that starts with `## `, `### ` or a version link reference (`[1.0.0]: https://...`) at the start of the line. Once written, it ends the entry's section there, cutting the release notes short. `changesetter add` and `changesetter status` print a warning for such a line; indent it or reword it if the sample allows.

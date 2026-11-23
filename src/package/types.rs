@@ -83,6 +83,7 @@ pub enum PackageType {
     Python,
     Helm,
     Dotnet,
+    Godot,
 }
 
 impl fmt::Display for PackageType {
@@ -94,6 +95,7 @@ impl fmt::Display for PackageType {
             PackageType::Python => write!(f, "python"),
             PackageType::Helm => write!(f, "helm"),
             PackageType::Dotnet => write!(f, "dotnet"),
+            PackageType::Godot => write!(f, "godot"),
         }
     }
 }

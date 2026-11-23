@@ -7,6 +7,7 @@ use crate::errors::ChangesetterError;
 use crate::package::adapter::Adapter;
 use crate::package::cargo::CargoAdapter;
 use crate::package::dotnet::DotnetAdapter;
+use crate::package::godot::GodotAdapter;
 use crate::package::helm::HelmAdapter;
 use crate::package::npm::NpmAdapter;
 use crate::package::python::PythonAdapter;
@@ -17,6 +18,9 @@ pub struct ExecuteOptions {
     pub dry_run: bool,
     pub no_commit: bool,
     pub snapshot: Option<String>,
+    /// Read where each changeset came from in git, for `--output json`.
+    /// Always done when `[changelog] links` is on.
+    pub origins: bool,
 }
 
 pub struct ExecuteResult {
@@ -29,7 +33,7 @@ pub struct ExecuteResult {
 pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Result<ExecuteResult> {
     let config = Config::load(repo_root)?;
     let changeset_dir = config.changeset_dir(repo_root);
-    let changesets = reader::read_changesets(&changeset_dir)?;
+    let changesets = read_changesets(repo_root, &config, opts)?;
 
     if changesets.is_empty() {
         eprintln!("No pending changesets, nothing to release.");
@@ -38,7 +42,7 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
                 releases: vec![],
                 none_entries: vec![],
             },
-            date: String::new(),
+            date: String::default(),
             is_monorepo: false,
             config,
         });
@@ -53,13 +57,16 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     } else {
         pre_state.as_ref()
     };
-    let release_plan = plan::assemble(&changesets, &packages, &config, pre_ref);
+    let mut release_plan = plan::assemble(&changesets, &packages, &config, pre_ref);
+    for warning in release_plan.breaking_warnings() {
+        eprintln!("{warning}");
+    }
 
     if release_plan.releases.is_empty() && release_plan.none_entries.is_empty() {
         eprintln!("No pending changesets, nothing to release.");
         return Ok(ExecuteResult {
             plan: release_plan,
-            date: String::new(),
+            date: String::default(),
             is_monorepo,
             config,
         });
@@ -94,60 +101,27 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     for release in &release_plan.releases {
         apply_version_bump(repo_root, &release.name, &release.version, &packages)?;
     }
+    run_post_bump_hooks(repo_root, &config)?;
 
-    if !config.hooks.post_bump.is_empty() {
-        for hook in &config.hooks.post_bump {
-            eprintln!("Running post-bump hook: {hook}");
-            let status = std::process::Command::new("sh")
-                .args(["-c", hook])
-                .current_dir(repo_root)
-                .status()?;
-            if !status.success() {
-                anyhow::bail!("post-bump hook failed: {hook}");
-            }
-        }
-    }
+    let writes = write_changelogs(
+        repo_root,
+        &release_plan,
+        &packages,
+        &config,
+        &date,
+        is_monorepo,
+    )?;
+    // Tag messages and the JSON output read `changelog`, so it has to carry
+    // what landed in the version section, absorbed Unreleased notes included.
+    writes.apply_to(&mut release_plan);
 
-    if config.changelog.per_package && is_monorepo {
-        generator::write_per_package_changelogs(&release_plan, &config.changelog, &date)?;
-    } else {
-        let entry = generator::generate_changelog_entry(
-            &release_plan,
-            &config.changelog,
-            &date,
-            is_monorepo,
-        );
-        let changelog_path = repo_root.join(&config.changelog.file);
-        generator::update_changelog_file(&changelog_path, &entry)?;
-    }
-
-    for cs in &changesets {
-        if let Some(name) = &cs.filename {
-            let path = changeset_dir.join(format!("{name}.md"));
-            if path.exists() {
-                std::fs::remove_file(&path)?;
-            }
-        }
-    }
-
+    remove_changesets(&changeset_dir, &changesets)?;
     if let Some(state) = &pre_state {
-        if state.mode == "pre" {
-            let mut updated = state.clone();
-            for release in &release_plan.releases {
-                let counter = updated
-                    .packages_released
-                    .entry(release.name.clone())
-                    .or_insert(0);
-                *counter += 1;
-            }
-            crate::release::pre::write_pre_state(&changeset_dir, &updated)?;
-        } else if state.mode == "exit" {
-            crate::release::pre::remove_pre_state(&changeset_dir)?;
-        }
+        update_pre_state(&changeset_dir, state, &release_plan)?;
     }
 
     if !opts.no_commit {
-        commit_version_changes(repo_root, &release_plan, &config, is_monorepo)?;
+        commit_version_changes(repo_root, &release_plan, &config, &writes.paths)?;
     }
 
     for release in &release_plan.releases {
@@ -163,6 +137,88 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
         is_monorepo,
         config,
     })
+}
+
+/// The pending changesets, with where each came from in git when the JSON
+/// output or `[changelog] links` will use it.
+fn read_changesets(
+    repo_root: &Path,
+    config: &Config,
+    opts: &ExecuteOptions,
+) -> anyhow::Result<Vec<crate::changeset::types::Changeset>> {
+    let mut changesets = reader::read_changesets(&config.changeset_dir(repo_root))?;
+    if opts.origins || config.changelog.links {
+        crate::release::origin::annotate(
+            repo_root,
+            config.changeset_dir_relative(),
+            &mut changesets,
+        )?;
+    }
+    Ok(changesets)
+}
+
+fn run_post_bump_hooks(repo_root: &Path, config: &Config) -> anyhow::Result<()> {
+    for hook in &config.hooks.post_bump {
+        eprintln!("Running post-bump hook: {hook}");
+        let status = std::process::Command::new("sh")
+            .args(["-c", hook])
+            .current_dir(repo_root)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("post-bump hook failed: {hook}");
+        }
+    }
+    Ok(())
+}
+
+fn write_changelogs(
+    repo_root: &Path,
+    plan: &ReleasePlan,
+    packages: &[crate::package::types::Package],
+    config: &Config,
+    date: &str,
+    is_monorepo: bool,
+) -> anyhow::Result<generator::ChangelogWrites> {
+    if config.changelog.per_package && is_monorepo {
+        generator::write_per_package_changelogs(plan, packages, &config.changelog, date)
+    } else {
+        generator::write_root_changelog(repo_root, plan, &config.changelog, date, is_monorepo)
+    }
+}
+
+fn remove_changesets(
+    changeset_dir: &Path,
+    changesets: &[crate::changeset::types::Changeset],
+) -> anyhow::Result<()> {
+    for name in changesets.iter().filter_map(|cs| cs.filename.as_ref()) {
+        let path = changeset_dir.join(format!("{name}.md"));
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Counts this release in pre mode, or leaves pre mode after an exit release.
+fn update_pre_state(
+    changeset_dir: &Path,
+    state: &crate::release::pre::PreState,
+    plan: &ReleasePlan,
+) -> anyhow::Result<()> {
+    match state.mode.as_str() {
+        "pre" => {
+            let mut updated = state.clone();
+            for release in &plan.releases {
+                *updated
+                    .packages_released
+                    .entry(release.name.clone())
+                    .or_insert(0) += 1;
+            }
+            crate::release::pre::write_pre_state(changeset_dir, &updated)
+        }
+        "exit" => crate::release::pre::remove_pre_state(changeset_dir),
+        _ => Ok(()),
+    }
 }
 
 fn apply_version_bump(
@@ -183,6 +239,7 @@ fn apply_version_bump(
         crate::package::types::PackageType::Python => Box::new(PythonAdapter),
         crate::package::types::PackageType::Helm => Box::new(HelmAdapter),
         crate::package::types::PackageType::Dotnet => Box::new(DotnetAdapter),
+        crate::package::types::PackageType::Godot => Box::new(GodotAdapter),
     };
 
     adapter.write_version(&pkg.path, new_version)?;
@@ -206,7 +263,11 @@ fn apply_snapshot(
         };
 
         apply_version_bump(repo_root, &release.name, &snapshot_version, packages)?;
-        eprintln!("{} -> {snapshot_version}", release.name);
+        if release.name.is_empty() {
+            eprintln!("{snapshot_version}");
+        } else {
+            eprintln!("{} -> {snapshot_version}", release.name);
+        }
     }
 
     Ok(())
@@ -216,7 +277,7 @@ fn commit_version_changes(
     repo_root: &Path,
     plan: &ReleasePlan,
     config: &Config,
-    is_monorepo: bool,
+    changelogs: &[std::path::PathBuf],
 ) -> anyhow::Result<()> {
     let mut paths_to_stage: Vec<String> = Vec::new();
 
@@ -259,19 +320,13 @@ fn commit_version_changes(
                 }
             }
         }
-
-        if is_monorepo && config.changelog.per_package {
-            paths_to_stage.push(
-                rel_path
-                    .join(&config.changelog.file)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
     }
 
-    if !is_monorepo || !config.changelog.per_package {
-        paths_to_stage.push(config.changelog.file.clone());
+    // Only the changelogs that were written: a none-only run touches
+    // changelogs of packages that aren't released, and `omit` may write none.
+    for path in changelogs {
+        let rel = path.strip_prefix(repo_root).unwrap_or(path);
+        paths_to_stage.push(rel.to_string_lossy().to_string());
     }
 
     let path_refs: Vec<&str> = paths_to_stage.iter().map(|s| s.as_str()).collect();
@@ -280,43 +335,62 @@ fn commit_version_changes(
     let versions: Vec<String> = plan
         .releases
         .iter()
-        .map(|r| format!("{}@{}", r.name, r.version))
+        // A Cargo workspace root versioned through [workspace.package] has no
+        // name, and "@0.1.0" reads like a typo in the release commit.
+        .map(|r| {
+            if r.name.is_empty() {
+                r.version.to_string()
+            } else {
+                format!("{}@{}", r.name, r.version)
+            }
+        })
         .collect();
     let versions_str = versions.join(", ");
 
-    let message = config
-        .release
-        .commit_message
-        .replace("{versions}", &versions_str);
+    // A run with only none-bump changesets releases nothing, and the
+    // "{versions}" template would leave "chore: release " with nothing after it.
+    let message = if plan.releases.is_empty() && changelogs.is_empty() {
+        "chore: remove none-bump changesets".to_string()
+    } else if plan.releases.is_empty() {
+        "chore: add unreleased changelog notes".to_string()
+    } else {
+        config
+            .release
+            .commit_message
+            .replace("{versions}", &versions_str)
+    };
 
     crate::git::git_commit(repo_root, &message)?;
     Ok(())
 }
 
 fn print_dry_run(plan: &ReleasePlan, date: &str) {
-    println!("Dry run - the following changes would be made:\n");
+    eprintln!("Dry run - the following changes would be made:\n");
 
     for release in &plan.releases {
-        println!(
+        eprintln!(
             "  {} {} -> {} ({})",
             release.name, release.previous_version, release.version, release.bump
         );
     }
 
     for entry in &plan.none_entries {
-        println!("  {} (no version change)", entry.title);
+        eprintln!("  {} (no version change)", entry.title);
     }
 
-    println!("\nChangelog date: {date}");
+    eprintln!("\nChangelog date: {date}");
 }
 
 fn today() -> String {
-    let now = std::time::SystemTime::now()
+    let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    date_from_epoch_secs(secs)
+}
 
-    let days = now / 86400;
+fn date_from_epoch_secs(secs: u64) -> String {
+    let days = secs / 86400;
     let mut y = 1970i64;
     let mut remaining = days as i64;
 
@@ -352,7 +426,7 @@ fn chrono_lite_timestamp() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let date = today();
+    let date = date_from_epoch_secs(now);
     let time_secs = now % 86400;
     let h = time_secs / 3600;
     let m = (time_secs % 3600) / 60;
@@ -422,6 +496,7 @@ mod tests {
             dry_run: false,
             no_commit: true,
             snapshot: None,
+            origins: false,
         };
         let result = execute_version(dir.path(), &opts).unwrap();
         assert!(result.plan.releases.is_empty());
@@ -440,6 +515,7 @@ mod tests {
             dry_run: true,
             no_commit: false,
             snapshot: None,
+            origins: false,
         };
         let result = execute_version(dir.path(), &opts).unwrap();
         assert_eq!(result.plan.releases.len(), 1);
@@ -462,6 +538,7 @@ mod tests {
             dry_run: false,
             no_commit: true,
             snapshot: None,
+            origins: false,
         };
         let result = execute_version(dir.path(), &opts).unwrap();
         assert_eq!(result.plan.releases.len(), 1);
@@ -505,6 +582,7 @@ mod tests {
             dry_run: false,
             no_commit: false,
             snapshot: None,
+            origins: false,
         };
         execute_version(dir.path(), &opts).unwrap();
 
@@ -531,6 +609,7 @@ mod tests {
             dry_run: false,
             no_commit: true,
             snapshot: Some("canary".to_string()),
+            origins: false,
         };
         execute_version(dir.path(), &opts).unwrap();
 

@@ -28,6 +28,23 @@ pub struct Changeset {
     pub packages: BTreeMap<String, BumpLevel>,
     pub body: String,
     pub filename: Option<String>,
+    /// The conventional type from the front matter's `type:` key ("feat",
+    /// "fix", ...). It only decides where the entry is listed in a grouped
+    /// changelog; the bump alone decides the version.
+    pub kind: Option<String>,
+    /// The scope from the front matter's `scope:` key.
+    pub scope: Option<String>,
+    /// Where the changeset came from in git, when that's known.
+    pub origin: Option<Origin>,
+}
+
+/// The commit that added a changeset, and the pull request that brought it
+/// in when the history names one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Origin {
+    pub commit: String,
+    pub author: String,
+    pub pr: Option<u64>,
 }
 
 #[cfg(test)]
@@ -76,6 +93,9 @@ mod tests {
             packages: BTreeMap::from([("mylib".to_string(), BumpLevel::Patch)]),
             body: "Fixed a bug".to_string(),
             filename: Some("cool-dogs-dance".to_string()),
+            kind: None,
+            scope: None,
+            origin: None,
         };
         assert_eq!(cs.packages.len(), 1);
         assert_eq!(cs.packages["mylib"], BumpLevel::Patch);

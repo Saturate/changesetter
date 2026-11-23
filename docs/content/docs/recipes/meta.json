@@ -1,4 +1,4 @@
 {
   "title": "Recipes",
-  "pages": ["monorepo", "pre-releases", "migration"]
+  "pages": ["monorepo", "pre-releases", "build-before-commit", "migration"]
 }

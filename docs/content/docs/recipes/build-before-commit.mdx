@@ -1,0 +1,58 @@
+---
+title: Build before committing
+description: Bump, build the release artifacts, then commit, tag and publish.
+---
+
+`changesetter release` bumps, writes the changelog, commits and tags in one go. Some pipelines need the build to run on the bumped version first, and want nothing committed or tagged until it passes: a game that bakes its version into Windows, Linux and Docker builds, for example. `--no-commit` stops after the file changes so you can do the rest yourself.
+
+## What `--no-commit` does
+
+- Bumps the version in each released package's manifest and writes the changelogs.
+- Deletes the consumed changeset files.
+- Runs `post_bump` hooks.
+- Doesn't need a clean working tree, and doesn't commit, tag or stage anything.
+
+With `--output json` it still prints the release plan, tags included, so the later steps don't have to work them out.
+
+## Pipeline
+
+```bash
+set -euo pipefail
+
+# 1. Bump and write the changelog. JSON alone goes to stdout.
+changesetter release --no-commit --output json > release.json
+
+# Nothing pending: nothing to build.
+if [ "$(jq '.releases | length' release.json)" -eq 0 ]; then
+  exit 0
+fi
+
+TAG=$(jq -r '.releases[0].tag' release.json)
+
+# 2. Build on the bumped version. A failure here leaves nothing committed;
+#    `git checkout -- .` undoes the bump and restores the changesets.
+./build.sh windows linux docker
+
+# 3. Commit and tag what changesetter changed.
+git add -A
+git commit -m "chore: release ${TAG}"
+jq -r '.releases[0].changelog' release.json | git tag -a "$TAG" -F -
+
+# 4. Publish.
+git push --follow-tags
+./publish.sh "$TAG"
+```
+
+`git add -A` also picks up anything the build wrote into the tree. Put build output in a gitignored directory, or stage only the manifests, changelogs and `.changeset/` directory.
+
+In a monorepo, `releases` has one item per released package. Loop over it for the tags:
+
+```bash
+jq -r '.releases[] | .tag' release.json | while read -r tag; do
+  git tag "$tag"
+done
+```
+
+## Release notes from the plan
+
+Each release's `entries` carries every changeset's `type`, `scope`, `group` and `summary`, and `changelog` holds the finished section. Release notes can render either one without reading `.changeset/` files, which `--no-commit` has already deleted. To look before anything changes, run `changesetter release --dry-run --output json`: it prints the same JSON and touches nothing. See [`release`](/cli#changesetter-release).

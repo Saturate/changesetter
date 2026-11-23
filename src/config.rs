@@ -45,6 +45,53 @@ pub struct ChangelogConfig {
     pub none_bump: String,
     pub none_bump_file: Option<String>,
     pub none_bump_heading: String,
+    /// Group a version's entries by conventional type, using the default
+    /// groups unless `groups` lists its own.
+    pub group: bool,
+    /// Ordered groups for a grouped changelog. Listing any turns grouping on.
+    pub groups: Vec<ChangelogGroup>,
+    /// Link each grouped entry to its pull request and commit, and turn
+    /// issue references into links.
+    pub links: bool,
+    /// The repository's web URL for links. Read from the `origin` remote
+    /// when `links` is on and this isn't set.
+    pub repo_url: Option<String>,
+    /// Extra issue references to link, like `PROJ-42` to a tracker.
+    pub issue_links: Vec<IssueLink>,
+}
+
+/// One `[[changelog.issue_links]]` entry: `prefix` followed by digits links
+/// to `url` with `{id}` replaced by the digits.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct IssueLink {
+    pub prefix: String,
+    pub url: String,
+}
+
+/// One `[[changelog.groups]]` entry. An entry goes to the first group it
+/// matches: its type is in `types` (or `types` is empty) and its summary
+/// matches `match` (or there's no `match`).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ChangelogGroup {
+    pub title: String,
+    #[serde(default)]
+    pub types: Vec<String>,
+    /// A case-insensitive glob (`*`, `?`) over the entry's summary.
+    #[serde(default, rename = "match")]
+    pub pattern: Option<String>,
+    /// Matching entries are left out of the changelog. They still count
+    /// towards the bump.
+    #[serde(default)]
+    pub skip: bool,
+}
+
+impl ChangelogConfig {
+    /// Whether version sections are grouped by type.
+    pub fn is_grouped(&self) -> bool {
+        self.group || !self.groups.is_empty()
+    }
 }
 
 impl Default for ChangelogConfig {
@@ -55,6 +102,11 @@ impl Default for ChangelogConfig {
             none_bump: "section".to_string(),
             none_bump_file: None,
             none_bump_heading: "Internal".to_string(),
+            group: false,
+            groups: Vec::new(),
+            links: false,
+            repo_url: None,
+            issue_links: Vec::new(),
         }
     }
 }
@@ -101,6 +153,13 @@ pub struct HooksConfig {
 }
 
 impl Config {
+    /// Whether `name` matches an `ignore` entry. Entries are glob patterns
+    /// where `*` matches any run of characters (including none) and `?`
+    /// matches one character; an entry without either must match exactly.
+    pub fn is_ignored(&self, name: &str) -> bool {
+        self.ignore.iter().any(|pattern| glob_match(pattern, name))
+    }
+
     pub fn load(repo_root: &Path) -> anyhow::Result<Self> {
         let config_path = repo_root.join("changesetter.toml");
         if !config_path.exists() {
@@ -113,6 +172,16 @@ impl Config {
             .changeset_dir
             .map(|dir| validate_changeset_dir(&dir))
             .transpose()?;
+        validate_changelog_groups(&config.changelog)?;
+        validate_issue_links(&config.changelog)?;
+        if config.changelog.links && config.changelog.repo_url.is_none() {
+            config.changelog.repo_url =
+                crate::git::run_git(repo_root, &["remote", "get-url", "origin"])
+                    .ok()
+                    .flatten()
+                    .map(|url| url.trim().to_string())
+                    .filter(|url| !url.is_empty());
+        }
         Ok(config)
     }
 
@@ -131,6 +200,89 @@ impl Config {
     }
 }
 
+pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    // Position of the last `*` and the text index it is currently matched up to.
+    let mut star: Option<(usize, usize)> = None;
+
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, ti));
+            pi += 1;
+        } else if let Some((sp, st)) = star {
+            // Let the last `*` swallow one more character and retry.
+            pi = sp + 1;
+            ti = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
+}
+
+// A group with the none-bump heading's title would put two sections of that
+// name in one version, and the none-bump one is found by its title when an
+// Unreleased section is folded.
+fn validate_changelog_groups(changelog: &ChangelogConfig) -> anyhow::Result<()> {
+    if changelog.groups.iter().any(|g| g.title.trim().is_empty()) {
+        anyhow::bail!("[[changelog.groups]] entries need a non-empty title");
+    }
+    if !changelog.is_grouped() {
+        return Ok(());
+    }
+    let none = changelog.none_bump_heading.trim();
+    let configured = !changelog.groups.is_empty();
+    let groups = crate::changelog::groups::groups(changelog);
+    let titles = groups
+        .iter()
+        .map(|g| g.title.trim())
+        .chain([crate::changelog::groups::FALLBACK_TITLE]);
+    for title in titles {
+        if title == none {
+            let source = if title == crate::changelog::groups::FALLBACK_TITLE {
+                "the group for entries no other group takes"
+            } else if configured {
+                "a [[changelog.groups]] title"
+            } else {
+                "one of the default groups (group = true)"
+            };
+            anyhow::bail!(
+                "none_bump_heading \"{none}\" is also {source}; give the none_bump_heading another name"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_issue_links(changelog: &ChangelogConfig) -> anyhow::Result<()> {
+    for link in &changelog.issue_links {
+        if link.prefix.is_empty() || link.prefix.chars().any(char::is_whitespace) {
+            anyhow::bail!(
+                "[[changelog.issue_links]] prefix {:?} must be non-empty with no spaces",
+                link.prefix
+            );
+        }
+        if !link.url.contains("{id}") {
+            anyhow::bail!(
+                "[[changelog.issue_links]] url {:?} needs an {{id}} placeholder",
+                link.url
+            );
+        }
+    }
+    if let Some(url) = &changelog.repo_url {
+        if crate::changelog::links::Repo::parse(url).is_none() {
+            anyhow::bail!("[changelog] repo_url {url:?} isn't a repository URL");
+        }
+    }
+    Ok(())
+}
+
 // The dir is used both as a filesystem path and as a git pathspec, so it has
 // to stay inside the repo and must not end in `/` (callers append their own).
 fn validate_changeset_dir(dir: &str) -> Result<String, ChangesetterError> {
@@ -145,7 +297,9 @@ fn validate_changeset_dir(dir: &str) -> Result<String, ChangesetterError> {
         return Err(invalid("must use `/` as the path separator"));
     }
 
-    let mut has_normal = false;
+    // Rebuilt from its parts, so `./changes` and `changes/` read as `changes`,
+    // the way git prints paths.
+    let mut parts = Vec::new();
     for component in Path::new(dir).components() {
         match component {
             Component::Prefix(_) | Component::RootDir => {
@@ -154,21 +308,51 @@ fn validate_changeset_dir(dir: &str) -> Result<String, ChangesetterError> {
             Component::ParentDir => {
                 return Err(invalid("must not contain `..`"));
             }
-            Component::Normal(_) => has_normal = true,
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
             Component::CurDir => {}
         }
     }
 
-    if !has_normal {
+    if parts.is_empty() {
         return Err(invalid("must name a directory below the repository root"));
     }
 
-    Ok(dir.trim_end_matches('/').to_string())
+    Ok(parts.join("/"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glob_match_patterns() {
+        assert!(glob_match("examples", "examples"));
+        assert!(!glob_match("examples", "examples2"));
+        assert!(glob_match("*_core", "voxkit_core"));
+        assert!(glob_match("*_core", "_core"));
+        assert!(!glob_match("*_core", "voxkit_gd"));
+        assert!(glob_match("mod-*-gd", "mod-a-b-gd"));
+        assert!(glob_match("v?", "v1"));
+        assert!(!glob_match("v?", "v"));
+        assert!(glob_match("*", ""));
+        assert!(glob_match("a*b*c", "aXXbYYbc"));
+        assert!(!glob_match("a*b*c", "aXXbYY"));
+        assert!(glob_match("", ""));
+        assert!(!glob_match("", "x"));
+        assert!(!glob_match("*_core", ""));
+    }
+
+    #[test]
+    fn is_ignored_uses_globs() {
+        let config = Config {
+            ignore: vec!["".into(), "tools".into(), "*_core".into()],
+            ..Default::default()
+        };
+        assert!(config.is_ignored(""));
+        assert!(config.is_ignored("tools"));
+        assert!(config.is_ignored("weapons_core"));
+        assert!(!config.is_ignored("slopocalypse"));
+    }
 
     #[test]
     fn default_config() {
@@ -297,6 +481,19 @@ post_bump = ["cargo check", "cargo fmt"]
     }
 
     #[test]
+    fn changeset_dir_reads_as_git_prints_it() {
+        assert_eq!(validate_changeset_dir("./changes").unwrap(), "changes");
+        assert_eq!(
+            validate_changeset_dir("meta/./changes/").unwrap(),
+            "meta/changes"
+        );
+        assert_eq!(
+            validate_changeset_dir("meta//changes").unwrap(),
+            "meta/changes"
+        );
+    }
+
+    #[test]
     fn changeset_dir_backslash_rejected() {
         for value in [".changeset\\\\", "..\\\\x", "C:\\\\x"] {
             let err = load_changeset_dir(value).unwrap_err();
@@ -306,7 +503,7 @@ post_bump = ["cargo check", "cargo fmt"]
 
     #[test]
     fn changeset_dir_absolute_rejected() {
-        let err = load_changeset_dir("/tmp/changesets").unwrap_err();
+        let err = load_changeset_dir("/abs/changesets").unwrap_err();
         assert!(err.to_string().contains("relative path"), "{err}");
     }
 
@@ -343,5 +540,152 @@ post_bump = ["cargo check", "cargo fmt"]
             format: Some("{name}-{version}".to_string()),
         };
         assert_eq!(tag.format_tag("mylib", "1.0.0", true), "mylib-1.0.0");
+    }
+
+    fn load_str(toml: &str) -> anyhow::Result<Config> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("changesetter.toml"), toml).unwrap();
+        Config::load(dir.path())
+    }
+
+    #[test]
+    fn changelog_groups_parse_in_order() {
+        let config = load_str(
+            r#"
+[[changelog.groups]]
+title = "Security"
+match = "*security*"
+
+[[changelog.groups]]
+title = "Features"
+types = ["feat"]
+
+[[changelog.groups]]
+title = "Hidden"
+types = ["test"]
+skip = true
+"#,
+        )
+        .unwrap();
+        let g = &config.changelog.groups;
+        assert!(config.changelog.is_grouped());
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[0].pattern.as_deref(), Some("*security*"));
+        assert!(g[0].types.is_empty());
+        assert_eq!(g[1].types, vec!["feat".to_string()]);
+        assert!(g[2].skip);
+    }
+
+    #[test]
+    fn changelog_is_flat_by_default() {
+        assert!(!load_str("").unwrap().changelog.is_grouped());
+        assert!(
+            load_str("[changelog]\ngroup = true\n")
+                .unwrap()
+                .changelog
+                .is_grouped()
+        );
+    }
+
+    #[test]
+    fn changelog_group_title_must_differ_from_none_heading() {
+        let err = load_str("[[changelog.groups]]\ntitle = \"Internal\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("none_bump_heading"), "{err}");
+        let err = load_str("[[changelog.groups]]\ntitle = \" \"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("non-empty title"), "{err}");
+    }
+
+    #[test]
+    fn none_heading_must_differ_from_default_and_fallback_groups() {
+        for heading in ["Under the hood", "Other changes"] {
+            let toml = format!(
+                "[changelog]
+group = true
+none_bump_heading = \"{heading}\"
+"
+            );
+            let err = load_str(&toml).unwrap_err().to_string();
+            assert!(
+                err.contains("give the none_bump_heading another name"),
+                "{err}"
+            );
+        }
+        // Without grouping, any heading is fine.
+        assert!(
+            load_str(
+                "[changelog]
+none_bump_heading = \"Other changes\"
+"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn links_read_the_origin_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "git@github.com:o/r.git"]);
+        std::fs::write(
+            dir.path().join("changesetter.toml"),
+            "[changelog]\nlinks = true\n",
+        )
+        .unwrap();
+        let config = Config::load(dir.path()).unwrap();
+        assert_eq!(
+            config.changelog.repo_url.as_deref(),
+            Some("git@github.com:o/r.git")
+        );
+
+        // An explicit repo_url wins, and without links nothing is read.
+        std::fs::write(
+            dir.path().join("changesetter.toml"),
+            "[changelog]\nlinks = true\nrepo_url = \"https://gitlab.com/g/r\"\n",
+        )
+        .unwrap();
+        let config = Config::load(dir.path()).unwrap();
+        assert_eq!(
+            config.changelog.repo_url.as_deref(),
+            Some("https://gitlab.com/g/r")
+        );
+        std::fs::write(dir.path().join("changesetter.toml"), "").unwrap();
+        assert_eq!(Config::load(dir.path()).unwrap().changelog.repo_url, None);
+    }
+
+    #[test]
+    fn issue_links_are_checked() {
+        let ok = load_str(
+            "[changelog]\nlinks = true\n[[changelog.issue_links]]\nprefix = \"PROJ-\"\nurl = \"https://j/browse/PROJ-{id}\"\n",
+        )
+        .unwrap();
+        assert_eq!(ok.changelog.issue_links[0].prefix, "PROJ-");
+        let err = load_str("[[changelog.issue_links]]\nprefix = \"PROJ-\"\nurl = \"https://j\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("{id}"), "{err}");
+        let err = load_str("[[changelog.issue_links]]\nprefix = \"\"\nurl = \"https://j/{id}\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("prefix"), "{err}");
+        let err = load_str("[changelog]\nrepo_url = \"not a url\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("repo_url"), "{err}");
+    }
+
+    #[test]
+    fn changelog_group_rejects_unknown_keys() {
+        assert!(load_str("[[changelog.groups]]\ntitle = \"A\"\ntype = [\"feat\"]\n").is_err());
     }
 }
