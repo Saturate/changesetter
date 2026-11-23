@@ -64,8 +64,10 @@ jobs:
 
       - name: Push release commit and tags
         if: steps.release.outputs.released == 'true'
+        # --atomic: if main moved since checkout, the push is rejected, and
+        # without it the tags still land, pointing at a commit on no branch.
         run: |
-          git push origin main --follow-tags
+          git push --atomic origin main --follow-tags
 
       - name: Create GitHub Releases
         if: steps.release.outputs.released == 'true'

@@ -15,7 +15,7 @@ STEPS="$ROOT/steps"
 mkdir -p "$STEPS"
 ruby -ryaml -e '
   steps = YAML.load_file(ARGV[0])["runs"]["steps"]
-  %w[check-merged merged-release check-pending version-pr].each do |id|
+  %w[check-merged merged-release check-pending version-pr push-direct].each do |id|
     File.write(File.join(ARGV[1], "#{id}.sh"), steps.find { |s| s["id"] == id }.fetch("run"))
   end' "$REPO/actions/release/action.yml" "$STEPS"
 BIN="$ROOT/bin"
@@ -234,6 +234,18 @@ M=$(git rev-parse HEAD); label_merge "$M"
 run_steps 2
 check "tag v0.1.0 on origin at the merge" '[ "$(remote_tag_at v0.1.0)" = "$M" ]'
 check "GitHub Release titled with the bare version" 'grep -q -- "--title v0.1.0 --notes" "$FX/created.log"'
+
+echo "O: direct release push after the branch moved"
+new_repo o
+mkdir -p .changeset; printf -- '---\npkg: patch\n---\n\nFix.\n' > .changeset/fix.md
+git add -A; git commit -qm "add changeset"; git push -q origin main
+changesetter release > "$FX/log-release" 2>&1
+OTHER="$ROOT/o-other"; git clone -q "$O" "$OTHER" 2>/dev/null
+git -C "$OTHER" commit -q --allow-empty -m "merged meanwhile"; git -C "$OTHER" push -q origin main
+check "release made the tag locally" 'git rev-parse -q --verify refs/tags/v1.0.1 >/dev/null'
+GITHUB_REF_NAME=main bash -eo pipefail "$STEPS/push-direct.sh" > "$FX/log-push" 2>&1 || echo "push-direct failed" >> "$FX/log-push"
+check "push fails" 'grep -q "push-direct failed" "$FX/log-push"'
+check "tag v1.0.1 not on origin" '[ -z "$(remote_tag_at v1.0.1)" ]'
 
 echo
 echo "passed $PASS, failed $FAIL (logs in $ROOT)"

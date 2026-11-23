@@ -81,12 +81,15 @@ runs:
         echo "releases=$RELEASES" >> "$GITHUB_OUTPUT"
 
     - name: Push release commit and tags (direct)
+      id: push-direct
       if: inputs.version-pr == 'false' && steps.direct-release.outputs.released == 'true'
       shell: bash
       # `changesetter release` commits the bump and removes the consumed
       # changesets. Pushing only the tags left that commit on no branch, so
-      # the next run released the same changesets again.
-      run: git push origin "HEAD:${GITHUB_REF_NAME}" --follow-tags
+      # the next run released the same changesets again. --atomic covers the
+      # same failure when the branch moved since checkout: the branch update
+      # is rejected, and the tags must not land without it.
+      run: git push --atomic origin "HEAD:${GITHUB_REF_NAME}" --follow-tags
 
     - name: Create GitHub Releases (direct)
       if: inputs.version-pr == 'false' && steps.direct-release.outputs.released == 'true' && inputs.github-release == 'true'

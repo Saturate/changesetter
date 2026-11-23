@@ -39,7 +39,7 @@ git commit -m "chore: release ${TAG}"
 jq -r '.releases[0].changelog' release.json | git tag -a "$TAG" -F -
 
 # 4. Publish.
-git push --follow-tags
+git push --atomic --follow-tags
 ./publish.sh "$TAG"
 ```
 
