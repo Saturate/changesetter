@@ -69,10 +69,9 @@ impl Adapter for CargoAdapter {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
-                let version_str = ws_pkg
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0.0.0");
+                let Some(version_str) = ws_pkg.get("version").and_then(|v| v.as_str()) else {
+                    return Ok(None);
+                };
                 let version = Version::parse(version_str)?;
 
                 return Ok(Some(Package {
