@@ -173,7 +173,9 @@ async function directRelease(binDir) {
     return;
   }
 
-  exec("git push --follow-tags");
+  // --atomic: if the branch moved since checkout, the push is rejected, and
+  // without it the tags still land, pointing at a commit on no branch.
+  exec("git push --atomic --follow-tags");
 
   tl.setVariable("released", "true");
   tl.setVariable("releases", JSON.stringify(releases));

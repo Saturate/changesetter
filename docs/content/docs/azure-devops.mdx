@@ -145,7 +145,7 @@ steps:
       fi
 
       echo "$OUTPUT" | jq .
-      git push origin main --follow-tags
+      git push --atomic origin main --follow-tags
     displayName: Release
 ```
 
