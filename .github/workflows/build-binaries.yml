@@ -118,10 +118,28 @@ jobs:
   attach-to-release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # attest-build-provenance signs with the workflow's OIDC identity.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+
+      # Pipelines that pin a version verify the download against this file
+      # instead of a hash someone computed by hand once. It's rebuilt from
+      # the archives on every run, so a manual rebuild replaces it with them.
+      - name: Write SHA256SUMS
+        run: sha256sum changesetter-*.tar.gz changesetter-*.zip > SHA256SUMS && cat SHA256SUMS
+
+      # Lets `gh attestation verify <archive> --repo Saturate/changesetter`
+      # prove the archive came from this workflow at this tag.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-checksums: SHA256SUMS
 
       - name: Upload binaries to GitHub Release
         env:
@@ -130,7 +148,7 @@ jobs:
           gh release upload "$TAG" \
             --repo "${{ github.repository }}" \
             --clobber \
-            changesetter-*.tar.gz changesetter-*.zip
+            changesetter-*.tar.gz changesetter-*.zip SHA256SUMS
 
       - name: Mark as latest release
         if: inputs.make-latest

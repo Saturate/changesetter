@@ -101,6 +101,12 @@ jobs:
     strategy:
       matrix:
         tag: ${{ fromJSON(needs.release.outputs.cli-tags) }}
+    # A called workflow gets at most its caller's permissions, and the
+    # provenance attestation needs the last two.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/build-binaries.yml
     with:
       tag: ${{ matrix.tag }}

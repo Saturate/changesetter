@@ -30,3 +30,6 @@ jobs:
           git config --global user.name ci
           git config --global user.email ci@example.com
           npm test
+      - name: Install checksum tests
+        working-directory: extensions/azure-pipelines/shared
+        run: node install.test.js
