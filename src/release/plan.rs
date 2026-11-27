@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use crate::changelog::groups;
@@ -242,7 +242,14 @@ pub fn assemble(
 
     apply_fixed_groups(&mut bumps_per_package, packages, config);
     apply_linked_groups(&mut bumps_per_package, config);
-    apply_dependency_cascading(&mut bumps_per_package, packages, config);
+    let updated_deps = apply_dependency_cascading(&mut bumps_per_package, packages, config);
+    add_dependency_entries(
+        &mut bumps_per_package,
+        &updated_deps,
+        packages,
+        config,
+        pre_state,
+    );
     let nested = packages.len() > 1 && !config.changelog.per_package;
 
     let mut releases = Vec::new();
@@ -258,8 +265,7 @@ pub fn assemble(
         let previous_version = pkg.map_or_else(|| Version::new(0, 0, 0), |p| p.version.clone());
         let pkg_path = pkg.map_or_else(|| PathBuf::from("."), |p| p.path.clone());
 
-        let new_version = apply_bump(&previous_version, *bump);
-        let new_version = apply_pre_version(new_version, pkg_name, pre_state);
+        let new_version = new_version(pkg_name, *bump, packages, pre_state);
 
         let changelog = release_changelog(entries, config, nested);
 
@@ -354,10 +360,18 @@ fn apply_linked_groups(bumps: &mut BumpMap, config: &Config) {
     }
 }
 
-fn apply_dependency_cascading(bumps: &mut BumpMap, packages: &[Package], config: &Config) {
+/// Bumps the dependents of bumped packages, transitively, and returns each
+/// dependent with the bumped packages it depends on. The changelog entry
+/// waits until the new versions are known, so it can name them.
+fn apply_dependency_cascading(
+    bumps: &mut BumpMap,
+    packages: &[Package],
+    config: &Config,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut updated: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mode = match config.update_internal_dependencies.as_deref() {
         Some("patch") | Some("minor") => BumpLevel::Patch,
-        _ => return,
+        _ => return updated,
     };
 
     let dependents_map = crate::release::deps::build_dependents_map(packages);
@@ -371,41 +385,75 @@ fn apply_dependency_cascading(bumps: &mut BumpMap, packages: &[Package], config:
 
         let mut changed = false;
         for bumped_pkg in &bumped {
-            if let Some(dependents) = dependents_map.get(bumped_pkg) {
-                for dependent in dependents {
-                    if dependent == bumped_pkg {
-                        continue;
-                    }
-                    let entry = bumps
-                        .entry(dependent.clone())
-                        .or_insert((BumpLevel::None, Vec::new()));
-
-                    if entry.0 < mode {
-                        entry.0 = mode;
-                        changed = true;
-                    }
-
-                    let already_has_cascade_entry =
-                        entry.1.iter().any(|e| e.changeset == "dependency-cascade");
-                    if !already_has_cascade_entry {
-                        entry.1.push(new_entry(
-                            "dependency-cascade",
-                            mode,
-                            &format!(
-                                "#### Dependency update\n\nBumped due to dependency on {bumped_pkg}"
-                            ),
-                            Some(groups::DEPS_TYPE),
-                            None,
-                            None,
-                            config,
-                        ));
-                    }
+            let Some(dependents) = dependents_map.get(bumped_pkg) else {
+                continue;
+            };
+            for dependent in dependents.iter().filter(|d| *d != bumped_pkg) {
+                let entry = bumps
+                    .entry(dependent.clone())
+                    .or_insert((BumpLevel::None, Vec::new()));
+                if entry.0 < mode {
+                    entry.0 = mode;
+                    changed = true;
                 }
+                updated
+                    .entry(dependent.clone())
+                    .or_default()
+                    .insert(bumped_pkg.clone());
             }
         }
         if !changed {
             break;
         }
+    }
+
+    updated
+}
+
+fn new_version(
+    pkg_name: &str,
+    bump: BumpLevel,
+    packages: &[Package],
+    pre_state: Option<&PreState>,
+) -> Version {
+    let previous = packages
+        .iter()
+        .find(|p| p.name == pkg_name)
+        .map_or_else(|| Version::new(0, 0, 0), |p| p.version.clone());
+    apply_pre_version(apply_bump(&previous, bump), pkg_name, pre_state)
+}
+
+/// An "Updated dependencies" entry for each dependent, listing every bumped
+/// package it depends on with its new version.
+fn add_dependency_entries(
+    bumps: &mut BumpMap,
+    updated: &BTreeMap<String, BTreeSet<String>>,
+    packages: &[Package],
+    config: &Config,
+    pre_state: Option<&PreState>,
+) {
+    for (dependent, deps) in updated {
+        let lines: Vec<String> = deps
+            .iter()
+            .filter_map(|dep| {
+                let (bump, _) = bumps.get(dep)?;
+                let version = new_version(dep, *bump, packages, pre_state);
+                Some(format!("- {dep}@{version}"))
+            })
+            .collect();
+        let Some((_, entries)) = bumps.get_mut(dependent) else {
+            continue;
+        };
+        // Cascading only ever gives a patch, whatever else bumps the package.
+        entries.push(new_entry(
+            "dependency-cascade",
+            BumpLevel::Patch,
+            &format!("#### Updated dependencies\n\n{}", lines.join("\n")),
+            Some(groups::DEPS_TYPE),
+            None,
+            None,
+            config,
+        ));
     }
 }
 
@@ -1004,6 +1052,69 @@ mod tests {
         let plan = assemble(&changesets, &packages, &config, None);
         assert_eq!(plan.releases.len(), 3);
         assert!(plan.releases.iter().any(|r| r.name == "c"));
+    }
+
+    fn npm_pkg(root: &std::path::Path, name: &str, version: &str, deps: &[&str]) -> Package {
+        let dir = root.join(name.replace('/', "_"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let deps: serde_json::Map<String, serde_json::Value> = deps
+            .iter()
+            .map(|d| (d.to_string(), serde_json::json!("workspace:*")))
+            .collect();
+        let manifest = serde_json::json!({"name": name, "version": version, "dependencies": deps});
+        std::fs::write(dir.join("package.json"), manifest.to_string()).unwrap();
+        Package {
+            name: name.to_string(),
+            path: dir,
+            package_type: crate::package::types::PackageType::Npm,
+            version: Version::parse(version).unwrap(),
+        }
+    }
+
+    #[test]
+    fn cascade_entry_lists_every_bumped_dependency_with_its_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let packages = vec![
+            npm_pkg(dir.path(), "@s/ui", "0.0.0", &[]),
+            npm_pkg(dir.path(), "@s/auth", "0.1.0", &[]),
+            npm_pkg(dir.path(), "@s/web", "0.1.0", &["@s/ui", "@s/auth"]),
+        ];
+        let changesets = vec![
+            make_cs(&[("@s/ui", BumpLevel::Patch)], "Fix the button", "cs1"),
+            make_cs(&[("@s/auth", BumpLevel::Minor)], "New login", "cs2"),
+        ];
+        let plan = assemble(&changesets, &packages, &make_cascade_config("patch"), None);
+
+        let web = plan.releases.iter().find(|r| r.name == "@s/web").unwrap();
+        assert_eq!(web.version, Version::new(0, 1, 1));
+        assert_eq!(web.changesets, vec!["dependency-cascade"]);
+        assert_eq!(
+            web.changelog,
+            "#### Updated dependencies\n\n- @s/auth@0.2.0\n- @s/ui@0.0.1"
+        );
+    }
+
+    #[test]
+    fn cascade_entry_follows_its_own_changeset_and_names_transitive_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let packages = vec![
+            npm_pkg(dir.path(), "a", "1.0.0", &[]),
+            npm_pkg(dir.path(), "b", "1.0.0", &["a"]),
+            npm_pkg(dir.path(), "c", "2.0.0", &["b"]),
+        ];
+        let changesets = vec![
+            make_cs(&[("a", BumpLevel::Minor)], "Feature", "cs1"),
+            make_cs(&[("c", BumpLevel::Minor)], "Own change", "cs2"),
+        ];
+        let plan = assemble(&changesets, &packages, &make_cascade_config("patch"), None);
+
+        let c = plan.releases.iter().find(|r| r.name == "c").unwrap();
+        assert_eq!(c.version, Version::new(2, 1, 0));
+        assert_eq!(c.changesets, vec!["cs2", "dependency-cascade"]);
+        assert!(c.changelog.starts_with("Own change"), "{}", c.changelog);
+        assert!(c.changelog.ends_with("- b@1.0.1"), "{}", c.changelog);
+        let cascade = c.entries.last().unwrap();
+        assert_eq!(cascade.bump, BumpLevel::Patch);
     }
 
     #[test]
