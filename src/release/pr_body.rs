@@ -29,7 +29,7 @@ fn label(release: &PlannedRelease) -> String {
     format!("{name}{} → {}", release.previous_version, release.version)
 }
 
-/// Renders the description and cuts it to `limit` characters. Packages with
+/// Renders the description and cuts it to `limit` UTF-16 code units. Packages with
 /// their own changesets get a section each; packages released only because
 /// a dependency or fixed group moved are one line each, since their entry
 /// says nothing a reviewer needs to read. When it doesn't fit, whole
@@ -78,7 +78,7 @@ pub fn render(plan: &ReleasePlan, limit: usize) -> String {
         .chain(sections.iter().map(|(_, s)| s.clone()))
         .collect::<Vec<_>>()
         .join("\n\n");
-    if full.chars().count() <= limit {
+    if len(&full) <= limit {
         return full;
     }
 
@@ -88,7 +88,7 @@ pub fn render(plan: &ReleasePlan, limit: usize) -> String {
         let left_out = &sections[i + 1..];
         let note = truncation_note(left_out.iter().map(|(n, _)| n.as_str()));
         let candidate = format!("{out}\n\n{section}");
-        if candidate.chars().count() + 2 + note.chars().count() > limit {
+        if len(&candidate) + 2 + len(&note) > limit {
             break;
         }
         out = candidate;
@@ -97,10 +97,23 @@ pub fn render(plan: &ReleasePlan, limit: usize) -> String {
     let note = truncation_note(sections[shown..].iter().map(|(n, _)| n.as_str()));
     let mut out = format!("{out}\n\n{note}");
     // A limit too small for the intro and the note still gets a valid body.
-    if out.chars().count() > limit {
-        out = out.chars().take(limit).collect();
+    if len(&out) > limit {
+        let mut used = 0;
+        out = out
+            .chars()
+            .take_while(|c| {
+                used += c.len_utf16();
+                used <= limit
+            })
+            .collect();
     }
     out
+}
+
+/// Length as Azure DevOps and GitHub count it: UTF-16 code units, so an
+/// emoji counts twice.
+fn len(text: &str) -> usize {
+    text.encode_utf16().count()
 }
 
 fn truncation_note<'a>(left_out: impl Iterator<Item = &'a str>) -> String {
@@ -203,7 +216,7 @@ mod tests {
             &[],
         );
         let body = render(&p, AZURE_LIMIT);
-        assert!(body.chars().count() <= AZURE_LIMIT);
+        assert!(len(&body) <= AZURE_LIMIT);
         assert!(body.contains("## @d/a") && body.contains("## @d/b"));
         assert!(!body.contains("## @d/c"));
         assert!(
@@ -219,7 +232,7 @@ mod tests {
             &[],
         );
         let body = render(&p, AZURE_LIMIT);
-        assert!(body.chars().count() <= AZURE_LIMIT);
+        assert!(len(&body) <= AZURE_LIMIT);
         assert!(body.contains("Not shown: @d/a"));
     }
 
@@ -227,5 +240,21 @@ mod tests {
     fn nothing_released() {
         let body = render(&plan(vec![], &[]), AZURE_LIMIT);
         assert!(body.contains("Nothing is released"));
+    }
+
+    #[test]
+    fn counts_utf16_units_like_azure() {
+        let p = plan(
+            vec![release(
+                "@d/a",
+                "1.0.0",
+                "1.0.1",
+                &"🚀".repeat(3000),
+                &["a"],
+            )],
+            &[],
+        );
+        let body = render(&p, AZURE_LIMIT);
+        assert!(len(&body) <= AZURE_LIMIT, "{}", len(&body));
     }
 }

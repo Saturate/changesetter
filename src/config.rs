@@ -138,7 +138,10 @@ impl TagConfig {
         version: &str,
         is_monorepo: bool,
     ) -> Option<String> {
-        if self.is_skipped(name, path) {
+        // A nameless package in a monorepo is a workspace root like
+        // `{"private": true}`: no changeset can name it, and its tag would
+        // be `@v0.0.0`.
+        if self.is_skipped(name, path) || (is_monorepo && name.is_empty()) {
             return None;
         }
         Some(self.format_tag(name, version, is_monorepo))
@@ -349,6 +352,16 @@ fn validate_changeset_dir(dir: &str) -> Result<String, ChangesetterError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nameless_monorepo_package_has_no_tag() {
+        let tag = TagConfig::default();
+        assert_eq!(tag.tag_for("", ".", "0.0.0", true), None);
+        assert_eq!(
+            tag.tag_for("", ".", "1.0.0", false).as_deref(),
+            Some("v1.0.0")
+        );
+    }
 
     #[test]
     fn glob_match_patterns() {

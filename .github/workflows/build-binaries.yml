@@ -36,7 +36,11 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  # Only attach-to-release writes to the release; building and publishing to
+  # crates.io read the repository.
   build:
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -93,6 +97,8 @@ jobs:
           path: changesetter-${{ matrix.target }}.*
 
   publish-crates-io:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

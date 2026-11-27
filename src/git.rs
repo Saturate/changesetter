@@ -214,7 +214,16 @@ pub fn tag_exists(repo_root: &Path, tag: &str) -> anyhow::Result<bool> {
 }
 
 pub fn git_tag(repo_root: &Path, tag: &str, message: Option<&str>) -> anyhow::Result<()> {
-    let output = if let Some(msg) = message {
+    // With --cleanup=verbatim a message without a final newline runs into
+    // the signature git appends for tag.gpgSign, and the tag won't verify.
+    let message = message.map(|m| {
+        if m.ends_with('\n') {
+            m.to_string()
+        } else {
+            format!("{m}\n")
+        }
+    });
+    let output = if let Some(msg) = &message {
         Command::new("git")
             .args(["tag", "-a", tag, "-m", msg, "--cleanup=verbatim"])
             .current_dir(repo_root)

@@ -36,7 +36,9 @@ fn main() {
             1
         };
 
-        eprintln!("error: {e}");
+        // `{:#}` keeps the cause chain: "Pull request lookup failed: <TLS error>"
+        // rather than the bare context.
+        eprintln!("error: {e:#}");
         std::process::exit(code);
     }
 }

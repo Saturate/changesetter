@@ -16,8 +16,10 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
 
     let after_start = 4;
     // `---\n---` has no line between the fences, so the closing one starts
-    // right where the front matter would.
-    let (frontmatter, closing) = if input[after_start..].starts_with("---") {
+    // right where the front matter would. Only a whole `---` line counts:
+    // `---\n---a: patch` is a typo, not an empty changeset.
+    let rest = &input[after_start..];
+    let (frontmatter, closing) = if rest == "---" || rest.starts_with("---\n") {
         ("", after_start)
     } else {
         let Some(end) = input[after_start..].find("\n---") else {
@@ -103,6 +105,18 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
         String::default()
     };
 
+    // A doubled opening fence (`---\n---\npkg: patch\n---`) reads as an
+    // empty changeset whose body is the real front matter, and `version`
+    // would delete it without releasing anything.
+    if packages.is_empty() && body.lines().any(looks_like_bump_line) {
+        return Err(ChangesetterError::InvalidFrontmatter {
+            path: err_path(),
+            reason:
+                "empty front matter, but the body has a `package: bump` line; remove the extra ---"
+                    .to_string(),
+        });
+    }
+
     Ok(Changeset {
         packages,
         body,
@@ -111,6 +125,18 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
         scope,
         origin: None,
     })
+}
+
+/// `name: patch`, `"@s/a": minor`: a line that would be a package entry in
+/// front matter.
+fn looks_like_bump_line(line: &str) -> bool {
+    let Some((key, value)) = line.trim().rsplit_once(':') else {
+        return false;
+    };
+    let key = key.trim().trim_matches(|c| c == '"' || c == '\'');
+    !key.is_empty()
+        && !key.contains(char::is_whitespace)
+        && matches!(value.trim(), "none" | "patch" | "minor" | "major")
 }
 
 #[cfg(test)]
@@ -233,6 +259,25 @@ mod tests {
 
         assert!(parse("---\n---", None).unwrap().packages.is_empty());
         assert!(parse("---\n", None).is_err());
+
+        // A body line mentioning a bump in prose is fine.
+        let cs = parse("---\n---\n\nNote: nothing to patch here.\n", None).unwrap();
+        assert!(cs.packages.is_empty());
+    }
+
+    #[test]
+    fn doubled_opening_fence_is_not_an_empty_changeset() {
+        let err = parse("---\n---\na: patch\n---\n\nFix\n", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("remove the extra ---"), "{err}");
+        let err = parse("---\n---\n\"@s/a\": minor\n---\n", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("remove the extra ---"), "{err}");
+        // `---a: patch` isn't a fence; it's read as front matter.
+        let cs = parse("---\n---a: patch\n---\n", None).unwrap();
+        assert_eq!(cs.packages.keys().collect::<Vec<_>>(), ["---a"]);
     }
 
     #[test]

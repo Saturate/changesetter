@@ -105,6 +105,8 @@ A changeset with nothing between its fences names no package. It records that a 
 Only the build pipeline changed.
 ```
 
+The two fences must be whole `---` lines. An empty changeset whose body has a `package: bump` line is refused, since that's a doubled opening fence rather than an empty changeset.
+
 `check` counts it, and `version` and `release` delete it without bumping anything. The body goes nowhere: no changelog, tag message or release notes. When every pending changeset is empty, `release` commits only their removal (`chore: remove empty changesets`) and creates no tags.
 
 ## Type and scope

@@ -178,9 +178,12 @@ fn read_changesets(
 fn run_post_bump_hooks(repo_root: &Path, config: &Config) -> anyhow::Result<()> {
     for hook in &config.hooks.post_bump {
         eprintln!("Running post-bump hook: {hook}");
+        // The Azure job token is in the environment for `version-pr`'s API
+        // calls; repo-defined hooks don't need it.
         let status = std::process::Command::new("sh")
             .args(["-c", hook])
             .current_dir(repo_root)
+            .env_remove("SYSTEM_ACCESSTOKEN")
             .status()?;
         if !status.success() {
             anyhow::bail!("post-bump hook failed: {hook}");

@@ -71,12 +71,22 @@ function runVersionPr(bin, prTitle) {
     execFile(bin, args, { env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (stderr) process.stderr.write(stderr);
       if (err) {
+        if (/unrecognized subcommand 'version-pr'/.test(String(stderr))) {
+          reject(new Error("Version PR mode needs changesetter 0.9.0 or newer; set the task's version input to 0.9.0 or later"));
+          return;
+        }
         const lines = String(stderr || "").trim().split("\n");
         const last = lines.reverse().find((l) => l.startsWith("error: ")) || err.message;
         reject(new Error(last.replace(/^error: /, "")));
         return;
       }
-      resolve(JSON.parse(stdout));
+      // Thrown inside this callback it would be an uncaught exception, not a
+      // failed task.
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (parseErr) {
+        reject(new Error(`changesetter version-pr printed no JSON: ${parseErr.message}`));
+      }
     });
   });
 }

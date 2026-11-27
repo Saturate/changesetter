@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: actionlint
-        uses: docker://rhysd/actionlint:1.7.7
+        uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
       # actionlint only reads .github/workflows; the composite actions ship

@@ -297,25 +297,16 @@ fn tag_commit(
     tag::run_in(&worktree.path, &args)
 }
 
-/// Bumps on a fresh version branch from HEAD, commits, force-pushes and
-/// switches back. Returns the PR description. A failed bump stops here, so a
-/// half-edited tree never becomes a version PR.
+/// Bumps in a temporary worktree of HEAD, commits and force-pushes that as
+/// the version branch, and returns the PR description. The caller's
+/// checkout is never touched: uncommitted edits and stray files in it stay
+/// out of the version PR, and a failed bump leaves it as it was.
 fn push_version_branch(repo_root: &Path, remote: &str, limit: usize) -> anyhow::Result<String> {
-    let original = match crate::git::run_git(repo_root, &["symbolic-ref", "-q", "--short", "HEAD"])?
-    {
-        Some(branch) => branch.trim().to_string(),
-        None => tag::resolve_commit(repo_root, "HEAD")?,
-    };
-    // Files already lying around (a downloaded binary, build output) aren't
-    // part of the bump and must not ride along into the version PR.
-    let stray = git(
-        repo_root,
-        &["ls-files", "-z", "--others", "--exclude-standard"],
-    )?;
-
-    git(repo_root, &["checkout", "-q", "-B", VERSION_BRANCH])?;
+    let head = tag::resolve_commit(repo_root, "HEAD")?;
+    let worktree = tag::TempWorktree::add(repo_root, &head)?;
+    let wt = worktree.path.as_path();
     let result = executor::execute_version(
-        repo_root,
+        wt,
         &ExecuteOptions {
             dry_run: false,
             no_commit: true,
@@ -325,30 +316,29 @@ fn push_version_branch(repo_root: &Path, remote: &str, limit: usize) -> anyhow::
     )?;
     let body = crate::release::pr_body::render(&result.plan, limit);
 
-    git(repo_root, &["add", "-A"])?;
-    let stray: Vec<&str> = stray.split('\0').filter(|p| !p.is_empty()).collect();
-    if !stray.is_empty() {
-        let mut reset = vec!["reset", "-q", "--"];
-        reset.extend(stray);
-        git(repo_root, &reset)?;
-    }
-    let mut commit = identity_args(repo_root)?;
+    git(wt, &["add", "-A"])?;
+    // Hooks off: the throwaway checkout has none of the tooling a husky
+    // pre-commit or pre-push hook expects.
+    let mut commit = identity_args(wt)?;
     commit.extend(
         [
+            "-c",
+            "core.hooksPath=/dev/null",
             "commit",
             "-q",
             "--allow-empty",
-            "--no-verify",
             "-m",
             "chore: version packages",
         ]
         .map(str::to_string),
     );
     let commit: Vec<&str> = commit.iter().map(String::as_str).collect();
-    git(repo_root, &commit)?;
+    git(wt, &commit)?;
     git(
-        repo_root,
+        wt,
         &[
+            "-c",
+            "core.hooksPath=/dev/null",
             "push",
             "--quiet",
             "--force",
@@ -356,7 +346,6 @@ fn push_version_branch(repo_root: &Path, remote: &str, limit: usize) -> anyhow::
             &format!("HEAD:refs/heads/{VERSION_BRANCH}"),
         ],
     )?;
-    git(repo_root, &["checkout", "-q", &original])?;
     Ok(body)
 }
 
@@ -678,7 +667,9 @@ mod tests {
         let r = repo(true);
         std::fs::write(r.work.join("changesetter.tar.gz"), "binary").unwrap();
         run_with(&r.work, &args(), &FakeForge::default()).unwrap();
-        let files = sh(&r.work, &["ls-tree", "-r", "--name-only", VERSION_BRANCH]);
+        sh(&r.work, &["fetch", "-q", "origin"]);
+        let branch = format!("origin/{VERSION_BRANCH}");
+        let files = sh(&r.work, &["ls-tree", "-r", "--name-only", &branch]);
         assert!(!files.contains("changesetter.tar.gz"), "{files}");
         assert!(r.work.join("changesetter.tar.gz").exists());
     }
@@ -756,7 +747,7 @@ mod tests {
         let r = repo(false);
         std::fs::write(
             r.work.join("CHANGELOG.md"),
-            "# Changelog\n\n## 1.0.1, 0.1.1 - 2026-02-01\n\n- Web fix\n",
+            "# Changelog\n\n## 1.0.1, 0.1.1 - 2026-02-01\n\n### @d/ui\n\n- UI fix\n\n### @d/web\n\n- Web fix\n",
         )
         .unwrap();
         sh(&r.work, &["add", "-A"]);
@@ -861,5 +852,46 @@ mod tests {
         };
         run_with(&r.work, &a, &forge).unwrap();
         assert!(forge.published.borrow().is_empty());
+    }
+
+    #[test]
+    fn tracked_edits_in_the_checkout_stay_out_and_stay_put() {
+        let r = repo(true);
+        std::fs::write(r.work.join("apps/admin/notes.txt"), "local").unwrap();
+        sh(&r.work, &["add", "apps/admin/notes.txt"]);
+        sh(&r.work, &["commit", "-q", "-m", "notes"]);
+        std::fs::write(r.work.join("apps/admin/notes.txt"), "edited locally").unwrap();
+        run_with(&r.work, &args(), &FakeForge::default()).unwrap();
+        sh(&r.work, &["fetch", "-q", "origin"]);
+        let on_branch = sh(
+            &r.work,
+            &[
+                "show",
+                &format!("origin/{VERSION_BRANCH}:apps/admin/notes.txt"),
+            ],
+        );
+        assert_eq!(on_branch, "local");
+        assert_eq!(
+            std::fs::read_to_string(r.work.join("apps/admin/notes.txt")).unwrap(),
+            "edited locally"
+        );
+    }
+
+    #[test]
+    fn a_failed_bump_leaves_the_checkout_alone() {
+        let r = repo(true);
+        let toml = std::fs::read_to_string(r.work.join("changesetter.toml")).unwrap();
+        std::fs::write(
+            r.work.join("changesetter.toml"),
+            format!("{toml}[hooks]\npost_bump = [\"false\"]\n"),
+        )
+        .unwrap();
+        sh(&r.work, &["commit", "-q", "-am", "failing hook"]);
+        let err = run_with(&r.work, &args(), &FakeForge::default()).unwrap_err();
+        assert!(err.to_string().contains("post-bump hook failed"), "{err}");
+        assert_eq!(sh(&r.work, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+        assert_eq!(sh(&r.work, &["status", "--porcelain"]), "");
+        assert!(!remote_refs(&r).contains(VERSION_BRANCH));
+        assert_eq!(sh(&r.work, &["worktree", "list"]).lines().count(), 1);
     }
 }

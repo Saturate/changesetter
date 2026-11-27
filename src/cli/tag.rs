@@ -73,6 +73,9 @@ struct Candidate {
     version: String,
     tag: String,
     changelog: PathBuf,
+    /// The changelog is shared by every package, with a `### <name>`
+    /// subsection per package under each version.
+    shared_changelog: bool,
 }
 
 /// Creates the tags missing for the current package versions at HEAD and
@@ -110,9 +113,29 @@ pub fn run_in(repo_root: &Path, args: &TagArgs) -> anyhow::Result<Vec<TagResult>
                 version,
                 tag,
                 changelog,
+                shared_changelog: is_monorepo && !config.changelog.per_package,
             })
         })
         .collect();
+
+    // Two packages formatting to one tag (`format = "v{version}"` on
+    // packages released in lockstep) would tag one and then fail, or
+    // overwrite one with the other, so neither is tagged.
+    let mut by_tag: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for c in &candidates {
+        by_tag.entry(&c.tag).or_default().push(&c.name);
+    }
+    let clashes: Vec<String> = by_tag
+        .iter()
+        .filter(|(_, names)| names.len() > 1)
+        .map(|(tag, names)| format!("{tag} ({})", names.join(", ")))
+        .collect();
+    if !clashes.is_empty() {
+        anyhow::bail!(
+            "More than one package maps to the same tag: {}. Put {{name}} in [tag] format, or [tag] skip all but one.",
+            clashes.join("; ")
+        );
+    }
 
     let tag_names: Vec<&str> = candidates.iter().map(|c| c.tag.as_str()).collect();
     let existing = if args.push {
@@ -210,7 +233,22 @@ pub fn run_in(repo_root: &Path, args: &TagArgs) -> anyhow::Result<Vec<TagResult>
 
 fn notes_for(c: &Candidate) -> Option<String> {
     let text = std::fs::read_to_string(&c.changelog).ok()?;
-    crate::changelog::generator::version_notes(&text, &c.version)
+    let section = crate::changelog::generator::version_notes(&text, &c.version)?;
+    if !c.shared_changelog {
+        return Some(section);
+    }
+    package_subsection(&section, &c.name)
+}
+
+/// A package's `### <name>` part of a shared monorepo changelog's version
+/// section, so its tag doesn't carry the other packages' notes.
+fn package_subsection(section: &str, name: &str) -> Option<String> {
+    let heading = format!("### {name}");
+    let mut lines = section.lines().skip_while(|l| l.trim_end() != heading);
+    lines.next()?;
+    let body: Vec<&str> = lines.take_while(|l| !l.starts_with("### ")).collect();
+    let body = body.join("\n").trim().to_string();
+    (!body.is_empty()).then_some(body)
 }
 
 fn run_checked(repo_root: &Path, args: &[&str]) -> anyhow::Result<String> {
@@ -220,9 +258,18 @@ fn run_checked(repo_root: &Path, args: &[&str]) -> anyhow::Result<String> {
         .output()
         .map_err(|_| crate::errors::ChangesetterError::GitNotFound)?;
     if !output.status.success() {
+        // The subcommand, not a leading `-c key=value`.
+        let mut rest = args.iter().copied();
+        let sub = loop {
+            match rest.next() {
+                Some("-c") => {
+                    rest.next();
+                }
+                other => break other.unwrap_or_default(),
+            }
+        };
         anyhow::bail!(
-            "git {} failed: {}",
-            args.first().copied().unwrap_or_default(),
+            "git {sub} failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
@@ -248,7 +295,16 @@ fn create_tag(
     if force {
         args.push("-f");
     }
-    if let Some(msg) = message {
+    // With --cleanup=verbatim a message without a final newline runs into
+    // the signature git appends for tag.gpgSign, and the tag won't verify.
+    let message = message.map(|m| {
+        if m.ends_with('\n') {
+            m.to_string()
+        } else {
+            format!("{m}\n")
+        }
+    });
+    if let Some(msg) = &message {
         args.extend(["-a", "-m", msg, "--cleanup=verbatim"]);
     }
     args.extend([tag, commit]);
@@ -374,10 +430,27 @@ impl TempWorktree {
         let path =
             std::env::temp_dir().join(format!("changesetter-since-{}-{nanos}", std::process::id()));
         let path_str = path.to_string_lossy().into_owned();
-        run_checked(
+        // Hooks off: a post-checkout hook (husky, LFS) has no business in a
+        // throwaway checkout, and a failing one would fail the command.
+        let added = run_checked(
             repo_root,
-            &["worktree", "add", "--quiet", "--detach", &path_str, commit],
-        )?;
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                &path_str,
+                commit,
+            ],
+        );
+        if let Err(e) = added {
+            // A half-made worktree stays registered unless removed.
+            let _ = run_checked(repo_root, &["worktree", "remove", "--force", &path_str]);
+            let _ = run_checked(repo_root, &["worktree", "prune"]);
+            return Err(e);
+        }
         Ok(Self {
             repo_root: repo_root.to_path_buf(),
             path,
@@ -612,5 +685,67 @@ mod tests {
         assert_eq!(results[0].notes.as_deref(), Some("- Web fix"));
         let message = git(p, &["tag", "-l", "--format=%(contents)", "@s/web@v1.0.1"]);
         assert_eq!(message, "- Web fix");
+    }
+
+    #[test]
+    fn packages_sharing_a_tag_name_fail_before_tagging() {
+        let (dir, base, _) = monorepo();
+        std::fs::write(
+            dir.path().join("changesetter.toml"),
+            "[tag]\nformat = \"v{version}\"\n",
+        )
+        .unwrap();
+        commit(dir.path(), "shared format");
+        let err = run_in(dir.path(), &args(Some(&base)))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("v1.0.1 (@s/ui, @s/web)"), "{err}");
+        assert!(tags(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn shared_changelog_gives_each_tag_its_own_subsection() {
+        let section = "### @s/ui\n\n- ui\n\n### @s/web\n\n#### Fix\n\n- web\n";
+        assert_eq!(
+            package_subsection(section, "@s/web").as_deref(),
+            Some("#### Fix\n\n- web")
+        );
+        assert_eq!(
+            package_subsection(section, "@s/ui").as_deref(),
+            Some("- ui")
+        );
+        assert_eq!(package_subsection(section, "@s/admin"), None);
+    }
+
+    #[test]
+    fn failing_post_checkout_hook_neither_fails_nor_leaks_a_worktree() {
+        let (dir, base, _) = monorepo();
+        let hooks = dir.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("post-checkout");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut a = args(Some(&base));
+        a.dry_run = true;
+        assert_eq!(run_in(dir.path(), &a).unwrap().len(), 1);
+        assert_eq!(git(dir.path(), &["worktree", "list"]).lines().count(), 1);
+    }
+
+    #[test]
+    fn tag_messages_end_with_a_newline() {
+        let (dir, base, _) = monorepo();
+        run_in(dir.path(), &args(Some(&base))).unwrap();
+        let raw = git(dir.path(), &["cat-file", "-p", "@s/web@v1.0.1"]);
+        assert!(raw.ends_with("Release @s/web@1.0.1"), "{raw}");
+        let out = std::process::Command::new("git")
+            .args(["cat-file", "-p", "@s/web@v1.0.1"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&out.stdout).ends_with("Release @s/web@1.0.1\n"));
     }
 }

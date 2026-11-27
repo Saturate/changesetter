@@ -116,8 +116,10 @@ impl Http {
         let mut req = ureq::http::Request::builder()
             .method(method)
             .uri(url)
-            .header("Authorization", &self.auth)
-            .header("Accept", "application/json");
+            .header("Authorization", &self.auth);
+        if !self.extra.iter().any(|(k, _)| *k == "Accept") {
+            req = req.header("Accept", "application/json");
+        }
         for (k, v) in &self.extra {
             req = req.header(*k, *v);
         }
@@ -157,9 +159,24 @@ impl Http {
     }
 }
 
+/// A full commit id (SHA-1 or SHA-256). Values from an API response reach
+/// git as arguments, so anything else, such as one starting with `-`, is
+/// refused rather than passed on.
+fn sha(value: &str, what: &str) -> anyhow::Result<String> {
+    let ok = matches!(value.len(), 40 | 64) && value.chars().all(|c| c.is_ascii_hexdigit());
+    if !ok {
+        anyhow::bail!("{what} is not a commit id: {:?}", snippet(value));
+    }
+    Ok(value.to_lowercase())
+}
+
+/// At most 300 characters of an API response, for error messages.
+fn snippet(text: &str) -> String {
+    text.chars().take(300).collect()
+}
+
 fn http_error(what: &str, status: u16, text: &str) -> anyhow::Error {
-    let detail: String = text.chars().take(300).collect();
-    anyhow::anyhow!("{what} failed: HTTP {status} {detail}")
+    anyhow::anyhow!("{what} failed: HTTP {status} {}", snippet(text))
 }
 
 fn id_of(v: &serde_json::Value, key: &str) -> Option<u64> {
@@ -255,7 +272,10 @@ impl Forge for Azure {
             Some(&body),
         )?;
         let Some(results) = data.get("results").and_then(|r| r.as_array()) else {
-            anyhow::bail!("Pull request query returned no results array: {data}");
+            anyhow::bail!(
+                "Pull request query returned no results array: {}",
+                snippet(&data.to_string())
+            );
         };
         let source = Self::source_ref();
         let found = results
@@ -272,14 +292,18 @@ impl Forge for Azure {
                         .as_str()
                         .is_some_and(|c| c.eq_ignore_ascii_case(commit))
             });
-        Ok(found.and_then(|pr| {
-            Some(MergedPr {
-                id: id_of(pr, "pullRequestId")?,
-                commit: commit.to_lowercase(),
-                target_commit: pr["lastMergeTargetCommit"]["commitId"]
-                    .as_str()
-                    .map(str::to_lowercase),
-            })
+        let Some(pr) = found else { return Ok(None) };
+        let Some(id) = id_of(pr, "pullRequestId") else {
+            return Ok(None);
+        };
+        let target_commit = pr["lastMergeTargetCommit"]["commitId"]
+            .as_str()
+            .map(|c| sha(c, "lastMergeTargetCommit"))
+            .transpose()?;
+        Ok(Some(MergedPr {
+            id,
+            commit: commit.to_lowercase(),
+            target_commit,
         }))
     }
 
@@ -313,8 +337,12 @@ impl Forge for Azure {
             &format!("{}pullrequests?api-version=7.1", self.api),
             Some(&payload),
         )?;
-        let id = id_of(&data, "pullRequestId")
-            .ok_or_else(|| anyhow::anyhow!("Creating version PR returned no id: {data}"))?;
+        let id = id_of(&data, "pullRequestId").ok_or_else(|| {
+            anyhow::anyhow!(
+                "Creating version PR returned no id: {}",
+                snippet(&data.to_string())
+            )
+        })?;
         Ok(self.open(id))
     }
 
@@ -387,6 +415,29 @@ impl GitHub {
         })
     }
 
+    /// Whether the release list has a release for `tag`, drafts included.
+    /// Newest first, so a draft made by a recent run is on the first pages.
+    fn draft_release_exists(&self, tag: &str) -> anyhow::Result<bool> {
+        for page in 1..=10 {
+            let data = self.http.json(
+                "Listing GitHub Releases",
+                "GET",
+                &format!("{}releases?per_page=100&page={page}", self.api),
+                None,
+            )?;
+            let Some(list) = data.as_array() else {
+                return Ok(false);
+            };
+            if list.iter().any(|r| r["tag_name"] == tag) {
+                return Ok(true);
+            }
+            if list.len() < 100 {
+                return Ok(false);
+            }
+        }
+        Ok(false)
+    }
+
     fn open(pr: &serde_json::Value) -> Option<OpenPr> {
         Some(OpenPr {
             id: id_of(pr, "number")?,
@@ -412,7 +463,10 @@ impl Forge for GitHub {
             None,
         )?;
         let Some(prs) = data.as_array() else {
-            anyhow::bail!("Pull request lookup returned no list: {data}");
+            anyhow::bail!(
+                "Pull request lookup returned no list: {}",
+                snippet(&data.to_string())
+            );
         };
         Ok(prs
             .iter()
@@ -459,8 +513,12 @@ impl Forge for GitHub {
                 "body": body,
             })),
         )?;
-        let pr = Self::open(&data)
-            .ok_or_else(|| anyhow::anyhow!("Creating version PR returned no number: {data}"))?;
+        let pr = Self::open(&data).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Creating version PR returned no number: {}",
+                snippet(&data.to_string())
+            )
+        })?;
         // The label is how a later run recognises the merge. 422 is "already
         // exists".
         let what = "Creating the changesetter:version label";
@@ -524,16 +582,23 @@ impl Forge for GitHub {
         // Asked of the API rather than local history, which a shallow
         // checkout doesn't have. "behind" or "diverged" means the merge isn't
         // in `commit`, as on a branch that was reset past it.
-        let compare = self.http.json(
-            "Version PR merge ancestry check",
-            "GET",
-            &format!("{}compare/{}...{}", self.api, encode(sha), encode(commit)),
-            None,
-        )?;
-        let contained = matches!(compare["status"].as_str(), Some("ahead" | "identical"));
-        Ok(contained.then(|| MergedPr {
+        // A 404 is GitHub's answer for commits with no common history, as
+        // after a history rewrite: then the merge isn't in `commit` either.
+        let merge = self::sha(sha, "merge_commit_sha")?;
+        let what = "Version PR merge ancestry check";
+        let url = format!("{}compare/{merge}...{}", self.api, encode(commit));
+        let (status, compare, text) = self.http.send(what, "GET", &url, None)?;
+        let contained = match status {
+            200..=299 => matches!(
+                compare.as_ref().and_then(|c| c["status"].as_str()),
+                Some("ahead" | "identical")
+            ),
+            404 => false,
+            _ => return Err(http_error(what, status, &text)),
+        };
+        Ok(contained.then_some(MergedPr {
             id,
-            commit: sha.to_lowercase(),
+            commit: merge,
             target_commit: None,
         }))
     }
@@ -546,6 +611,11 @@ impl Forge for GitHub {
             200..=299 => return Ok(None),
             404 => {}
             _ => return Err(http_error(&what, status, &text)),
+        }
+        // releases/tags/{tag} only finds published releases; a draft for the
+        // tag is only in the release list.
+        if self.draft_release_exists(&release.tag)? {
+            return Ok(None);
         }
         let data = self.http.json(
             &format!("Creating GitHub Release {}", release.tag),
@@ -650,7 +720,7 @@ mod tests {
                 serde_json::json!({"results": [{"abc123": [
                     {"pullRequestId": 5, "status": "active", "sourceRefName": "refs/heads/changesetter/version-packages", "lastMergeCommit": {"commitId": "abc123"}},
                     {"pullRequestId": 6, "status": "completed", "sourceRefName": "refs/heads/feature", "lastMergeCommit": {"commitId": "abc123"}},
-                    {"pullRequestId": 7, "status": "completed", "sourceRefName": "refs/heads/changesetter/version-packages", "lastMergeCommit": {"commitId": "ABC123"}, "lastMergeTargetCommit": {"commitId": "DEF"}},
+                    {"pullRequestId": 7, "status": "completed", "sourceRefName": "refs/heads/changesetter/version-packages", "lastMergeCommit": {"commitId": "ABC123"}, "lastMergeTargetCommit": {"commitId": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"}},
                 ]}]})
                 .to_string(),
             )
@@ -661,7 +731,7 @@ mod tests {
             Some(MergedPr {
                 id: 7,
                 commit: "abc123".into(),
-                target_commit: Some("def".into())
+                target_commit: Some("dddddddddddddddddddddddddddddddddddddddd".into())
             })
         );
         let s = seen.lock().unwrap()[0].clone();
@@ -802,7 +872,10 @@ mod tests {
     fn github_recovery_takes_the_newest_merged_version_pr_in_history() {
         let (url, seen) = serve(|s| {
             if s.path.contains("/compare/") {
-                let status = if s.path.contains("/compare/M2...") {
+                let status = if s
+                    .path
+                    .contains("/compare/abababababababababababababababababababab...")
+                {
                     "ahead"
                 } else {
                     "diverged"
@@ -813,7 +886,7 @@ mod tests {
                 200,
                 serde_json::json!([
                     {"number": 1, "merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": "m1", "labels": [{"name": "changesetter:version"}]},
-                    {"number": 2, "merged_at": "2026-02-01T00:00:00Z", "merge_commit_sha": "M2", "labels": [{"name": "changesetter:version"}]},
+                    {"number": 2, "merged_at": "2026-02-01T00:00:00Z", "merge_commit_sha": "ABABABABABABABABABABABABABABABABABABABAB", "labels": [{"name": "changesetter:version"}]},
                     {"number": 3, "merged_at": null, "merge_commit_sha": "m3", "labels": [{"name": "changesetter:version"}]},
                     {"number": 4, "merged_at": "2026-03-01T00:00:00Z", "merge_commit_sha": "m4", "labels": []},
                 ])
@@ -825,13 +898,13 @@ mod tests {
             gh.recover_merged_version_pr("head").unwrap(),
             Some(MergedPr {
                 id: 2,
-                commit: "m2".into(),
+                commit: "abababababababababababababababababababab".into(),
                 target_commit: None
             })
         );
         assert_eq!(
             seen.lock().unwrap()[1].path,
-            "/repos/acme/repo/compare/M2...head"
+            "/repos/acme/repo/compare/abababababababababababababababababababab...head"
         );
     }
 
@@ -841,7 +914,7 @@ mod tests {
             if s.path.contains("/compare/") {
                 return (200, r#"{"status":"behind"}"#.into());
             }
-            (200, r#"[{"number":2,"merged_at":"2026-02-01T00:00:00Z","merge_commit_sha":"m2","labels":[{"name":"changesetter:version"}]}]"#.into())
+            (200, r#"[{"number":2,"merged_at":"2026-02-01T00:00:00Z","merge_commit_sha":"abababababababababababababababababababab","labels":[{"name":"changesetter:version"}]}]"#.into())
         });
         let gh = GitHub::new(&url, "acme/repo", "tok", "main").unwrap();
         assert_eq!(gh.recover_merged_version_pr("head").unwrap(), None);
@@ -861,6 +934,9 @@ mod tests {
     fn github_publishes_a_release_only_when_missing() {
         let (url, seen) = serve(|s| match (s.method.as_str(), s.path.as_str()) {
             ("GET", "/repos/acme/repo/releases/tags/v1.0.0") => (200, "{}".into()),
+            ("GET", "/repos/acme/repo/releases?per_page=100&page=1") => {
+                (200, r#"[{"tag_name":"v0.9.0","draft":true}]"#.into())
+            }
             ("GET", _) => (404, r#"{"message":"Not Found"}"#.into()),
             _ => (201, r#"{"html_url":"https://gh/rel/2"}"#.into()),
         });
@@ -878,7 +954,11 @@ mod tests {
             "/repos/acme/repo/releases/tags/%40s%2Fa%40v2.0.0-rc.0"
         );
         assert_eq!(
-            seen[2].body,
+            seen[2].path,
+            "/repos/acme/repo/releases?per_page=100&page=1"
+        );
+        assert_eq!(
+            seen[3].body,
             serde_json::json!({"tag_name": "@s/a@v2.0.0-rc.0", "name": "pkg v2.0.0-rc.0", "body": "- Notes", "draft": false, "prerelease": true})
         );
     }
@@ -889,5 +969,56 @@ mod tests {
         let gh = GitHub::new(&url, "acme/repo", "tok", "main").unwrap();
         let err = gh.publish_release(&release("v1")).unwrap_err().to_string();
         assert!(err.contains("HTTP 500"), "{err}");
+    }
+
+    #[test]
+    fn github_finds_an_existing_draft_in_the_release_list() {
+        let (url, seen) = serve(|s| match s.path.as_str() {
+            "/repos/acme/repo/releases?per_page=100&page=1" => {
+                (200, r#"[{"tag_name":"v0.9.0","draft":true}]"#.into())
+            }
+            _ => (404, "{}".into()),
+        });
+        let gh = GitHub::new(&url, "acme/repo", "tok", "main").unwrap();
+        assert_eq!(gh.publish_release(&release("v0.9.0")).unwrap(), None);
+        assert!(seen.lock().unwrap().iter().all(|s| s.method == "GET"));
+    }
+
+    #[test]
+    fn commit_ids_from_the_api_are_validated() {
+        assert!(sha("--upload-pack=x", "merge_commit_sha").is_err());
+        assert!(sha("abc", "merge_commit_sha").is_err());
+        assert_eq!(sha(&"A".repeat(40), "x").unwrap(), "a".repeat(40));
+        assert!(sha(&"a".repeat(64), "x").is_ok());
+
+        let (url, _) = serve(|_| {
+            (
+                200,
+                serde_json::json!({"results": [{"abc": [
+                    {"pullRequestId": 7, "status": "completed", "sourceRefName": "refs/heads/changesetter/version-packages", "lastMergeCommit": {"commitId": "abc"}, "lastMergeTargetCommit": {"commitId": "-x"}},
+                ]}]})
+                .to_string(),
+            )
+        });
+        let err = azure(&url)
+            .merged_version_pr("abc")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("lastMergeTargetCommit is not a commit id"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn github_recovery_treats_unrelated_history_as_not_contained() {
+        let (url, _) = serve(|s| {
+            if s.path.contains("/compare/") {
+                return (404, r#"{"message":"No common ancestor"}"#.into());
+            }
+            (200, serde_json::json!([{"number": 2, "merged_at": "2026-02-01T00:00:00Z", "merge_commit_sha": "c".repeat(40), "labels": [{"name": "changesetter:version"}]}]).to_string())
+        });
+        let gh = GitHub::new(&url, "acme/repo", "tok", "main").unwrap();
+        assert_eq!(gh.recover_merged_version_pr("head").unwrap(), None);
     }
 }

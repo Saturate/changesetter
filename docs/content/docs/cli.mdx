@@ -41,7 +41,7 @@ Without `--base`, checks every changeset in the changeset directory. With `--bas
 
 Every package a counted changeset names must be one `version` can bump: a detected package that `ignore` doesn't exclude, or `default` in a single-package repo. A name that doesn't match fails the check with exit code 1, listing each file and name, so a typo is caught on the PR instead of failing the version PR on `main`. Deleted changesets aren't checked.
 
-With `--base`, the check also maps every changed file to the package whose directory holds it (the deepest one, so a root package doesn't claim files in a nested package) and warns about packages that changed with no changeset on the branch naming them. A `none` bump counts as naming the package. It's a warning because a dependency cascade or a deliberately unversioned change can be right; `--strict` makes it fail. Files under the changeset directory don't count, and a branch that only deletes changesets (a version PR) is never warned about.
+With `--base`, the check also maps every changed file to the package whose directory holds it (the deepest one, so a root package doesn't claim files in a nested package) and warns about packages that changed with no changeset on the branch naming them. A `none` bump counts as naming the package. It's a warning because a dependency cascade or a deliberately unversioned change can be right; `--strict` makes it fail. Files under the changeset directory don't count. On a branch that only deletes changesets, like a version PR, manifests, lockfiles and changelogs don't count either, since `version` rewrites those; its other changes still need a changeset. An [empty changeset](/changeset-format#empty-changesets) names no package, so it doesn't cover a change inside one: use `<package>: none` for that. A nameless single package is reported as `default`.
 
 The JSON has these keys:
 
@@ -199,7 +199,9 @@ Create the git tags missing for the current package versions, on HEAD. CI runs i
 
 Tag names follow `[tag] format`, and packages in `[tag] skip` get none. A tag that already points at HEAD is reported with `created: false`. Without `--since` every package is a candidate, and a tag that already exists on an older commit just means that version was released earlier, so it's left alone. With `--since`, the versions changed since `<rev>` are the ones being released, so such a tag is a version collision: the command fails and creates no tags. The versions at `<rev>` are read from a temporary worktree, so the commit has to be in the local repository (`git fetch --depth=1 origin <sha>` in a shallow checkout).
 
-Tags are annotated with the version's section from the package's changelog, like `release` writes them, or `Release <name>@<version>` (`Release <version>` in a single-package repo) when the changelog has no such section. `[release] tag_annotated = false` makes them lightweight.
+Tags are annotated with the version's section from the package's changelog, like `release` writes them; in a shared monorepo changelog, only that package's `### <name>` part of it. Without such a section the message is `Release <name>@<version>` (`Release <version>` in a single-package repo). `[release] tag_annotated = false` makes them lightweight.
+
+A nameless package in a monorepo, such as a `{"private": true}` workspace root, gets no tag. If two packages would get the same tag name (a `[tag] format` without `{name}`), the command fails before creating any. Temporary worktrees for `--since` run without git hooks.
 
 ```sh
 changesetter tag --since HEAD^1 --push --output json
@@ -222,9 +224,9 @@ The version-PR loop for CI on `main`: tag a merged version PR, then create or up
 | `--draft` | GitHub only: create GitHub Releases as drafts |
 | `--output json` | Print `{"merged_pr", "tags", "released", "github_releases", "version_pr"}` |
 
-`azure` reads `SYSTEM_ACCESSTOKEN`, `SYSTEM_COLLECTIONURI`, `SYSTEM_TEAMPROJECT` and `BUILD_REPOSITORY_ID`. `github` reads `GITHUB_TOKEN` (or `GH_TOKEN`), `GITHUB_REPOSITORY` and `GITHUB_API_URL`, recognises a version PR merge by its `changesetter:version` label and the merge commit, and diffs against the merge's first parent. On GitHub it also:
+`azure` reads `SYSTEM_ACCESSTOKEN`, `SYSTEM_COLLECTIONURI`, `SYSTEM_TEAMPROJECT` and `BUILD_REPOSITORY_ID`. `github` reads `GITHUB_TOKEN` (or `GH_TOKEN`), `GITHUB_REPOSITORY` and `GITHUB_API_URL`, recognises a version PR merge by its merge commit, its `changesetter:version` label and its `changesetter/version-packages` head branch, and diffs against the merge's first parent. On GitHub it also:
 
-- creates a GitHub Release for each tag that doesn't have one, titled `<name> v<version>` and with the version's changelog section as notes; a version with a pre-release part becomes a pre-release. `--no-github-release` turns this off, and `--draft` creates them as drafts.
+- creates a GitHub Release for each tag that doesn't have one (a draft counts), titled `<name> v<version>` and with the version's changelog section as notes; a version with a pre-release part becomes a pre-release. `--no-github-release` turns this off, and `--draft` creates them as drafts.
 - when the commit isn't a version PR merge, finishes the newest merged version PR whose merge is in the commit's history, in case its run was cancelled. Only missing tags and releases are created.
 
 The JSON also has `released` (`[{name, version, tag, changelog}]`, only what this run tagged or published, so a re-run reports nothing) and `github_releases` (`[{tag, created, url}]`).

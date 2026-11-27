@@ -130,6 +130,19 @@ new_repo f; M=$(version_pr_merge 2.0.0-rc.0); label_merge "$M"
 run_steps 1; check "tag v2.0.0-rc.0" '[ "$(remote_tag_at v2.0.0-rc.0)" = "$M" ]'
 check "created as a prerelease" '[ "$(jq -r .prerelease "$FX/created.log")" = true ]'
 
+echo "F2: draft releases are found again on the next push"
+new_repo f2; M=$(version_pr_merge 1.1.0); label_merge "$M"
+run_draft() {
+  OUT="$FX/out-$1"; : > "$OUT"; start_mock
+  GITHUB_OUTPUT="$OUT" GITHUB_TOKEN=x GITHUB_API_URL="$API" GITHUB_REPOSITORY=o/r \
+    GITHUB_SHA="$(git rev-parse HEAD)" GITHUB_REF_NAME=main PR_TITLE="Version Packages" \
+    GITHUB_RELEASE=true DRAFT=true \
+    bash -eo pipefail "$STEPS/version-pr.sh" > "$FX/log-$1" 2>&1 || echo "version-pr failed" >> "$FX/log-$1"
+  stop_mock
+}
+run_draft 1; check "draft release created" '[ "$(jq -r .draft "$FX/created.log")" = true ] && [ "$(out 1 released)" = true ]'
+run_draft 2; check "re-run finds the draft: no second release, released=false" '[ "$(created)" -eq 1 ] && [ "$(out 2 released)" = false ]'
+
 echo "G: API failure fails the step"
 new_repo g; M=$(version_pr_merge 1.1.0); label_merge "$M"
 FAIL_API=1 run_steps 1; check "step failed and nothing tagged" 'grep -q "version-pr failed" "$FX/log-1" && [ -z "$(remote_tag_at v1.1.0)" ]'

@@ -29,7 +29,7 @@ Download a pinned version, verify it against the release's `SHA256SUMS`, and put
   displayName: Install changesetter
 ```
 
-The archive is downloaded outside the repository, so it can't end up in a commit. `SHA256SUMS` is published from 0.9.0 on; see [Verify a download](/#verify-a-download) for the build provenance check. To follow the newest release instead of pinning, use `https://github.com/saturate/changesetter/releases/latest/download` as `BASE`.
+The archive is downloaded outside the repository, so it can't end up in a commit. `version-pr` reads the agent's certificate store for its HTTPS calls, so a container job on a minimal image needs the `ca-certificates` package. `SHA256SUMS` is published from 0.9.0 on; see [Verify a download](/#verify-a-download) for the build provenance check. To follow the newest release instead of pinning, use `https://github.com/saturate/changesetter/releases/latest/download` as `BASE`.
 
 ## Changeset check on PRs
 
@@ -146,7 +146,7 @@ steps:
 
 1. It asks Azure DevOps whether the commit being built is the merge commit of a completed `changesetter/version-packages` PR. It matches by merge commit, because the newest completed version PR stays completed forever and an active PR's merge commit is the test merge its PR validation builds run on. A failed API call fails the step instead of looking like "not a version PR".
 2. If it is, it runs [`tag --since <merge target> --push`](/cli#changesetter-tag): every package whose version the merge changed gets its tag, minus `[tag] skip`, pushed in one atomic push. The merge target comes from the PR, and is fetched when the checkout is shallow.
-3. If changesets are pending (also right after a release, since changesets can land while the version PR is open), it runs `version` on a fresh `changesetter/version-packages` branch, force-pushes it and creates or updates the version PR. Untracked files that were already in the checkout, such as a downloaded binary, stay out of the commit. Only that branch is pushed, so `main` stays protected.
+3. If changesets are pending (also right after a release, since changesets can land while the version PR is open), it runs `version` in a temporary worktree of HEAD, commits the result, force-pushes it as `changesetter/version-packages` and creates or updates the version PR. The build's own checkout isn't touched, so uncommitted changes and downloaded files in it never reach the version PR, and a failed bump leaves it as it was. `post_bump` hooks run in that worktree, without `SYSTEM_ACCESSTOKEN`; git hooks don't run there. Only the version branch is pushed, so `main` stays protected.
 
 The version PR's description is a changelog preview: one section per package with its version change and the entries as they go into its changelog, packages bumped only by a dependency cascade on one line each, and none-bump notes listed by title. Azure DevOps caps descriptions at 4000 characters, so whole sections are dropped from the end when needed and a note names the packages left out.
 
@@ -158,7 +158,7 @@ For a more integrated experience, changesetter provides an Azure Pipelines exten
 
 The extension wraps the same CLI commands with native Azure DevOps integration: PR comment threads, work item linking, and pipeline variables.
 
-In version-PR mode, the `ChangsetterRelease` task runs [`changesetter version-pr --provider azure`](#version-pr-pattern) with the pipeline's variables, so it behaves as described there. The `released`, `releases` (`[{ name, version, tag }]`) and `version` (the first release's) output variables cover the packages tagged for the merge; a tag that already exists on origin at that commit is still reported, so re-running a failed release build is safe. `versionPrId` is the version PR it created or updated. The task needs changesetter 0.9.0 or newer; its default `version: latest` installs one.
+In version-PR mode, the `ChangsetterRelease` task runs [`changesetter version-pr --provider azure`](#version-pr-pattern) with the pipeline's variables, so it behaves as described there. The `released`, `releases` (`[{ name, version, tag }]`) and `version` (the first release's) output variables cover the packages tagged for the merge; a tag that already exists on origin at that commit is still reported, so re-running a failed release build is safe and sets `released` again. That differs from the CLI's own `released` JSON list, which only has what the run created. `versionPrId` is the version PR it created or updated. The task needs changesetter 0.9.0 or newer; its default `version: latest` installs one.
 
 ## Permissions
 

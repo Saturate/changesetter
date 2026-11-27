@@ -110,9 +110,13 @@ fn review(repo_root: &Path, found: &[Found], base: Option<&str>) -> anyhow::Resu
         .iter()
         .filter_map(|f| f.changeset.as_ref().map(|cs| (f.file.as_str(), cs)))
         .collect();
-    if changesets.is_empty() {
+    if found.is_empty() {
         return Ok(Review::default());
     }
+    // A branch that only deletes changesets is a version PR, which changes
+    // manifests, lockfiles and changelogs of packages no changeset on it
+    // names. Its other changes still need a changeset.
+    let only_deletions = changesets.is_empty();
 
     let config = crate::config::Config::load(repo_root)?;
     let packages = crate::package::detector::detect_packages(repo_root, &config)?;
@@ -145,7 +149,10 @@ fn review(repo_root: &Path, found: &[Found], base: Option<&str>) -> anyhow::Resu
 
     let uncovered = match base {
         Some(base) => {
-            let changed = crate::git::changed_paths_since(repo_root, base)?;
+            let mut changed = crate::git::changed_paths_since(repo_root, base)?;
+            if only_deletions {
+                changed.retain(|path| !is_release_file(path, &config.changelog.file));
+            }
             touched_packages(
                 repo_root,
                 &packages,
@@ -154,6 +161,14 @@ fn review(repo_root: &Path, found: &[Found], base: Option<&str>) -> anyhow::Resu
             )
             .into_iter()
             .filter(|name| !named.contains(name))
+            // A nameless single package is named `default` in a changeset.
+            .map(|name| {
+                if name.is_empty() {
+                    "default".to_string()
+                } else {
+                    name
+                }
+            })
             .collect()
         }
         None => Vec::new(),
@@ -164,6 +179,29 @@ fn review(repo_root: &Path, found: &[Found], base: Option<&str>) -> anyhow::Resu
         unknown,
         uncovered,
     })
+}
+
+/// Files `version` rewrites: manifests, lockfiles (through `post_bump`
+/// hooks) and changelogs.
+fn is_release_file(path: &str, changelog_file: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let changelog = changelog_file.rsplit('/').next().unwrap_or(changelog_file);
+    name == changelog
+        || name.ends_with(".csproj")
+        || [
+            "Cargo.toml",
+            "Cargo.lock",
+            "package.json",
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "bun.lock",
+            "bun.lockb",
+            "pyproject.toml",
+            "Chart.yaml",
+            "project.godot",
+        ]
+        .contains(&name)
 }
 
 /// The packages owning at least one changed path. A path belongs to the
@@ -1071,6 +1109,70 @@ mylib: patch
         assert_eq!(
             touched.into_iter().collect::<Vec<_>>(),
             vec!["root".to_string(), "web".to_string()]
+        );
+    }
+
+    #[test]
+    fn deleting_a_changeset_does_not_exempt_code_changes() {
+        let dir = setup_repo();
+        std::fs::create_dir_all(dir.path().join(".changeset")).unwrap();
+        std::fs::write(
+            dir.path().join(".changeset/old.md"),
+            "---\nmylib: patch\n---\n\nOld\n",
+        )
+        .unwrap();
+        commit_all(dir.path(), "old");
+        Command::new("git")
+            .args(["checkout", "-q", "-b", "feature"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::fs::remove_file(dir.path().join(".changeset/old.md")).unwrap();
+        std::fs::write(dir.path().join("other/index.js"), "code").unwrap();
+        std::fs::write(
+            dir.path().join("mylib/package.json"),
+            r#"{"name":"mylib","version":"1.0.1"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("mylib/CHANGELOG.md"), "## 1.0.1\n").unwrap();
+        commit_all(dir.path(), "delete changeset, change code");
+
+        assert_eq!(
+            find(dir.path(), Some("main"))["uncovered"],
+            serde_json::json!(["other"])
+        );
+        assert!(check_json(dir.path(), true).is_err());
+    }
+
+    #[test]
+    fn nameless_single_package_is_reported_as_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+        ] {
+            Command::new("git")
+                .args(&args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(p.join("package.json"), r#"{"version":"1.0.0"}"#).unwrap();
+        std::fs::create_dir(p.join(".changeset")).unwrap();
+        commit_all(p, "init");
+        Command::new("git")
+            .args(["checkout", "-q", "-b", "f"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        std::fs::write(p.join("index.js"), "x").unwrap();
+        std::fs::write(p.join(".changeset/e.md"), "---\n---\n\nNothing.\n").unwrap();
+        assert_eq!(
+            find(p, Some("main"))["uncovered"],
+            serde_json::json!(["default"])
         );
     }
 }

@@ -7,7 +7,7 @@ Usage: mock-github.py <fixtures dir> <origin git dir>
 
 Fixtures read: commit-<sha>.json (PRs for a commit), pulls.json (closed
 version PRs), open.json (open version PRs), releases.txt (existing release
-tags). Written: created.log (one JSON line per created release),
+tags, a tab and "draft" for a draft). Written: created.log (one JSON line per created release),
 pr-body.md (the last version PR body), calls.log. FAIL_API=1 answers 401.
 """
 import json
@@ -72,12 +72,18 @@ class Handler(BaseHTTPRequestHandler):
                 ["git", "-C", ORIGIN, "merge-base", "--is-ancestor", base, head]
             ).returncode == 0
             return self.reply(200, {"status": "ahead" if ancestor else "diverged"})
+        releases = [line.split("\t") for line in read("releases.txt", "").splitlines() if line]
         if method == "GET" and rest.startswith("releases/tags/"):
+            # Like GitHub: this endpoint only finds published releases.
             tag = rest[len("releases/tags/"):]
-            exists = tag in read("releases.txt", "").splitlines()
+            exists = any(r[0] == tag and len(r) == 1 for r in releases)
             return self.reply(200 if exists else 404, {} if exists else {"message": "Not Found"})
+        if method == "GET" and rest == "releases":
+            page = int(query.get("page", ["1"])[0])
+            listed = [{"tag_name": r[0], "draft": len(r) > 1} for r in reversed(releases)]
+            return self.reply(200, listed if page == 1 else [])
         if method == "POST" and rest == "releases":
-            append("releases.txt", body["tag_name"])
+            append("releases.txt", body["tag_name"] + ("\tdraft" if body.get("draft") else ""))
             append("created.log", json.dumps(body))
             return self.reply(201, {"html_url": f"https://github.test/releases/{body['tag_name']}"})
         if method == "POST" and rest == "pulls":

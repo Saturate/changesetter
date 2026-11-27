@@ -132,9 +132,9 @@ function handlerFor(head, { merged, prStatus, openPr = null, queryData, target }
   };
 }
 
-async function scenario(name, setup, check) {
+async function scenario(name, setup, check, binDir = path.dirname(REAL_CLI)) {
   Object.assign(state, { vars: {}, out: {}, warnings: [], result: null, calls: [], handlerError: null });
-  state.binDir = path.dirname(REAL_CLI);
+  state.binDir = binDir;
   console.log(`\n=== ${name}`);
   const repo = setup();
   process.chdir(repo.work);
@@ -377,6 +377,31 @@ const methods = () => state.calls.map((c) => `${c.method} ${new URL(c.url).pathn
     assert.strictEqual(state.out.released, "false");
     assert.strictEqual(remoteTags(r), "");
   });
+
+  const fakeCli = (name, script) => {
+    const dir = path.join(tmpRoot, `fake-${name}`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "changesetter"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    return dir;
+  };
+
+  await scenario("CLI older than 0.9.0: task fails naming the version it needs", () => {
+    const r = makeRepo("oldcli", { version: "1.1.0" });
+    state.handler = handlerFor(r.head, { merged: false });
+    return r;
+  }, () => {
+    assert.strictEqual(state.result.r, 2);
+    assert.match(state.result.m, /needs changesetter 0\.9\.0 or newer/);
+  }, fakeCli("old", `echo "error: unrecognized subcommand 'version-pr'" >&2; exit 2`));
+
+  await scenario("CLI prints no JSON: task fails instead of crashing", () => {
+    const r = makeRepo("nojson", { version: "1.1.0" });
+    state.handler = handlerFor(r.head, { merged: false });
+    return r;
+  }, () => {
+    assert.strictEqual(state.result.r, 2);
+    assert.match(state.result.m, /printed no JSON/);
+  }, fakeCli("nojson", "echo not json"));
 
   console.log("\nAll scenarios passed");
   server.close();
