@@ -23,6 +23,11 @@ pub struct AddArgs {
     #[arg(long)]
     pub no_bump: bool,
 
+    /// Create an empty changeset, naming no package: the change needs no
+    /// release. `version` removes it without bumping anything.
+    #[arg(long, conflicts_with_all = ["package", "bump", "no_bump", "kind", "scope"])]
+    pub empty: bool,
+
     /// Change description (non-interactive mode)
     #[arg(long, short)]
     pub message: Option<String>,
@@ -72,7 +77,11 @@ pub fn run_in(repo_root: &Path, args: &AddArgs) -> anyhow::Result<()> {
 
     let is_tty = atty_check();
     check_args(args, is_tty)?;
-    let packages = resolve_packages(repo_root, &config, args, is_tty)?;
+    let packages = if args.empty {
+        BTreeMap::new()
+    } else {
+        resolve_packages(repo_root, &config, args, is_tty)?
+    };
 
     let body: String = match &args.message {
         Some(msg) => msg.trim().to_string(),
@@ -99,7 +108,7 @@ fn check_args(args: &AddArgs, is_tty: bool) -> anyhow::Result<()> {
     if let Some(scope) = &args.scope {
         validate_meta("scope", scope, &['.', '/'])?;
     }
-    if is_tty || !args.package.is_empty() {
+    if is_tty || args.empty || !args.package.is_empty() {
         return Ok(());
     }
     if args.message.is_none() && !args.no_bump {
@@ -352,6 +361,7 @@ mod tests {
             package: vec!["testpkg".to_string()],
             bump: Some("patch".to_string()),
             no_bump: false,
+            empty: false,
             message: Some("Fixed a bug".to_string()),
             kind: None,
             scope: None,
@@ -378,6 +388,7 @@ mod tests {
             package: vec!["testpkg".to_string()],
             bump: None,
             no_bump: true,
+            empty: false,
             message: Some("Docs update".to_string()),
             kind: None,
             scope: None,
@@ -403,6 +414,7 @@ mod tests {
             package: vec!["nonexistent".to_string()],
             bump: Some("patch".to_string()),
             no_bump: false,
+            empty: false,
             message: Some("Fix".to_string()),
             kind: None,
             scope: None,
@@ -429,6 +441,7 @@ mod tests {
             package: vec!["testpkg".to_string()],
             bump: Some("patch".to_string()),
             no_bump: false,
+            empty: false,
             message: Some("Fixed a bug".to_string()),
             kind: None,
             scope: None,
@@ -447,6 +460,7 @@ mod tests {
             package: vec!["testpkg".to_string()],
             bump: Some("minor".to_string()),
             no_bump: false,
+            empty: false,
             message: Some("New biome".to_string()),
             kind: Some("feat".to_string()),
             scope: Some("world/gen".to_string()),
@@ -471,6 +485,7 @@ mod tests {
                 package: vec!["testpkg".to_string()],
                 bump: Some("patch".to_string()),
                 no_bump: false,
+                empty: false,
                 message: Some("Fix".to_string()),
                 kind: kind.map(str::to_string),
                 scope: scope.map(str::to_string),

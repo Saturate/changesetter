@@ -15,20 +15,34 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
     }
 
     let after_start = 4;
-    let Some(end) = input[after_start..].find("\n---") else {
-        return Err(ChangesetterError::InvalidFrontmatter {
-            path: err_path(),
-            reason: "missing closing ---".to_string(),
-        });
+    // `---\n---` has no line between the fences, so the closing one starts
+    // right where the front matter would. Only a whole `---` line counts:
+    // `---\n---a: patch` is a typo, not an empty changeset.
+    let rest = &input[after_start..];
+    let (frontmatter, closing) = if rest == "---" || rest.starts_with("---\n") {
+        ("", after_start)
+    } else {
+        let Some(end) = input[after_start..].find("\n---") else {
+            return Err(ChangesetterError::InvalidFrontmatter {
+                path: err_path(),
+                reason: "missing closing ---".to_string(),
+            });
+        };
+        (
+            &input[after_start..after_start + end],
+            after_start + end + 1,
+        )
     };
 
-    let frontmatter = &input[after_start..after_start + end];
-
-    let entries: BTreeMap<String, serde_yaml::Value> =
+    // An empty YAML document isn't a map to serde_yaml.
+    let entries: BTreeMap<String, serde_yaml::Value> = if frontmatter.trim().is_empty() {
+        BTreeMap::new()
+    } else {
         serde_yaml::from_str(frontmatter).map_err(|e| ChangesetterError::InvalidFrontmatter {
             path: err_path(),
             reason: e.to_string(),
-        })?;
+        })?
+    };
 
     // `type:` and `scope:` are metadata unless their value is a bump level,
     // which keeps a package that happens to be called "type" working.
@@ -71,16 +85,16 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
         }
     }
 
-    if packages.is_empty() {
+    // No packages is an empty changeset, as `changeset add --empty` writes:
+    // it says a change needs no release, and `version` just removes it. A
+    // `type:` or `scope:` with no packages reads like a forgotten package.
+    if packages.is_empty() && (kind.is_some() || scope.is_some()) {
         return Err(ChangesetterError::InvalidFrontmatter {
             path: err_path(),
             reason: "frontmatter contains no package entries".to_string(),
         });
     }
-
-    // end is offset within input[after_start..] pointing at the \n before closing ---
-    // So the closing --- starts at after_start + end + 1, and is 3 chars long
-    let after_closing = after_start + end + 1 + 3; // skip past ---
+    let after_closing = closing + 3; // skip past ---
     let body = if after_closing < input.len() {
         let raw = &input[after_closing..];
         // Strip up to two newlines right after --- (the \n after --- plus the blank line before body)
@@ -91,6 +105,18 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
         String::default()
     };
 
+    // A doubled opening fence (`---\n---\npkg: patch\n---`) reads as an
+    // empty changeset whose body is the real front matter, and `version`
+    // would delete it without releasing anything.
+    if packages.is_empty() && body.lines().any(looks_like_bump_line) {
+        return Err(ChangesetterError::InvalidFrontmatter {
+            path: err_path(),
+            reason:
+                "empty front matter, but the body has a `package: bump` line; remove the extra ---"
+                    .to_string(),
+        });
+    }
+
     Ok(Changeset {
         packages,
         body,
@@ -99,6 +125,18 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
         scope,
         origin: None,
     })
+}
+
+/// `name: patch`, `"@s/a": minor`: a line that would be a package entry in
+/// front matter.
+fn looks_like_bump_line(line: &str) -> bool {
+    let Some((key, value)) = line.trim().rsplit_once(':') else {
+        return false;
+    };
+    let key = key.trim().trim_matches(|c| c == '"' || c == '\'');
+    !key.is_empty()
+        && !key.contains(char::is_whitespace)
+        && matches!(value.trim(), "none" | "patch" | "minor" | "major")
 }
 
 #[cfg(test)]
@@ -208,8 +246,38 @@ mod tests {
 
     #[test]
     fn parse_empty_frontmatter() {
-        let result = parse("---\n---\n", None);
-        assert!(result.is_err());
+        let cs = parse("---\n---\n", None).unwrap();
+        assert!(cs.packages.is_empty());
+        assert_eq!(cs.body, "");
+
+        let cs = parse("---\n---\n\nOnly CI changed.\n", None).unwrap();
+        assert!(cs.packages.is_empty());
+        assert_eq!(cs.body, "Only CI changed.");
+
+        let cs = parse("---\n\n---", None).unwrap();
+        assert!(cs.packages.is_empty());
+
+        assert!(parse("---\n---", None).unwrap().packages.is_empty());
+        assert!(parse("---\n", None).is_err());
+
+        // A body line mentioning a bump in prose is fine.
+        let cs = parse("---\n---\n\nNote: nothing to patch here.\n", None).unwrap();
+        assert!(cs.packages.is_empty());
+    }
+
+    #[test]
+    fn doubled_opening_fence_is_not_an_empty_changeset() {
+        let err = parse("---\n---\na: patch\n---\n\nFix\n", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("remove the extra ---"), "{err}");
+        let err = parse("---\n---\n\"@s/a\": minor\n---\n", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("remove the extra ---"), "{err}");
+        // `---a: patch` isn't a fence; it's read as front matter.
+        let cs = parse("---\n---a: patch\n---\n", None).unwrap();
+        assert_eq!(cs.packages.keys().collect::<Vec<_>>(), ["---a"]);
     }
 
     #[test]

@@ -31,6 +31,8 @@ jobs:
       - run: cargo build --release --locked
       - name: Version-PR flow of actions/release
         run: tests/actions/release-version-pr.sh target/release/changesetter
+      - name: PR comment of actions/check
+        run: node tests/actions/check-comment.test.js target/release/changesetter
 
   lint-workflows:
     runs-on: ubuntu-latest

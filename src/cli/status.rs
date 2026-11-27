@@ -159,7 +159,7 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
 // stays relative, and `/` on every platform so the JSON reads the same.
 // `..` is kept (a package can live next to the repo), and a path that isn't
 // below the repo stays absolute rather than being mangled into a relative one.
-fn repo_relative(repo_root: &Path, path: &Path) -> String {
+pub(crate) fn repo_relative(repo_root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(repo_root).unwrap_or(path);
     if rel.has_root() {
         return rel.to_string_lossy().replace('\\', "/");
