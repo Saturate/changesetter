@@ -135,6 +135,7 @@ fn roundtrip_cargo() {
         &CheckArgs {
             base: None,
             output: None,
+            strict: false,
         },
     )
     .unwrap();
@@ -192,6 +193,7 @@ fn roundtrip_npm() {
         &CheckArgs {
             base: None,
             output: None,
+            strict: false,
         },
     )
     .unwrap();
@@ -305,6 +307,7 @@ fn roundtrip_none_bump() {
         &CheckArgs {
             base: None,
             output: None,
+            strict: false,
         },
     )
     .unwrap();
@@ -1145,6 +1148,7 @@ fn check_with_base_finds_changeset_on_branch() {
         &CheckArgs {
             base: Some("main".to_string()),
             output: None,
+            strict: false,
         },
     )
     .unwrap();
@@ -1164,6 +1168,7 @@ fn check_fails_no_changesets() {
         &CheckArgs {
             base: None,
             output: None,
+            strict: false,
         },
     );
     assert!(result.is_err());
@@ -1177,6 +1182,7 @@ fn check_fails_no_changeset_dir() {
         &CheckArgs {
             base: None,
             output: None,
+            strict: false,
         },
     );
     assert!(result.is_err());

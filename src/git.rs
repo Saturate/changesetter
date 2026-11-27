@@ -114,15 +114,31 @@ pub fn read_changeset_file(repo_root: &Path, path: &str) -> anyhow::Result<Strin
 /// Whether anything changed since the branch left `base`: committed, staged,
 /// unstaged or untracked (and not gitignored).
 pub fn has_changes_since(repo_root: &Path, base: &str) -> anyhow::Result<bool> {
+    Ok(!changed_paths_since(repo_root, base)?.is_empty())
+}
+
+/// Every path changed since the branch left `base`, relative to the repo
+/// root: committed, staged, unstaged or untracked (and not gitignored). A
+/// rename lists both names, since both sides changed.
+pub fn changed_paths_since(repo_root: &Path, base: &str) -> anyhow::Result<Vec<String>> {
     let merge_base = merge_base(repo_root, base)?;
-    let changed = run_git(repo_root, &["diff", "--name-only", &merge_base])?
-        .ok_or_else(|| anyhow::anyhow!("git diff against {base} failed"))?;
-    if !changed.trim().is_empty() {
-        return Ok(true);
-    }
-    let untracked = run_git(repo_root, &["ls-files", "--others", "--exclude-standard"])?
-        .ok_or_else(|| anyhow::anyhow!("git ls-files failed"))?;
-    Ok(!untracked.trim().is_empty())
+    let changed = run_git(
+        repo_root,
+        &["diff", "--name-only", "-z", "--no-renames", &merge_base],
+    )?
+    .ok_or_else(|| anyhow::anyhow!("git diff against {base} failed"))?;
+    let untracked = run_git(
+        repo_root,
+        &["ls-files", "-z", "--others", "--exclude-standard"],
+    )?
+    .ok_or_else(|| anyhow::anyhow!("git ls-files failed"))?;
+    let paths: std::collections::BTreeSet<String> = changed
+        .split('\0')
+        .chain(untracked.split('\0'))
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    Ok(paths.into_iter().collect())
 }
 
 /// The commit where HEAD's branch left `base`. `base...HEAD` diffs against

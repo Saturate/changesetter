@@ -34,13 +34,20 @@ Verify that at least one changeset file exists. Used in CI to enforce changeset 
 |---|---|
 | `--base <ref>` | Compare against a base branch (e.g. `origin/main`) |
 | `--output json` | Write structured JSON to stdout |
+| `--strict` | With `--base`, fail instead of warn when a changed package has no changeset |
 
 Without `--base`, checks every changeset in the changeset directory. With `--base`, finds the changeset files changed since the branch left `<ref>`: added, changed or deleted, whether committed on the branch, staged, unstaged or untracked (files matched by `.gitignore` don't count). That lets a pre-commit hook or local gate run `changesetter check --base origin/main` before the changeset is committed. CI checkouts are clean, so there it only sees committed files. It fails if one of the changesets can't be parsed, and refuses a changeset that is a symlink. A branch that only deletes changesets, like a version PR, passes. If nothing at all changed since `<ref>` (no commits, no staged, unstaged or untracked files), the check passes, since there is nothing to describe. That covers a gate run on `main` against `origin/main`.
+
+Every package a counted changeset names must be one `version` can bump: a detected package that `ignore` doesn't exclude, or `default` in a single-package repo. A name that doesn't match fails the check with exit code 1, listing each file and name, so a typo is caught on the PR instead of failing the version PR on `main`. Deleted changesets aren't checked.
+
+With `--base`, the check also maps every changed file to the package whose directory holds it (the deepest one, so a root package doesn't claim files in a nested package) and warns about packages that changed with no changeset on the branch naming them. A `none` bump counts as naming the package. It's a warning because a dependency cascade or a deliberately unversioned change can be right; `--strict` makes it fail. Files under the changeset directory don't count, and a branch that only deletes changesets (a version PR) is never warned about.
 
 The JSON has these keys:
 
 - `changesets`: each changeset found, with its `file` (relative to the repo root), its `packages` as a map of package name to bump level, and its `summary` text. A changeset the branch deleted has `deleted: true` and no packages or summary.
 - `bumps`: the highest bump level per package across those changesets.
+- `unknown_packages`: each package name no detected package has, as `{ "file", "package" }`. Non-empty means the check failed.
+- `uncovered`: names of packages with changes since `--base` that no changeset on the branch names. Empty without `--base`.
 
 The JSON is written even when no changeset is found (with an empty `changesets` list, and exit code 1, or exit code 0 when nothing changed since `<ref>`), so CI can tell a missing changeset apart from a check that failed. A changeset that can't be parsed, or a base ref that isn't fetched, exits non-zero with no JSON.
 
