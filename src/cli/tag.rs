@@ -340,13 +340,13 @@ pub(crate) fn packages_at(repo_root: &Path, rev: &str) -> anyhow::Result<Snapsho
     })
 }
 
-struct TempWorktree {
+pub(crate) struct TempWorktree {
     repo_root: PathBuf,
-    path: PathBuf,
+    pub path: PathBuf,
 }
 
 impl TempWorktree {
-    fn add(repo_root: &Path, commit: &str) -> anyhow::Result<Self> {
+    pub(crate) fn add(repo_root: &Path, commit: &str) -> anyhow::Result<Self> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())

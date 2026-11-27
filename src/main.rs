@@ -14,6 +14,7 @@ fn main() {
         Command::Version(args) => changesetter::cli::version::run(args),
         Command::Release(args) => changesetter::cli::release::run(args),
         Command::Tag(args) => changesetter::cli::tag::run(args),
+        Command::VersionPr(args) => changesetter::cli::version_pr::run(args),
         Command::Pre(args) => changesetter::cli::pre::run(args),
     };
 

@@ -698,7 +698,7 @@ mod tests {
             ("user.email", "t@t"),
             ("user.name", "T"),
             ("commit.gpgsign", "false"),
-        ("tag.gpgsign", "false"),
+            ("tag.gpgsign", "false"),
         ] {
             git(p, &["config", k, v]);
         }

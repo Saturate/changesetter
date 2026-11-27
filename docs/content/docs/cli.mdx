@@ -207,6 +207,21 @@ changesetter tag --since HEAD^1 --push --output json
 
 `tag --dry-run` reports `created: false` for a tag that already points at HEAD, so its answer changes once the release pipeline has tagged the commit. To decide what a commit released, use [`status --released-by`](#what-a-commit-released), which doesn't depend on tags.
 
+## `changesetter version-pr`
+
+The version-PR loop for CI on `main`: tag a merged version PR, then create or update the next one. See [Azure DevOps](/azure-devops#version-pr-pattern) for what each step does.
+
+| Flag | Description |
+|---|---|
+| `--provider <azure\|github>` | Where the repository is hosted (required) |
+| `--title <text>` | Title for a new version PR (default `Version Packages`) |
+| `--base <branch>` | Branch the version PR targets (default `main`) |
+| `--commit <rev>` | Commit to check for a version PR merge (default: `BUILD_SOURCEVERSION` or `GITHUB_SHA`, then HEAD) |
+| `--remote <name>` | Remote for tags and the version branch (default `origin`) |
+| `--output json` | Print `{"merged_pr", "tags", "version_pr"}` |
+
+`azure` reads `SYSTEM_ACCESSTOKEN`, `SYSTEM_COLLECTIONURI`, `SYSTEM_TEAMPROJECT` and `BUILD_REPOSITORY_ID`. `github` reads `GITHUB_TOKEN` (or `GH_TOKEN`), `GITHUB_REPOSITORY` and `GITHUB_API_URL`, recognises a version PR merge by its `changesetter:version` label and the merge commit, and diffs against the merge's first parent. On GitHub it doesn't create GitHub Releases; the [release action](/github-actions) still does that.
+
 ## `changesetter pre`
 
 Manage pre-release mode.

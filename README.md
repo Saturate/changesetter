@@ -29,6 +29,8 @@ changesetter check                   # CI: fails if no changeset on the branch
 changesetter status                  # preview: what would release look like?
 changesetter release                 # bump versions, update CHANGELOG.md, commit, tag
 changesetter tag --since HEAD^1      # tag what a merged version PR bumped
+changesetter version-pr --provider azure  # CI: tag a merged version PR, open or update the next
+changesetter status --released-by HEAD    # which package versions this commit changed
 changesetter pre enter rc            # enter pre-release mode
 changesetter pre exit                # exit pre-release mode
 ```
