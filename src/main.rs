@@ -13,6 +13,8 @@ fn main() {
         Command::Status(args) => changesetter::cli::status::run(args),
         Command::Version(args) => changesetter::cli::version::run(args),
         Command::Release(args) => changesetter::cli::release::run(args),
+        Command::Tag(args) => changesetter::cli::tag::run(args),
+        Command::VersionPr(args) => changesetter::cli::version_pr::run(args),
         Command::Pre(args) => changesetter::cli::pre::run(args),
     };
 
@@ -34,7 +36,9 @@ fn main() {
             1
         };
 
-        eprintln!("error: {e}");
+        // `{:#}` keeps the cause chain: "Pull request lookup failed: <TLS error>"
+        // rather than the bare context.
+        eprintln!("error: {e:#}");
         std::process::exit(code);
     }
 }

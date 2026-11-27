@@ -115,9 +115,38 @@ impl Default for ChangelogConfig {
 #[serde(default)]
 pub struct TagConfig {
     pub format: Option<String>,
+    /// Globs over a package's name or repo-relative path. Matching packages
+    /// are still versioned and get changelogs, but never a git tag.
+    pub skip: Vec<String>,
 }
 
 impl TagConfig {
+    /// Whether a package is left untagged. `path` is relative to the repo
+    /// root with `/` separators, `.` for the root itself.
+    pub fn is_skipped(&self, name: &str, path: &str) -> bool {
+        self.skip
+            .iter()
+            .any(|pattern| glob_match(pattern, name) || glob_match(pattern, path))
+    }
+
+    /// The tag for a package's version, or `None` when `skip` leaves it
+    /// untagged.
+    pub fn tag_for(
+        &self,
+        name: &str,
+        path: &str,
+        version: &str,
+        is_monorepo: bool,
+    ) -> Option<String> {
+        // A nameless package in a monorepo is a workspace root like
+        // `{"private": true}`: no changeset can name it, and its tag would
+        // be `@v0.0.0`.
+        if self.is_skipped(name, path) || (is_monorepo && name.is_empty()) {
+            return None;
+        }
+        Some(self.format_tag(name, version, is_monorepo))
+    }
+
     pub fn format_tag(&self, name: &str, version: &str, is_monorepo: bool) -> String {
         if let Some(fmt) = &self.format {
             return fmt.replace("{name}", name).replace("{version}", version);
@@ -325,6 +354,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nameless_monorepo_package_has_no_tag() {
+        let tag = TagConfig::default();
+        assert_eq!(tag.tag_for("", ".", "0.0.0", true), None);
+        assert_eq!(
+            tag.tag_for("", ".", "1.0.0", false).as_deref(),
+            Some("v1.0.0")
+        );
+    }
+
+    #[test]
     fn glob_match_patterns() {
         assert!(glob_match("examples", "examples"));
         assert!(!glob_match("examples", "examples2"));
@@ -352,6 +391,30 @@ mod tests {
         assert!(config.is_ignored("tools"));
         assert!(config.is_ignored("weapons_core"));
         assert!(!config.is_ignored("slopocalypse"));
+    }
+
+    #[test]
+    fn tag_skip_matches_name_or_path() {
+        let tag = TagConfig {
+            format: None,
+            skip: vec!["packages/*".into(), "@scope/internal-*".into()],
+        };
+        assert!(tag.is_skipped("@scope/ui", "packages/ui"));
+        assert!(tag.is_skipped("@scope/internal-tool", "tools/x"));
+        assert!(!tag.is_skipped("@scope/web", "apps/web"));
+        assert_eq!(tag.tag_for("@scope/ui", "packages/ui", "1.0.0", true), None);
+        assert_eq!(
+            tag.tag_for("@scope/web", "apps/web", "1.0.0", true)
+                .as_deref(),
+            Some("@scope/web@v1.0.0")
+        );
+    }
+
+    #[test]
+    fn tag_skip_defaults_to_empty() {
+        let config = Config::default();
+        assert!(config.tag.skip.is_empty());
+        assert!(!config.tag.is_skipped("anything", "."));
     }
 
     #[test]
@@ -538,6 +601,7 @@ post_bump = ["cargo check", "cargo fmt"]
     fn tag_format_custom() {
         let tag = TagConfig {
             format: Some("{name}-{version}".to_string()),
+            ..Default::default()
         };
         assert_eq!(tag.format_tag("mylib", "1.0.0", true), "mylib-1.0.0");
     }

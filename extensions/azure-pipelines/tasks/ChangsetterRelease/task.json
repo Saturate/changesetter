@@ -42,7 +42,8 @@
   "outputVariables": [
     { "name": "released", "description": "Whether a release was created (true/false)" },
     { "name": "releases", "description": "JSON array of release objects" },
-    { "name": "version", "description": "Released version string" }
+    { "name": "version", "description": "Released version string" },
+    { "name": "versionPrId", "description": "ID of the version PR created or updated in version PR mode" }
   ],
   "execution": {
     "Node20_1": {
