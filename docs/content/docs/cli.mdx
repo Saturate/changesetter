@@ -59,6 +59,7 @@ Show pending changesets and a preview of what the next release would look like. 
 | Flag | Description |
 |---|---|
 | `--output json` | Write structured JSON to stdout |
+| `--released-by <rev>` | List what a commit released instead; see [below](#what-a-commit-released) |
 
 The JSON has these keys:
 
@@ -83,6 +84,39 @@ The JSON has these keys:
   "none_entries": []
 }
 ```
+
+### What a commit released
+
+`status --released-by <rev>` compares each package's version at `<rev>` with its version at `<rev>^1`, the first parent, and lists the ones that differ. On a version PR merge that's what the merge released. A build pipeline can use it to decide whether to publish a versioned artifact:
+
+```sh
+changesetter status --released-by HEAD --output json
+```
+
+```json
+{
+  "commit": "4f2a...",
+  "parent": "9c1e...",
+  "released": [
+    { "name": "@acme/web", "path": "apps/web", "previous_version": "1.4.0", "version": "1.5.0", "tag": "@acme/web@v1.5.0" },
+    { "name": "@acme/ui", "path": "packages/ui", "previous_version": "0.3.1", "version": "0.3.2", "tag": null }
+  ]
+}
+```
+
+- `released` is empty when the commit changes no version.
+- `previous_version` is `null` for a package the commit added. A package the commit removed isn't listed.
+- `tag` is the tag name for that version under the config at `<rev>`, or `null` for a package in `[tag] skip`. Whether the tag exists doesn't matter, so the answer is the same before and after the release pipeline tags the commit.
+- Only `<rev>` and its parent are read, each from a temporary worktree, so a checkout with fetch depth 2 is enough. With depth 1 it fails and says so, rather than reporting nothing.
+
+## Stable JSON
+
+These outputs are a stable interface: within a major version, keys are only added, never renamed, removed or given a different meaning, so pipelines can rely on them.
+
+- `status --released-by <rev> --output json`
+- `tag --output json`
+
+Read keys by name and ignore ones you don't know. Human-readable output (without `--output json`) can change in any release.
 
 ## `changesetter version`
 
@@ -161,7 +195,7 @@ Create the git tags missing for the current package versions, on HEAD. CI runs i
 | `--push` | Look up existing tags on the remote instead of locally, and push the new tags to it in one atomic push |
 | `--remote <name>` | Remote for `--push` (default `origin`) |
 | `--dry-run` | Report the tags without creating them |
-| `--output json` | Print `{"tags": [{"name", "version", "tag", "created"}]}` |
+| `--output json` | Print `{"tags": [{"name", "version", "tag", "created"}]}` ([stable](#stable-json)) |
 
 Tag names follow `[tag] format`, and packages in `[tag] skip` get none. A tag that already points at HEAD is reported with `created: false`. Without `--since` every package is a candidate, and a tag that already exists on an older commit just means that version was released earlier, so it's left alone. With `--since`, the versions changed since `<rev>` are the ones being released, so such a tag is a version collision: the command fails and creates no tags. The versions at `<rev>` are read from a temporary worktree, so the commit has to be in the local repository (`git fetch --depth=1 origin <sha>` in a shallow checkout).
 
@@ -170,6 +204,8 @@ Tags are annotated (`Release <name>@<version>`, or `Release <version>` in a sing
 ```sh
 changesetter tag --since HEAD^1 --push --output json
 ```
+
+`tag --dry-run` reports `created: false` for a tag that already points at HEAD, so its answer changes once the release pipeline has tagged the commit. To decide what a commit released, use [`status --released-by`](#what-a-commit-released), which doesn't depend on tags.
 
 ## `changesetter pre`
 

@@ -209,7 +209,7 @@ fn run_checked(repo_root: &Path, args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn resolve_commit(repo_root: &Path, rev: &str) -> anyhow::Result<String> {
+pub(crate) fn resolve_commit(repo_root: &Path, rev: &str) -> anyhow::Result<String> {
     let spec = format!("{rev}^{{commit}}");
     match crate::git::run_git(repo_root, &["rev-parse", "--verify", "-q", &spec])? {
         Some(sha) => Ok(sha.trim().to_lowercase()),
@@ -300,14 +300,44 @@ fn parse_ls_remote(out: &str, tags: &[&str]) -> BTreeMap<String, String> {
 /// Each package's version at `rev`, read from a temporary worktree so every
 /// adapter and the config at that commit apply as they did then.
 fn versions_at(repo_root: &Path, rev: &str) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(packages_at(repo_root, rev)?
+        .packages
+        .into_iter()
+        .map(|p| (p.name, p.version))
+        .collect())
+}
+
+/// The packages at a commit and the config that applied to them.
+pub(crate) struct Snapshot {
+    pub commit: String,
+    pub config: Config,
+    pub packages: Vec<SnapshotPackage>,
+}
+
+pub(crate) struct SnapshotPackage {
+    pub name: String,
+    /// Relative to the repo root, as `status` prints it.
+    pub path: String,
+    pub version: String,
+}
+
+pub(crate) fn packages_at(repo_root: &Path, rev: &str) -> anyhow::Result<Snapshot> {
     let commit = resolve_commit(repo_root, rev)?;
     let worktree = TempWorktree::add(repo_root, &commit)?;
     let config = Config::load(&worktree.path)?;
-    let packages = detector::detect_packages(&worktree.path, &config)?;
-    Ok(packages
+    let packages = detector::detect_packages(&worktree.path, &config)?
         .into_iter()
-        .map(|p| (p.name, p.version.to_string()))
-        .collect())
+        .map(|p| SnapshotPackage {
+            path: repo_relative(&worktree.path, &p.path),
+            version: p.version.to_string(),
+            name: p.name,
+        })
+        .collect();
+    Ok(Snapshot {
+        commit,
+        config,
+        packages,
+    })
 }
 
 struct TempWorktree {
