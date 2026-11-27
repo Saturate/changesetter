@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -18,7 +21,31 @@ jobs:
       # --locked: a Cargo.lock that doesn't match Cargo.toml makes the release
       # job and `cargo publish` fail on a dirty tree, so catch it here.
       - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo publish --dry-run --locked
+
+  # Binaries ship for all three, and the CLI shells out to git and `sh`.
+  # No git identity is configured on purpose: CI agents often have none,
+  # and the CLI has to cope.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+
+  # Cargo.toml's rust-version is what crates.io tells users they need.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-targets
 
   # The version-PR flow only really runs after a version PR merges, so run
   # its steps here against scratch repos with a stubbed gh.
@@ -39,10 +66,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: actionlint
-        uses: docker://rhysd/actionlint:1.7.7
+        uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
       # actionlint only reads .github/workflows; the composite actions ship
       # their own scripts, which run on every consumer's runner.
       - name: shellcheck action scripts
         run: shellcheck actions/*/*.sh tests/actions/*.sh
+      # The composite actions' inline `run:` blocks ship too.
+      - name: shellcheck inline action steps
+        run: |
+          mkdir -p "$RUNNER_TEMP/steps"
+          ruby -ryaml -e '
+            Dir["actions/*/action.yml"].each do |file|
+              YAML.load_file(file)["runs"]["steps"].each_with_index do |step, i|
+                next unless step["run"] && step["shell"] == "bash"
+                name = "#{File.basename(File.dirname(file))}-#{i}.sh"
+                File.write(File.join(ARGV[0], name), "#!/usr/bin/env bash\n" + step["run"].gsub(/\$\{\{.*?\}\}/, "x"))
+              end
+            end' "$RUNNER_TEMP/steps"
+          shellcheck "$RUNNER_TEMP"/steps/*.sh

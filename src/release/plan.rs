@@ -345,10 +345,11 @@ fn apply_linked_groups(bumps: &mut BumpMap, config: &Config) {
         };
 
         for member in &group.linked {
-            if let Some(entry) = bumps.get_mut(member) {
-                if entry.0 > BumpLevel::None && entry.0 < highest_bump {
-                    entry.0 = highest_bump;
-                }
+            if let Some(entry) = bumps.get_mut(member)
+                && entry.0 > BumpLevel::None
+                && entry.0 < highest_bump
+            {
+                entry.0 = highest_bump;
             }
         }
     }

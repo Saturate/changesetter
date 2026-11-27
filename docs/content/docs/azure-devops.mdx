@@ -7,25 +7,29 @@ changesetter works with Azure Pipelines the same way it works anywhere: download
 
 ## Install changesetter
 
-Download the binary and make it available to subsequent pipeline steps:
+Download a pinned version, verify it against the release's `SHA256SUMS`, and put it on the `PATH` for later steps:
 
 ```yaml
 - script: |
-    VERSION=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | jq -r '.tag_name' | sed 's/.*v//')
-    ARCH=$(uname -m)
-    case "$ARCH" in
-      x86_64) ARCH="x86_64" ;;
-      aarch64|arm64) ARCH="aarch64" ;;
+    set -euo pipefail
+    VERSION=0.9.0
+    case "$(uname -m)" in
+      x86_64) TARGET=x86_64-unknown-linux-gnu ;;
+      aarch64|arm64) TARGET=aarch64-unknown-linux-gnu ;;
+      *) echo "Unsupported architecture $(uname -m)" >&2; exit 1 ;;
     esac
-    curl -sL "https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${ARCH}-unknown-linux-gnu.tar.gz" | tar xz
-    chmod +x changesetter
-    mkdir -p $(Pipeline.Workspace)/tools
-    mv changesetter $(Pipeline.Workspace)/tools/changesetter
+    BASE="https://github.com/saturate/changesetter/releases/download/changesetter%40v${VERSION}"
+    cd "$(Agent.TempDirectory)"
+    curl -fsSLO "${BASE}/changesetter-${TARGET}.tar.gz"
+    curl -fsSLO "${BASE}/SHA256SUMS"
+    grep " changesetter-${TARGET}.tar.gz\$" SHA256SUMS | sha256sum --check -
+    mkdir -p "$(Pipeline.Workspace)/tools"
+    tar xzf "changesetter-${TARGET}.tar.gz" -C "$(Pipeline.Workspace)/tools"
     echo "##vso[task.prependpath]$(Pipeline.Workspace)/tools"
   displayName: Install changesetter
 ```
 
-To pin a specific version, replace the first line with `VERSION="0.2.0"`.
+The archive is downloaded outside the repository, so it can't end up in a commit. `SHA256SUMS` is published from 0.9.0 on; see [Verify a download](/#verify-a-download) for the build provenance check. To follow the newest release instead of pinning, use `https://github.com/saturate/changesetter/releases/latest/download` as `BASE`.
 
 ## Changeset check on PRs
 
@@ -47,13 +51,16 @@ steps:
     fetchDepth: 0
 
   - script: |
-      VERSION=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | jq -r '.tag_name' | sed 's/.*v//')
-      ARCH=$(uname -m)
-      case "$ARCH" in x86_64) ARCH="x86_64" ;; aarch64|arm64) ARCH="aarch64" ;; esac
-      curl -sL "https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${ARCH}-unknown-linux-gnu.tar.gz" | tar xz
-      chmod +x changesetter
-      mkdir -p $(Pipeline.Workspace)/tools
-      mv changesetter $(Pipeline.Workspace)/tools/changesetter
+      set -euo pipefail
+      VERSION=0.9.0
+      TARGET=x86_64-unknown-linux-gnu
+      BASE="https://github.com/saturate/changesetter/releases/download/changesetter%40v${VERSION}"
+      cd "$(Agent.TempDirectory)"
+      curl -fsSLO "${BASE}/changesetter-${TARGET}.tar.gz"
+      curl -fsSLO "${BASE}/SHA256SUMS"
+      grep " changesetter-${TARGET}.tar.gz\$" SHA256SUMS | sha256sum --check -
+      mkdir -p "$(Pipeline.Workspace)/tools"
+      tar xzf "changesetter-${TARGET}.tar.gz" -C "$(Pipeline.Workspace)/tools"
       echo "##vso[task.prependpath]$(Pipeline.Workspace)/tools"
     displayName: Install changesetter
 
@@ -116,13 +123,16 @@ steps:
     persistCredentials: true
 
   - script: |
-      VERSION=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | jq -r '.tag_name' | sed 's/.*v//')
-      ARCH=$(uname -m)
-      case "$ARCH" in x86_64) ARCH="x86_64" ;; aarch64|arm64) ARCH="aarch64" ;; esac
-      curl -sL "https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${ARCH}-unknown-linux-gnu.tar.gz" | tar xz
-      chmod +x changesetter
-      mkdir -p $(Pipeline.Workspace)/tools
-      mv changesetter $(Pipeline.Workspace)/tools/changesetter
+      set -euo pipefail
+      VERSION=0.9.0
+      TARGET=x86_64-unknown-linux-gnu
+      BASE="https://github.com/saturate/changesetter/releases/download/changesetter%40v${VERSION}"
+      cd "$(Agent.TempDirectory)"
+      curl -fsSLO "${BASE}/changesetter-${TARGET}.tar.gz"
+      curl -fsSLO "${BASE}/SHA256SUMS"
+      grep " changesetter-${TARGET}.tar.gz\$" SHA256SUMS | sha256sum --check -
+      mkdir -p "$(Pipeline.Workspace)/tools"
+      tar xzf "changesetter-${TARGET}.tar.gz" -C "$(Pipeline.Workspace)/tools"
       echo "##vso[task.prependpath]$(Pipeline.Workspace)/tools"
     displayName: Install changesetter
 
@@ -174,13 +184,16 @@ steps:
     persistCredentials: true
 
   - script: |
-      VERSION=$(curl -s https://api.github.com/repos/saturate/changesetter/releases/latest | jq -r '.tag_name' | sed 's/.*v//')
-      ARCH=$(uname -m)
-      case "$ARCH" in x86_64) ARCH="x86_64" ;; aarch64|arm64) ARCH="aarch64" ;; esac
-      curl -sL "https://github.com/saturate/changesetter/releases/download/v${VERSION}/changesetter-${ARCH}-unknown-linux-gnu.tar.gz" | tar xz
-      chmod +x changesetter
-      mkdir -p $(Pipeline.Workspace)/tools
-      mv changesetter $(Pipeline.Workspace)/tools/changesetter
+      set -euo pipefail
+      VERSION=0.9.0
+      TARGET=x86_64-unknown-linux-gnu
+      BASE="https://github.com/saturate/changesetter/releases/download/changesetter%40v${VERSION}"
+      cd "$(Agent.TempDirectory)"
+      curl -fsSLO "${BASE}/changesetter-${TARGET}.tar.gz"
+      curl -fsSLO "${BASE}/SHA256SUMS"
+      grep " changesetter-${TARGET}.tar.gz\$" SHA256SUMS | sha256sum --check -
+      mkdir -p "$(Pipeline.Workspace)/tools"
+      tar xzf "changesetter-${TARGET}.tar.gz" -C "$(Pipeline.Workspace)/tools"
       echo "##vso[task.prependpath]$(Pipeline.Workspace)/tools"
     displayName: Install changesetter
 

@@ -132,10 +132,10 @@ impl Linker {
             .iter()
             .map(|l| (l.prefix.clone(), l.url.clone()))
             .collect();
-        if !rules.iter().any(|(p, _)| p == "#") {
-            if let Some(url) = repo.as_ref().and_then(Repo::issue_url) {
-                rules.push(("#".to_string(), url));
-            }
+        if !rules.iter().any(|(p, _)| p == "#")
+            && let Some(url) = repo.as_ref().and_then(Repo::issue_url)
+        {
+            rules.push(("#".to_string(), url));
         }
         rules.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
         Some(Self { repo, rules })
@@ -204,12 +204,13 @@ impl Linker {
                 i += verbatim;
                 continue;
             }
-            if state.free() && starts_token(line, i) {
-                if let Some(link) = self.link_at(rest) {
-                    out.push_str(&link.markdown);
-                    i += link.len;
-                    continue;
-                }
+            if state.free()
+                && starts_token(line, i)
+                && let Some(link) = self.link_at(rest)
+            {
+                out.push_str(&link.markdown);
+                i += link.len;
+                continue;
             }
             let c = rest.chars().next().unwrap_or(' ');
             out.push(c);

@@ -7,6 +7,14 @@ on:
   push:
     tags:
       - "changesetter@v[0-9]+.[0-9]+.[0-9]+"
+  # A dependency or toolchain change can break one target only (a TLS crate
+  # under cross, say), so PRs that touch them build all five. Nothing is
+  # published or attached for a PR.
+  pull_request:
+    paths:
+      - ".github/workflows/build-binaries.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
   workflow_call:
     inputs:
       tag:
@@ -36,7 +44,11 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  # Only attach-to-release writes to the release; building and publishing to
+  # crates.io read the repository.
   build:
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -54,21 +66,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ github.event_name == 'pull_request' && github.sha || format('refs/tags/{0}', env.TAG) }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Install cross (Linux ARM)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        # Pinned: these binaries get a provenance attestation, so what builds
+        # them shouldn't change between runs.
+        run: cargo install cross --locked --git https://github.com/cross-rs/cross --rev a9301e91f72bba3850460512685f6b16062015ff
 
       - name: Build
         run: |
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release --locked --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release --locked --target ${{ matrix.target }}
           fi
         shell: bash
 
@@ -93,6 +107,9 @@ jobs:
           path: changesetter-${{ matrix.target }}.*
 
   publish-crates-io:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -111,17 +128,36 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.published.outputs.skip != 'true'
-        run: cargo publish
+        run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   attach-to-release:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # attest-build-provenance signs with the workflow's OIDC identity.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+
+      # Pipelines that pin a version verify the download against this file
+      # instead of a hash someone computed by hand once. It's rebuilt from
+      # the archives on every run, so a manual rebuild replaces it with them.
+      - name: Write SHA256SUMS
+        run: sha256sum changesetter-*.tar.gz changesetter-*.zip > SHA256SUMS && cat SHA256SUMS
+
+      # Lets `gh attestation verify <archive> --repo Saturate/changesetter`
+      # prove the archive came from this workflow at this tag.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-checksums: SHA256SUMS
 
       - name: Upload binaries to GitHub Release
         env:
@@ -130,7 +166,7 @@ jobs:
           gh release upload "$TAG" \
             --repo "${{ github.repository }}" \
             --clobber \
-            changesetter-*.tar.gz changesetter-*.zip
+            changesetter-*.tar.gz changesetter-*.zip SHA256SUMS
 
       - name: Mark as latest release
         if: inputs.make-latest

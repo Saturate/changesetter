@@ -275,10 +275,10 @@ fn validate_issue_links(changelog: &ChangelogConfig) -> anyhow::Result<()> {
             );
         }
     }
-    if let Some(url) = &changelog.repo_url {
-        if crate::changelog::links::Repo::parse(url).is_none() {
-            anyhow::bail!("[changelog] repo_url {url:?} isn't a repository URL");
-        }
+    if let Some(url) = &changelog.repo_url
+        && crate::changelog::links::Repo::parse(url).is_none()
+    {
+        anyhow::bail!("[changelog] repo_url {url:?} isn't a repository URL");
     }
     Ok(())
 }

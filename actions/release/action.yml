@@ -99,11 +99,6 @@ runs:
         RELEASES: ${{ steps.direct-release.outputs.releases }}
         DRAFT: ${{ inputs.draft }}
       run: |
-        DRAFT_FLAG=""
-        if [ "$DRAFT" = "true" ]; then
-          DRAFT_FLAG="--draft"
-        fi
-
         while read -r release; do
           TAG=$(jq -r '.tag' <<<"$release")
           NAME=$(jq -r '.name' <<<"$release")

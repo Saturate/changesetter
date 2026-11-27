@@ -64,27 +64,27 @@ impl Adapter for PythonAdapter {
         }
 
         // Poetry: [tool.poetry] table
-        if let Some(tool) = doc.get("tool") {
-            if let Some(poetry) = tool.get("poetry") {
-                let name = poetry
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
+        if let Some(tool) = doc.get("tool")
+            && let Some(poetry) = tool.get("poetry")
+        {
+            let name = poetry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
 
-                let version_str = match poetry.get("version").and_then(|v| v.as_str()) {
-                    Some(v) => v,
-                    None => return Ok(None),
-                };
+            let version_str = match poetry.get("version").and_then(|v| v.as_str()) {
+                Some(v) => v,
+                None => return Ok(None),
+            };
 
-                let version = Version::parse(version_str)?;
-                return Ok(Some(Package {
-                    name,
-                    path: path.to_path_buf(),
-                    package_type: PackageType::Python,
-                    version,
-                }));
-            }
+            let version = Version::parse(version_str)?;
+            return Ok(Some(Package {
+                name,
+                path: path.to_path_buf(),
+                package_type: PackageType::Python,
+                version,
+            }));
         }
 
         Ok(None)

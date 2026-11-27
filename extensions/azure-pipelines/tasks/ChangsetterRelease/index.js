@@ -3,7 +3,9 @@ const https = require("https");
 const { execSync, execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
-const { install } = require("../../shared/install");
+// prepare.js copies shared/ into each task, since Azure Pipelines ships every
+// task folder on its own.
+const { install } = require("./shared/install");
 
 function apiRequest(method, urlPath, body) {
   const orgUrl = tl.getVariable("System.CollectionUri");
