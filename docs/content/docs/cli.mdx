@@ -209,6 +209,30 @@ changesetter tag --since HEAD^1 --push --output json
 
 `tag --dry-run` reports `created: false` for a tag that already points at HEAD, so its answer changes once the release pipeline has tagged the commit. To decide what a commit released, use [`status --released-by`](#what-a-commit-released), which doesn't depend on tags.
 
+## `changesetter version-pr`
+
+The version-PR loop for CI on `main`: tag a merged version PR, then create or update the next one. See [Azure DevOps](/azure-devops#version-pr-pattern) for what each step does.
+
+| Flag | Description |
+|---|---|
+| `--provider <azure\|github>` | Where the repository is hosted (required) |
+| `--title <text>` | Title for a new version PR (default `Version Packages`) |
+| `--base <branch>` | Branch the version PR targets (default `main`) |
+| `--commit <rev>` | Commit to check for a version PR merge (default: `BUILD_SOURCEVERSION` or `GITHUB_SHA`, then HEAD) |
+| `--remote <name>` | Remote for tags and the version branch (default `origin`) |
+| `--no-github-release` | GitHub only: don't create GitHub Releases |
+| `--draft` | GitHub only: create GitHub Releases as drafts |
+| `--output json` | Print `{"merged_pr", "commit", "recovered", "tags", "released", "github_releases", "version_pr"}` |
+
+`azure` reads `SYSTEM_ACCESSTOKEN`, `SYSTEM_COLLECTIONURI`, `SYSTEM_TEAMPROJECT` and `BUILD_REPOSITORY_ID`. `github` reads `GITHUB_TOKEN` (or `GH_TOKEN`), `GITHUB_REPOSITORY` and `GITHUB_API_URL`, recognises a version PR merge by its merge commit, its `changesetter:version` label and its `changesetter/version-packages` head branch, and diffs against the merge's first parent. On GitHub it also:
+
+- creates a GitHub Release for each tag that doesn't have one (a draft counts), titled `<name> v<version>` and with the version's changelog section as notes; a version with a pre-release part becomes a pre-release. `--no-github-release` turns this off, and `--draft` creates them as drafts.
+- when the commit isn't a version PR merge, finishes the newest merged version PR whose merge is in the commit's history, in case its run was cancelled. Only missing tags and releases are created.
+
+The JSON also has `released` (`[{name, version, tag, changelog}]`, only what this run tagged or published, so a re-run reports nothing), `github_releases` (`[{tag, created, url}]`), `commit` (the merge commit the tags are on) and `recovered` (`true` when that merge isn't the commit being built, after finishing an earlier run's release). A step that publishes on `released` should build `commit`.
+
+Pending changesets are read from HEAD, which the bump runs on, so a changeset that's only in the working tree doesn't open a version PR. `post_bump` hooks run in the temporary worktree with their output on stderr, and without `SYSTEM_ACCESSTOKEN`, `GITHUB_TOKEN` or `GH_TOKEN`.
+
 ## `changesetter pre`
 
 Manage pre-release mode.

@@ -2302,3 +2302,50 @@ fn tag_works_without_a_git_identity() {
     let tagger = git(&["tag", "-l", "--format=%(taggername)", "v1.1.0"]);
     assert_eq!(tagger, "changesetter");
 }
+
+// ---------- post_bump hooks ----------
+
+/// A hook printing to stdout must not corrupt `--output json`, and repo
+/// hooks never see the CI tokens.
+#[test]
+fn post_bump_hook_output_and_environment() {
+    let dir = setup_cargo_repo();
+    std::fs::write(
+        dir.path().join("changesetter.toml"),
+        "[hooks]\npost_bump = [\"echo hook says hi\", \"env > hook-env.txt\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "hook-env.txt\n").unwrap();
+    std::fs::create_dir_all(dir.path().join(".changeset")).unwrap();
+    std::fs::write(
+        dir.path().join(".changeset/fix.md"),
+        "---\ntestpkg: patch\n---\n\nFix\n",
+    )
+    .unwrap();
+    git_add_commit(dir.path(), "changeset and hooks");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_changesetter"))
+        .args(["release", "--output", "json"])
+        .current_dir(dir.path())
+        .env("SYSTEM_ACCESSTOKEN", "azure-secret")
+        .env("GITHUB_TOKEN", "gh-secret")
+        .env("GH_TOKEN", "gh-secret")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout isn't JSON ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(json["releases"][0]["version"], "1.0.1");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("hook says hi"));
+
+    let env = std::fs::read_to_string(dir.path().join("hook-env.txt")).unwrap();
+    assert!(!env.contains("secret"), "a token reached the hook");
+}

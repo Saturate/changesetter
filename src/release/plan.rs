@@ -112,6 +112,22 @@ fn new_entry(
 }
 
 impl ReleaseEntry {
+    #[cfg(test)]
+    pub(crate) fn for_test(changeset: &str) -> Self {
+        Self {
+            changeset: changeset.to_string(),
+            bump: BumpLevel::Patch,
+            kind: "fix".to_string(),
+            scope: None,
+            summary: String::new(),
+            group: None,
+            skip: false,
+            body: String::new(),
+            raw: String::new(),
+            origin: None,
+        }
+    }
+
     /// The entry as the changelog has it: its body (with issue links when
     /// `links` is on), or in a grouped changelog a list item, which also
     /// gets its pull request and commit.

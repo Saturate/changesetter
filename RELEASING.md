@@ -38,7 +38,7 @@ gh release create v1.2.0 --verify-tag --latest=false --title "Actions v1.2.0" --
 ```
 
 - Bump the patch for fixes, the minor for new optional inputs or outputs. Changes outside `actions/` don't need an action release.
-- A change that removes or renames an input or output, changes required permissions, or otherwise breaks an existing workflow is `v2.0.0`. Tag `v2` for it and leave `v1` where it was.
+- A change that removes or renames an input or output, changes required permissions, or otherwise breaks an existing workflow is `v2.0.0`. Tag `v2` for it and leave `v1` where it was. v2.0.0 is the first such release: the release action's version-PR mode runs `changesetter version-pr` (needs CLI 0.9.0) and fails on a version collision that v1 skipped. `v1` stays on v1.2.1. `actions/install` didn't change, so `check` and `release` keep calling `install@v1`.
 - Always pass `--latest=false`. An action release marked latest has no binaries, so the README's quick install and the Azure DevOps snippets would download nothing. (`actions/install` only looks at `changesetter@v*` releases, so it would keep working.)
 - Plain `vX.Y.Z` tags don't trigger the binary build; only `changesetter@v*` tags do.
 - In the release notes, call out behaviour changes that make a job fail where it used to pass.
