@@ -92,8 +92,14 @@ runs:
             const errors = read(process.env.CHECK_ERRORS).trim().split('\n').slice(-20).join('\n');
             body = `${marker}\n### Changeset Check: Failed\n\nThe check couldn't finish; see the workflow logs.`;
             if (errors) body += `\n\n\`\`\`\`\n${errors.slice(-4000)}\n\`\`\`\``;
-          } else if (process.env.CHECK_EXIT_CODE !== '0') {
+          } else if ((report.unknown_packages ?? []).length) {
+            // There is a changeset; it names a package `version` can't find.
+            const lines = report.unknown_packages.map((u) => `- ${code(u.file)}: ${code(u.package)}`);
+            body = `${marker}\n### Changeset Check: Failed\n\nThese changesets name packages that don't exist:\n\n${lines.join('\n')}\n\nFix the names; the workflow log lists the known packages.`;
+          } else if (process.env.CHECK_EXIT_CODE !== '0' && !(report.changesets ?? []).length) {
             body = `${marker}\n### Changeset Check: Missing\n\nNo changeset found. Run \`changesetter add\` to create one.`;
+          } else if (process.env.CHECK_EXIT_CODE !== '0') {
+            body = `${marker}\n### Changeset Check: Failed\n\nThe check failed; see the workflow logs.`;
           } else if (!(report.changesets ?? []).length) {
             body = `${marker}\n### Changeset Check: Passed\n\nNo changes since the base branch; no changeset needed.`;
           } else {
@@ -126,6 +132,10 @@ runs:
               size += section.length + 2;
             }
             body = head + sections.join('\n\n') + tail;
+            const uncovered = report.uncovered ?? [];
+            if (uncovered.length) {
+              body += `\n\nChanged, but no changeset on this branch names them: ${uncovered.map(code).join(', ')}. If that's on purpose, ignore this; otherwise add them to a changeset (\`none\` works for a change that needs no release).`;
+            }
           }
 
           try {

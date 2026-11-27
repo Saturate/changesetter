@@ -1,10 +1,12 @@
 const tl = require("azure-pipelines-task-lib/task");
 const https = require("https");
-const { execSync } = require("child_process");
+const { spawnSync } = require("child_process");
 const path = require("path");
-const { install } = require("../../shared/install");
+// prepare.js copies shared/ into each task, since Azure Pipelines ships every
+// task folder on its own.
+const { install } = require("./shared/install");
 
-async function postPrComment(content, passed) {
+async function postPrComment(content, passed, title) {
   const orgUrl = tl.getVariable("System.CollectionUri");
   const project = tl.getVariable("System.TeamProject");
   const repoId = tl.getVariable("Build.Repository.ID");
@@ -20,7 +22,7 @@ async function postPrComment(content, passed) {
     `${orgUrl}${project}/_apis/git/repositories/${repoId}/pullRequests/${prId}/threads?api-version=7.1`
   );
 
-  const status = passed ? "Passed" : "Missing";
+  const status = title || (passed ? "Passed" : "Missing");
   const icon = passed ? "&#x2705;" : "&#x274C;";
 
   const body = JSON.stringify({
@@ -68,6 +70,28 @@ async function postPrComment(content, passed) {
   });
 }
 
+// The task result for the CLI's exit code and JSON report. A changeset that
+// names an unknown package is a failed check, not a missing changeset.
+function verdict(status, report) {
+  if (status === 0) {
+    const uncovered = (report && report.uncovered) || [];
+    const note = uncovered.length ? ` (changed without a changeset: ${uncovered.join(", ")})` : "";
+    return { passed: true, title: "Passed", message: `Changeset check passed${note}` };
+  }
+  if (!report) {
+    return { passed: false, title: "Failed", message: "The changeset check couldn't finish; see the log." };
+  }
+  const unknown = report.unknown_packages || [];
+  if (unknown.length) {
+    const list = unknown.map((u) => `${u.file}: ${u.package}`).join("; ");
+    return { passed: false, title: "Failed", message: `Changesets name packages that don't exist: ${list}` };
+  }
+  if (!(report.changesets || []).length) {
+    return { passed: false, title: "Missing", message: "No changeset found. Run `changesetter add` to create one." };
+  }
+  return { passed: false, title: "Failed", message: "The changeset check failed; see the log." };
+}
+
 async function run() {
   try {
     const version = tl.getInput("version", false) || "latest";
@@ -85,39 +109,41 @@ async function run() {
       }
     }
 
-    const args = ["check"];
+    const args = ["check", "--output", "json"];
     if (baseRef) {
       args.push("--base", baseRef);
     }
 
+    // An argument list, not a shell string: `base` is user input.
     const bin = path.join(binDir, "changesetter");
-    const cmd = `"${bin}" ${args.join(" ")}`;
+    const res = spawnSync(bin, args, { encoding: "utf8" });
+    if (res.error) throw res.error;
+    // stderr has the summary and the uncovered-package warning, which the
+    // log should show whether or not the check passed.
+    const log = (res.stderr || "").trim();
+    if (log) console.log(log);
 
-    let output = "";
-    let exitCode = 0;
+    let report = null;
     try {
-      output = execSync(cmd, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
-    } catch (err) {
-      output = (err.stderr || "") + (err.stdout || "");
-      exitCode = err.status || 1;
-    }
+      report = JSON.parse(res.stdout);
+    } catch {}
 
-    const passed = exitCode === 0;
-
+    const { passed, title, message } = verdict(res.status, report);
     if (comment) {
-      await postPrComment(output.trim() || (passed ? "Changeset found." : "No changeset found."), passed);
+      await postPrComment(log || message, passed, title);
     }
-
     if (passed) {
-      console.log(output);
-      tl.setResult(tl.TaskResult.Succeeded, "Changeset check passed");
+      tl.setResult(tl.TaskResult.Succeeded, message);
     } else {
-      console.log(output);
-      tl.setResult(tl.TaskResult.Failed, "No changeset found. Run `changesetter add` to create one.");
+      tl.setResult(tl.TaskResult.Failed, message);
     }
   } catch (err) {
     tl.setResult(tl.TaskResult.Failed, err.message);
   }
 }
 
-run();
+module.exports = { run, verdict };
+
+if (require.main === module) {
+  run();
+}

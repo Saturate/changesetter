@@ -12,10 +12,25 @@ pub struct StatusArgs {
     /// Output format (json for CI consumption)
     #[arg(long)]
     pub output: Option<String>,
+
+    /// Instead of pending changesets, list the packages whose version this
+    /// commit changed against its first parent, such as a version PR merge.
+    /// Needs only the commit and its parent (fetch depth 2).
+    #[arg(long, value_name = "REV")]
+    pub released_by: Option<String>,
 }
 
 pub fn run(args: &StatusArgs) -> anyhow::Result<()> {
     let repo_root = crate::git::find_repo_root()?;
+    if let Some(rev) = &args.released_by {
+        let report = released_by(&repo_root, rev)?;
+        if args.output.as_deref() == Some("json") {
+            println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+        } else {
+            report.print();
+        }
+        return Ok(());
+    }
     if args.output.as_deref() == Some("json") {
         println!(
             "{}",
@@ -41,7 +56,10 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
         .iter()
         .map(|p| {
             let version = p.version.to_string();
-            let tag = config.tag.format_tag(&p.name, &version, is_monorepo);
+            let rel_path = repo_relative(repo_root, &p.path);
+            let tag = config
+                .tag
+                .tag_for(&p.name, &rel_path, &version, is_monorepo);
             // Same rule and same join the executor uses when it writes
             // changelogs, so the path points at the file it really writes.
             let changelog = if is_monorepo && config.changelog.per_package {
@@ -49,14 +67,17 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
             } else {
                 repo_root.join(&config.changelog.file)
             };
-            let path = repo_relative(repo_root, &p.path);
             let changelog = repo_relative(repo_root, &changelog);
+            let tagged = match &tag {
+                Some(tag) => crate::git::tag_exists(repo_root, tag)?,
+                None => false,
+            };
             Ok(serde_json::json!({
                 "name": p.name,
                 "version": version,
-                "path": path,
+                "path": rel_path,
                 "changelog": changelog,
-                "tagged": crate::git::tag_exists(repo_root, &tag)?,
+                "tagged": tagged,
                 "tag": tag,
             }))
         })
@@ -72,12 +93,13 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
             .iter()
             .map(|r| {
                 let version = r.version.to_string();
+                let rel_path = repo_relative(repo_root, &r.path);
                 serde_json::json!({
                     "name": r.name,
                     "previous_version": r.previous_version.to_string(),
                     "version": version,
                     "bump": r.bump.to_string(),
-                    "tag": config.tag.format_tag(&r.name, &version, is_monorepo),
+                    "tag": config.tag.tag_for(&r.name, &rel_path, &version, is_monorepo),
                     "entries": r.entries.iter().map(|e| e.to_json()).collect::<Vec<_>>(),
                 })
             })
@@ -102,6 +124,112 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
         "releases": releases,
         "none_entries": none_entries,
     }))
+}
+
+/// A package whose version a commit changed.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Released {
+    pub name: String,
+    pub path: String,
+    /// `None` for a package the commit added.
+    pub previous_version: Option<String>,
+    pub version: String,
+    /// `None` for a package in `[tag] skip`.
+    pub tag: Option<String>,
+}
+
+pub struct ReleasedBy {
+    pub commit: String,
+    pub parent: String,
+    pub released: Vec<Released>,
+}
+
+impl ReleasedBy {
+    pub fn to_json(&self) -> serde_json::Value {
+        let released: Vec<_> = self
+            .released
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "name": r.name,
+                    "path": r.path,
+                    "previous_version": r.previous_version,
+                    "version": r.version,
+                    "tag": r.tag,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "commit": self.commit,
+            "parent": self.parent,
+            "released": released,
+        })
+    }
+
+    fn print(&self) {
+        if self.released.is_empty() {
+            println!("{} changes no package version", self.commit);
+            return;
+        }
+        println!("Released by {}:", self.commit);
+        for r in &self.released {
+            let from = r.previous_version.as_deref().unwrap_or("new");
+            let tag = r.tag.as_deref().unwrap_or("no tag");
+            println!("  {} {from} -> {} ({tag})", r.name, r.version);
+        }
+    }
+}
+
+/// The packages whose version `rev` changed against its first parent. Tags
+/// don't matter here, so the answer is the same before and after the
+/// release pipeline tags the commit. Both sides are read with the config at
+/// that side, and the tag name with the config at `rev`.
+pub fn released_by(repo_root: &Path, rev: &str) -> anyhow::Result<ReleasedBy> {
+    let after = crate::cli::tag::packages_at(repo_root, rev)?;
+    let parent_rev = format!("{}^1", after.commit);
+    if crate::git::run_git(
+        repo_root,
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("{parent_rev}^{{commit}}"),
+        ],
+    )?
+    .is_none()
+    {
+        anyhow::bail!(
+            "the parent of {} isn't in this repository; it's a root commit, or the checkout is too shallow (fetch depth 2 or more)",
+            after.commit
+        );
+    }
+    let before = crate::cli::tag::packages_at(repo_root, &parent_rev)?;
+    let old: std::collections::BTreeMap<&str, &str> = before
+        .packages
+        .iter()
+        .map(|p| (p.name.as_str(), p.version.as_str()))
+        .collect();
+    let is_monorepo = after.packages.len() > 1;
+    let released = after
+        .packages
+        .iter()
+        .filter(|p| old.get(p.name.as_str()) != Some(&p.version.as_str()))
+        .map(|p| Released {
+            name: p.name.clone(),
+            path: p.path.clone(),
+            previous_version: old.get(p.name.as_str()).map(|v| (*v).to_string()),
+            version: p.version.clone(),
+            tag: after
+                .config
+                .tag
+                .tag_for(&p.name, &p.path, &p.version, is_monorepo),
+        })
+        .collect();
+    Ok(ReleasedBy {
+        commit: after.commit,
+        parent: before.commit,
+        released,
+    })
 }
 
 pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
@@ -159,7 +287,7 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
 // stays relative, and `/` on every platform so the JSON reads the same.
 // `..` is kept (a package can live next to the repo), and a path that isn't
 // below the repo stays absolute rather than being mangled into a relative one.
-fn repo_relative(repo_root: &Path, path: &Path) -> String {
+pub(crate) fn repo_relative(repo_root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(repo_root).unwrap_or(path);
     if rel.has_root() {
         return rel.to_string_lossy().replace('\\', "/");
@@ -425,6 +553,51 @@ mod tests {
     // A custom format short-circuits `is_monorepo` in format_tag, so the
     // default monorepo format needs its own check.
     #[test]
+    fn json_has_no_tag_for_tag_skip_packages() {
+        let dir = setup_repo();
+        std::fs::remove_file(dir.path().join("Cargo.toml")).unwrap();
+        write(
+            dir.path(),
+            "changesetter.toml",
+            "[tag]\nskip = [\"@s/a\"]\n",
+        );
+        write(
+            dir.path(),
+            "packages/a/package.json",
+            r#"{"name":"@s/a","version":"1.0.0"}"#,
+        );
+        write(
+            dir.path(),
+            "packages/b/package.json",
+            r#"{"name":"@s/b","version":"2.0.0"}"#,
+        );
+        write(
+            dir.path(),
+            ".changeset/x.md",
+            "---\n\"@s/a\": minor\n---\n\nChange.\n",
+        );
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "monorepo"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let status = json_status(dir.path()).unwrap();
+        let packages = status["packages"].as_array().unwrap();
+        let a = packages.iter().find(|p| p["name"] == "@s/a").unwrap();
+        let b = packages.iter().find(|p| p["name"] == "@s/b").unwrap();
+        assert!(a["tag"].is_null());
+        assert_eq!(a["tagged"], false);
+        assert_eq!(b["tag"], "@s/b@v2.0.0");
+        assert!(status["releases"][0]["tag"].is_null());
+    }
+
+    #[test]
     fn json_uses_the_default_monorepo_tag_format() {
         let dir = setup_repo();
         std::fs::remove_file(dir.path().join("Cargo.toml")).unwrap();
@@ -490,5 +663,119 @@ mod tests {
             repo_relative(root, Path::new("/elsewhere/x")),
             "/elsewhere/x"
         );
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn write_npm(dir: &Path, rel: &str, name: &str, version: &str) {
+        std::fs::create_dir_all(dir.join(rel)).unwrap();
+        std::fs::write(
+            dir.join(rel).join("package.json"),
+            format!(r#"{{"name":"{name}","version":"{version}"}}"#),
+        )
+        .unwrap();
+    }
+
+    /// A pnpm-style workspace with a versionless root; the head commit bumps
+    /// one app and one skipped package and adds a new app.
+    fn workspace() -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        git(p, &["init", "-q", "-b", "main"]);
+        for (k, v) in [
+            ("user.email", "t@t"),
+            ("user.name", "T"),
+            ("commit.gpgsign", "false"),
+            ("tag.gpgsign", "false"),
+        ] {
+            git(p, &["config", k, v]);
+        }
+        std::fs::write(p.join("package.json"), r#"{"private":true}"#).unwrap();
+        std::fs::write(
+            p.join("changesetter.toml"),
+            "[tag]\nskip = [\"packages/*\"]\n",
+        )
+        .unwrap();
+        write_npm(p, "apps/web", "@d/web", "1.0.0");
+        write_npm(p, "apps/admin", "@d/admin", "2.0.0");
+        write_npm(p, "packages/ui", "@d/ui", "0.1.0");
+        git(p, &["add", "-A"]);
+        git(p, &["commit", "-q", "-m", "base"]);
+        let base = git(p, &["rev-parse", "HEAD"]);
+        write_npm(p, "apps/web", "@d/web", "1.1.0");
+        write_npm(p, "packages/ui", "@d/ui", "0.2.0");
+        write_npm(p, "apps/new", "@d/new", "0.1.0");
+        git(p, &["add", "-A"]);
+        git(p, &["commit", "-q", "-m", "version packages"]);
+        let head = git(p, &["rev-parse", "HEAD"]);
+        (dir, base, head)
+    }
+
+    #[test]
+    fn released_by_lists_version_changes_against_the_first_parent() {
+        let (dir, base, head) = workspace();
+        let report = released_by(dir.path(), "HEAD").unwrap();
+        assert_eq!(
+            report.to_json(),
+            serde_json::json!({
+                "commit": head,
+                "parent": base,
+                "released": [
+                    {"name": "@d/new", "path": "apps/new", "previous_version": null, "version": "0.1.0", "tag": "@d/new@v0.1.0"},
+                    {"name": "@d/ui", "path": "packages/ui", "previous_version": "0.1.0", "version": "0.2.0", "tag": null},
+                    {"name": "@d/web", "path": "apps/web", "previous_version": "1.0.0", "version": "1.1.0", "tag": "@d/web@v1.1.0"},
+                ],
+            })
+        );
+
+        // Tags don't change the answer, and worktrees are cleaned up.
+        git(dir.path(), &["tag", "@d/web@v1.1.0"]);
+        assert_eq!(released_by(dir.path(), &head).unwrap().released.len(), 3);
+        assert!(released_by(dir.path(), &base).is_err());
+        assert_eq!(git(dir.path(), &["worktree", "list"]).lines().count(), 1);
+    }
+
+    #[test]
+    fn released_by_works_on_a_depth_2_clone_and_explains_depth_1() {
+        let (dir, _, _) = workspace();
+        let url = format!("file://{}", dir.path().display());
+        for (depth, ok) in [("2", true), ("1", false)] {
+            let clone = tempfile::tempdir().unwrap();
+            let target = clone.path().join("c");
+            let out = Command::new("git")
+                .args(["clone", "-q", "--depth", depth, &url])
+                .arg(&target)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            let result = released_by(&target, "HEAD");
+            if ok {
+                assert_eq!(result.unwrap().released.len(), 3);
+            } else {
+                let err = result.err().unwrap().to_string();
+                assert!(err.contains("fetch depth 2"), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn released_by_a_commit_without_version_changes_is_empty() {
+        let (dir, _, _) = workspace();
+        std::fs::write(dir.path().join("README.md"), "x").unwrap();
+        git(dir.path(), &["add", "-A"]);
+        git(dir.path(), &["commit", "-q", "-m", "docs"]);
+        assert!(released_by(dir.path(), "HEAD").unwrap().released.is_empty());
     }
 }

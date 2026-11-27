@@ -4,6 +4,7 @@
   "private": true,
   "description": "Changesetter Azure Pipelines extension",
   "scripts": {
+    "prebuild": "node prepare.js",
     "build": "tfx extension create --manifest-globs vss-extension.json"
   }
 }

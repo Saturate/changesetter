@@ -44,13 +44,13 @@ pub fn run_in(repo_root: &Path, args: &PreArgs) -> anyhow::Result<()> {
 }
 
 fn enter(changeset_dir: &Path, tag: &str) -> anyhow::Result<()> {
-    if let Some(state) = pre::read_pre_state(changeset_dir) {
-        if state.mode == "pre" {
-            anyhow::bail!(
-                "Already in pre-release mode with tag \"{}\". Run `changesetter pre exit` first.",
-                state.tag
-            );
-        }
+    if let Some(state) = pre::read_pre_state(changeset_dir)
+        && state.mode == "pre"
+    {
+        anyhow::bail!(
+            "Already in pre-release mode with tag \"{}\". Run `changesetter pre exit` first.",
+            state.tag
+        );
     }
 
     let state = PreState {

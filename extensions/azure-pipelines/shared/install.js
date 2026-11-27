@@ -1,5 +1,5 @@
+const crypto = require("crypto");
 const https = require("https");
-const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -19,15 +19,30 @@ function getTarget() {
   return target;
 }
 
-function fetch(url) {
+class HttpError extends Error {
+  constructor(status, url) {
+    super(`HTTP ${status} for ${url}`);
+    this.status = status;
+  }
+}
+
+// Redirects stay on https (GitHub sends downloads to its asset host), and
+// a loop ends instead of recursing forever.
+function fetch(url, hops = 0) {
   return new Promise((resolve, reject) => {
-    const client = url.startsWith("https") ? https : http;
-    client.get(url, { headers: { "User-Agent": "changesetter-azure-pipelines" } }, (res) => {
+    if (!url.startsWith("https://")) {
+      return reject(new Error(`Refusing to download over a non-https URL: ${url}`));
+    }
+    https.get(url, { headers: { "User-Agent": "changesetter-azure-pipelines" } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetch(res.headers.location).then(resolve, reject);
+        res.resume();
+        if (hops >= 5) return reject(new Error(`Too many redirects for ${url}`));
+        const next = new URL(res.headers.location, url).toString();
+        return fetch(next, hops + 1).then(resolve, reject);
       }
       if (res.statusCode !== 200) {
-        return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
+        res.resume();
+        return reject(new HttpError(res.statusCode, url));
       }
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
@@ -48,12 +63,17 @@ async function install(version) {
   if (!version || version === "latest") {
     version = await resolveLatestVersion();
   }
+  version = version.replace(/^changesetter@/, "").replace(/^v/, "");
   console.log(`Installing changesetter v${version}`);
 
   const target = getTarget();
-  const url = `https://github.com/saturate/changesetter/releases/download/v${version}/changesetter-${target}.tar.gz`;
+  // CLI releases are tagged changesetter@v<version>; plain v<version> tags
+  // are the GitHub Action releases and have no binaries.
+  const base = `https://github.com/saturate/changesetter/releases/download/changesetter%40v${version}`;
+  const archive = `changesetter-${target}.tar.gz`;
 
-  const tarball = await fetch(url);
+  const tarball = await fetch(`${base}/${archive}`);
+  await verifyChecksum(base, archive, tarball, version);
 
   const tmpDir = path.join(os.tmpdir(), `changesetter-${Date.now()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -72,4 +92,35 @@ async function install(version) {
   return { binPath, binDir: tmpDir, version };
 }
 
-module.exports = { install, getTarget };
+// Releases from 0.9.0 on publish SHA256SUMS, so for those a missing file
+// fails the install. An older release has none, so its download can only be
+// trusted as far as the HTTPS connection.
+function publishesChecksums(version) {
+  const [major, minor] = version.split(/[.-]/).map(Number);
+  return major > 0 || minor >= 9;
+}
+
+async function verifyChecksum(base, archive, data, version) {
+  let sums;
+  try {
+    sums = (await fetch(`${base}/SHA256SUMS`)).toString();
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 404 && !publishesChecksums(version)) {
+      console.log(`No SHA256SUMS published for this release; ${archive} is not checksum-verified`);
+      return;
+    }
+    throw err;
+  }
+  const expected = sums
+    .split("\n")
+    .map((line) => line.trim().split(/\s+\*?/))
+    .find(([, name]) => name === archive);
+  if (!expected) throw new Error(`SHA256SUMS has no entry for ${archive}`);
+  const actual = crypto.createHash("sha256").update(data).digest("hex");
+  if (actual !== expected[0].toLowerCase()) {
+    throw new Error(`Checksum mismatch for ${archive}: expected ${expected[0]}, got ${actual}`);
+  }
+  console.log(`Verified ${archive} against SHA256SUMS`);
+}
+
+module.exports = { install, getTarget, verifyChecksum };

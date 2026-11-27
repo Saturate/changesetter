@@ -11,6 +11,14 @@ pub enum ChangesetterError {
     #[error("unknown package \"{name}\" in changeset {path}")]
     UnknownPackage { name: String, path: PathBuf },
 
+    #[error(
+        "{} changed since {base} but no changeset on this branch names {}: {}",
+        if packages.len() == 1 { "a package" } else { "packages" },
+        if packages.len() == 1 { "it" } else { "them" },
+        packages.join(", ")
+    )]
+    UncoveredPackages { packages: Vec<String>, base: String },
+
     #[error("unknown bump level \"{level}\" in changeset {path}")]
     UnknownBumpLevel { level: String, path: PathBuf },
 

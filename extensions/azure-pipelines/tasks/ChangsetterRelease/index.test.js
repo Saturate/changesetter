@@ -1,8 +1,9 @@
 // Runs the ChangsetterRelease task against real git repos (bare origin + clone)
-// with tl, install and https stubbed. Usage: node index.test.js
+// with tl and install stubbed, and Azure DevOps played by a local HTTP server.
+// The CLI is real (CHANGESETTER_BIN, default target/debug/changesetter; run
+// `cargo build` first). Usage: node index.test.js
 const Module = require("module");
-const https = require("https");
-const { EventEmitter } = require("events");
+const http = require("http");
 const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
@@ -29,48 +30,56 @@ Module._load = function (request) {
   return origLoad.apply(this, arguments);
 };
 
-https.request = (url, opts, cb) => {
-  const req = new EventEmitter();
+// Azure DevOps: records each call and answers with state.handler.
+const server = http.createServer((req, res) => {
   let body = "";
-  req.write = (c) => { body += c; };
-  req.end = () => {
-    const call = { method: opts.method, url: String(url), body: body ? JSON.parse(body) : null };
+  req.on("data", (c) => { body += c; });
+  req.on("end", () => {
+    const call = { method: req.method, url: `http://${req.headers.host}${req.url}`, body: body ? JSON.parse(body) : null, auth: req.headers.authorization };
     state.calls.push(call);
-    const { status, data } = state.handler(call);
-    const res = new EventEmitter();
-    res.statusCode = status;
-    cb(res);
-    res.emit("data", typeof data === "string" ? data : JSON.stringify(data));
-    res.emit("end");
-  };
-  return req;
-};
+    let status, data;
+    try {
+      ({ status, data } = state.handler(call));
+    } catch (e) {
+      state.handlerError = e;
+      ({ status, data } = { status: 500, data: { message: String(e) } });
+    }
+    const text = typeof data === "string" ? data : JSON.stringify(data);
+    res.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text) });
+    res.end(text);
+  });
+});
 
 const task = require(taskPath);
 
 const sh = (cmd, cwd) => execSync(cmd, { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 const tmpRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "changesetter-release-task-"));
 const GIT_COMMIT = ["git", "commit"].join(" ");
-
-function makeFakeCli() {
-  const dir = path.join(tmpRoot, "bin");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "changesetter"), `#!/bin/sh
-case "$1" in
-  status) echo "demo: 1.1.0 -> 1.2.0 (minor)";;
-  version) [ -n "$FAKE_VERSION_FAIL" ] && { echo "bump failed" >&2; exit 1; }; rm -f .changeset/*.md; sed -i.bak 's/^version = ".*"/version = "1.2.0"/' Cargo.toml && rm -f Cargo.toml.bak;;
-esac
-`, { mode: 0o755 });
-  return dir;
+const REAL_CLI = path.resolve(process.env.CHANGESETTER_BIN || path.join(__dirname, "../../../../target/debug/changesetter"));
+if (!fs.existsSync(REAL_CLI)) {
+  console.error(`No changesetter binary at ${REAL_CLI}; run cargo build or set CHANGESETTER_BIN`);
+  process.exit(1);
 }
 
-function makeRepo(name, { version, changesets = [] }) {
+function initRepo(name) {
   const origin = path.join(tmpRoot, `${name}-origin.git`);
   const work = path.join(tmpRoot, `${name}-work`);
   sh(`git init -q --bare -b main "${origin}"`);
   sh(`git clone -q "${origin}" "${work}" 2>/dev/null`);
-  sh(`git config user.name t && git config user.email t@t`, work);
-  fs.writeFileSync(path.join(work, "Cargo.toml"), `[package]\nname = "demo"\nversion = "${version}"\n`);
+  sh(`git config user.name t && git config user.email t@t && git config commit.gpgsign false && git config tag.gpgsign false`, work);
+  return { origin, work };
+}
+
+// Two commits: the version before the version PR (base), then its merge.
+function makeRepo(name, { version, changesets = [], failBump = false, echoHook = false }) {
+  const { origin, work } = initRepo(name);
+  const manifest = (v) => fs.writeFileSync(path.join(work, "Cargo.toml"), `[package]\nname = "demo"\nversion = "${v}"\n`);
+  if (failBump) fs.writeFileSync(path.join(work, "changesetter.toml"), '[hooks]\npost_bump = ["echo bump failed >&2; exit 1"]\n');
+  if (echoHook) fs.writeFileSync(path.join(work, "changesetter.toml"), '[hooks]\npost_bump = ["echo hook says hi"]\n');
+  manifest("0.9.0");
+  sh(`git add -A && ${GIT_COMMIT} -q -m base`, work);
+  const base = sh("git rev-parse HEAD", work);
+  manifest(version);
   fs.mkdirSync(path.join(work, ".changeset"), { recursive: true });
   fs.writeFileSync(path.join(work, ".changeset/README.md"), "readme\n");
   for (const c of changesets) {
@@ -78,21 +87,42 @@ function makeRepo(name, { version, changesets = [] }) {
     fs.writeFileSync(path.join(work, `.changeset/${c}.md`), "---\ndemo: minor\n---\n\nLate change\n");
   }
   sh(`git add -A && ${GIT_COMMIT} -q -m "Merged PR 7: Next Release" && git push -q origin main`, work);
-  return { origin, work, head: sh("git rev-parse HEAD", work) };
+  return { origin, work, base, head: sh("git rev-parse HEAD", work) };
 }
 
-const versionPr = (sha, status = "completed") => ({
+// npm workspace: apps/web, apps/admin and packages/ui, with packages/* never
+// tagged. The merge bumps web and ui.
+function makeMonorepo(name) {
+  const { origin, work } = initRepo(name);
+  const pkg = (dir, n, v) => {
+    fs.mkdirSync(path.join(work, dir), { recursive: true });
+    fs.writeFileSync(path.join(work, dir, "package.json"), JSON.stringify({ name: n, version: v }));
+  };
+  fs.writeFileSync(path.join(work, "changesetter.toml"), '[tag]\nskip = ["packages/*"]\n');
+  pkg("apps/web", "@s/web", "1.0.0");
+  pkg("apps/admin", "@s/admin", "1.0.0");
+  pkg("packages/ui", "@s/ui", "0.1.0");
+  sh(`git add -A && ${GIT_COMMIT} -q -m base`, work);
+  const base = sh("git rev-parse HEAD", work);
+  pkg("apps/web", "@s/web", "1.0.1");
+  pkg("packages/ui", "@s/ui", "0.1.1");
+  sh(`git add -A && ${GIT_COMMIT} -q -m "Merged PR 7: Next Release" && git push -q origin main`, work);
+  return { origin, work, base, head: sh("git rev-parse HEAD", work) };
+}
+
+const versionPr = (sha, status = "completed", target) => ({
   pullRequestId: 7, status,
   sourceRefName: "refs/heads/changesetter/version-packages",
   lastMergeCommit: { commitId: sha },
+  ...(target ? { lastMergeTargetCommit: { commitId: target } } : {}),
 });
 
-function handlerFor(head, { merged, prStatus, openPr = null, queryData }) {
+function handlerFor(head, { merged, prStatus, openPr = null, queryData, target }) {
   return (call) => {
     if (call.url.includes("/pullrequestquery")) {
       assert.deepStrictEqual(call.body.queries, [{ type: "lastMergeCommit", items: [head] }]);
       if (queryData) return { status: 200, data: queryData };
-      return { status: 200, data: { queries: call.body.queries, results: [{ [head]: merged ? [versionPr(head, prStatus)] : [] }] } };
+      return { status: 200, data: { queries: call.body.queries, results: [{ [head]: merged ? [versionPr(head, prStatus, target)] : [] }] } };
     }
     if (call.method === "GET" && call.url.includes("searchCriteria.status=active")) {
       return { status: 200, data: { value: openPr ? [openPr] : [] } };
@@ -103,15 +133,14 @@ function handlerFor(head, { merged, prStatus, openPr = null, queryData }) {
   };
 }
 
-async function scenario(name, setup, check) {
-  Object.assign(state, { vars: {}, out: {}, warnings: [], result: null, calls: [] });
-  delete process.env.FAKE_VERSION_FAIL;
-  state.binDir = makeFakeCli();
+async function scenario(name, setup, check, binDir = path.dirname(REAL_CLI)) {
+  Object.assign(state, { vars: {}, out: {}, warnings: [], result: null, calls: [], handlerError: null });
+  state.binDir = binDir;
   console.log(`\n=== ${name}`);
   const repo = setup();
   process.chdir(repo.work);
   state.vars = {
-    "System.CollectionUri": "https://dev.azure.com/org/",
+    "System.CollectionUri": `http://127.0.0.1:${server.address().port}/org/`,
     "System.TeamProject": "proj",
     "Build.Repository.ID": "repo-id",
     "System.AccessToken": "tok",
@@ -119,6 +148,7 @@ async function scenario(name, setup, check) {
     ...repo.vars,
   };
   await task.run();
+  if (state.handlerError) throw state.handlerError;
   check(repo);
   console.log(`PASS ${name}`);
 }
@@ -128,6 +158,7 @@ const remoteBranches = (repo) => sh(`git ls-remote --heads "${repo.origin}"`, re
 const methods = () => state.calls.map((c) => `${c.method} ${new URL(c.url).pathname.split("/").pop()}`);
 
 (async () => {
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   await scenario("commit is the version PR merge: release", () => {
     const r = makeRepo("merge", { version: "1.1.0-rc.0" });
     state.handler = handlerFor(r.head, { merged: true });
@@ -151,6 +182,11 @@ const methods = () => state.calls.map((c) => `${c.method} ${new URL(c.url).pathn
     assert.strictEqual(remoteTags(r), "");
     assert.match(remoteBranches(r), /refs\/heads\/changesetter\/version-packages/);
     assert.deepStrictEqual(methods(), ["POST pullrequestquery", "GET pullrequests", "POST pullrequests"]);
+    assert.ok(state.calls.every((c) => c.auth === "Bearer tok"));
+    const created = state.calls[2].body;
+    assert.match(created.description, /^## demo 1\.1\.0 → 1\.2\.0\n\nLate change$/m);
+    assert.ok(created.description.length <= 4000);
+    assert.strictEqual(state.out.versionPrId, "8");
   });
 
   await scenario("changeset in a subdirectory: version PR flow", () => {
@@ -196,10 +232,9 @@ const methods = () => state.calls.map((c) => `${c.method} ${new URL(c.url).pathn
 
   await scenario("tag exists on origin at another commit: version collision, task fails", () => {
     const r = makeRepo("elsewhere", { version: "1.1.0" });
-    sh(`git tag -a v1.1.0 -m old HEAD && ${GIT_COMMIT} -q --allow-empty -m next && git push -q origin main v1.1.0`, r.work);
-    const head = sh("git rev-parse HEAD", r.work);
-    state.handler = handlerFor(head, { merged: true });
-    return { ...r, head, old: r.head };
+    sh(`git tag -a v1.1.0 -m old ${r.base} && git push -q origin v1.1.0`, r.work);
+    state.handler = handlerFor(r.head, { merged: true });
+    return { ...r, old: r.base };
   }, (r) => {
     assert.strictEqual(state.result.r, 2);
     console.log(`task failed with: ${state.result.m}`);
@@ -254,8 +289,7 @@ const methods = () => state.calls.map((c) => `${c.method} ${new URL(c.url).pathn
   });
 
   await scenario("changesetter version fails: task fails, no version PR", () => {
-    const r = makeRepo("bumpfail", { version: "1.1.0", changesets: ["feat-x"] });
-    process.env.FAKE_VERSION_FAIL = "1";
+    const r = makeRepo("bumpfail", { version: "1.1.0", changesets: ["feat-x"], failBump: true });
     state.handler = handlerFor(r.head, { merged: false });
     return r;
   }, (r) => {
@@ -310,16 +344,76 @@ const methods = () => state.calls.map((c) => `${c.method} ${new URL(c.url).pathn
     assert.deepStrictEqual(methods(), ["POST pullrequestquery", "GET pullrequests", "PATCH 9"]);
   });
 
-  await scenario("version.workspace = true: no literal version, task fails", () => {
-    const r = makeRepo("workspace", { version: "x" });
-    fs.writeFileSync(path.join(r.work, "Cargo.toml"), "[package]\nname = \"demo\"\nversion.workspace = true\n");
+  await scenario("monorepo merge: tags each bumped package except [tag] skip", () => {
+    const r = makeMonorepo("mono");
+    state.handler = handlerFor(r.head, { merged: true, target: r.base });
+    return r;
+  }, (r) => {
+    assert.strictEqual(state.result.r, 0, state.result.m);
+    assert.strictEqual(state.out.released, "true");
+    assert.deepStrictEqual(JSON.parse(state.out.releases), [{ name: "@s/web", version: "1.0.1", tag: "@s/web@v1.0.1" }]);
+    const tags = remoteTags(r);
+    assert.match(tags, /refs\/tags\/@s\/web@v1\.0\.1/);
+    assert.doesNotMatch(tags, /@s\/ui|@s\/admin/);
+  });
+
+  await scenario("shallow checkout: fetches the merge target from origin", () => {
+    const r = makeMonorepo("shallow-src");
+    const work = path.join(tmpRoot, "shallow-work");
+    sh(`git clone -q --depth=1 "file://${r.origin}" "${work}" 2>/dev/null`);
+    sh(`git config user.name t && git config user.email t@t && git config tag.gpgsign false`, work);
+    state.handler = handlerFor(r.head, { merged: true, target: r.base });
+    return { ...r, work };
+  }, (r) => {
+    assert.strictEqual(state.result.r, 0, state.result.m);
+    assert.match(remoteTags(r), /refs\/tags\/@s\/web@v1\.0\.1/);
+  });
+
+  await scenario("merge that changes no tagged version: no release", () => {
+    const r = makeRepo("unchanged", { version: "0.9.0" });
     state.handler = handlerFor(r.head, { merged: true });
     return r;
   }, (r) => {
-    assert.strictEqual(state.result.r, 2);
-    console.log(`task failed with: ${state.result.m}`);
+    assert.strictEqual(state.result.r, 0, state.result.m);
+    assert.strictEqual(state.out.released, "false");
     assert.strictEqual(remoteTags(r), "");
   });
 
+  await scenario("post_bump hook printing to stdout: outputs still set", () => {
+    const r = makeRepo("echohook", { version: "1.1.0", changesets: ["late-fix"], echoHook: true });
+    state.handler = handlerFor(r.head, { merged: true });
+    return r;
+  }, () => {
+    assert.strictEqual(state.result.r, 0, state.result.m);
+    assert.strictEqual(state.out.released, "true");
+    assert.strictEqual(state.out.versionPrId, "8");
+  });
+
+  const fakeCli = (name, script) => {
+    const dir = path.join(tmpRoot, `fake-${name}`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "changesetter"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    return dir;
+  };
+
+  await scenario("CLI older than 0.9.0: task fails naming the version it needs", () => {
+    const r = makeRepo("oldcli", { version: "1.1.0" });
+    state.handler = handlerFor(r.head, { merged: false });
+    return r;
+  }, () => {
+    assert.strictEqual(state.result.r, 2);
+    assert.match(state.result.m, /needs changesetter 0\.9\.0 or newer/);
+  }, fakeCli("old", `echo "error: unrecognized subcommand 'version-pr'" >&2; exit 2`));
+
+  await scenario("CLI prints no JSON: task fails instead of crashing", () => {
+    const r = makeRepo("nojson", { version: "1.1.0" });
+    state.handler = handlerFor(r.head, { merged: false });
+    return r;
+  }, () => {
+    assert.strictEqual(state.result.r, 2);
+    assert.match(state.result.m, /printed no JSON/);
+  }, fakeCli("nojson", "echo not json"));
+
   console.log("\nAll scenarios passed");
+  server.close();
 })().catch((e) => { console.error(e); process.exit(1); });

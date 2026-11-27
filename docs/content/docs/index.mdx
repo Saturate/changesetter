@@ -17,6 +17,29 @@ Or download a prebuilt binary (Linux, macOS, Windows):
 curl -sL https://github.com/saturate/changesetter/releases/latest/download/changesetter-x86_64-unknown-linux-gnu.tar.gz | tar xz
 ```
 
+### Verify a download
+
+Every CLI release from 0.9.0 on publishes a `SHA256SUMS` file next to its archives, built by the same workflow run that built them. Pin a version and check the archive against it before unpacking:
+
+```bash
+VERSION=0.9.0
+TARGET=x86_64-unknown-linux-gnu
+BASE="https://github.com/saturate/changesetter/releases/download/changesetter%40v${VERSION}"
+curl -fsSLO "${BASE}/changesetter-${TARGET}.tar.gz"
+curl -fsSLO "${BASE}/SHA256SUMS"
+grep " changesetter-${TARGET}.tar.gz\$" SHA256SUMS | sha256sum --check -
+tar xzf "changesetter-${TARGET}.tar.gz"
+```
+
+On macOS use `shasum -a 256 --check -` instead of `sha256sum --check -`. The `grep` picks the one line for your archive, and `--check` exits non-zero if the file doesn't match.
+
+The archives also carry a GitHub build provenance attestation, which proves they were built by this repository's Build Binaries workflow on GitHub Actions. With the GitHub CLI:
+
+```bash
+gh attestation verify "changesetter-${TARGET}.tar.gz" --repo Saturate/changesetter \
+  --signer-workflow Saturate/changesetter/.github/workflows/build-binaries.yml
+```
+
 ## Initialize
 
 Run `init` in your repository root. This creates the `.changeset/` directory where changeset files live.

@@ -1,10 +1,22 @@
 name: Azure extension
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "extensions/azure-pipelines/**"
+      - ".github/workflows/azure-extension.yml"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
   pull_request:
     paths:
       - "extensions/azure-pipelines/**"
       - ".github/workflows/azure-extension.yml"
+      # The task scenarios run the real CLI.
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
 
 permissions:
   contents: read
@@ -17,9 +29,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
       - name: Release task scenarios
         working-directory: extensions/azure-pipelines/tasks/ChangsetterRelease
         run: |
           git config --global user.name ci
           git config --global user.email ci@example.com
           npm test
+      # tl and install are stubbed, so neither task needs npm ci.
+      - name: Check task scenarios
+        working-directory: extensions/azure-pipelines/tasks/ChangsetterCheck
+        run: npm test
+      - name: Install checksum tests
+        working-directory: extensions/azure-pipelines/shared
+        run: node install.test.js
+      # Azure Pipelines ships each task folder on its own, so load every task
+      # from the packaged extension, one folder at a time.
+      - name: Package the extension and load each task from it
+        working-directory: extensions/azure-pipelines
+        run: |
+          node prepare.js
+          npx --yes tfx-cli@0.24.2 extension create --manifest-globs vss-extension.json --output-path "$RUNNER_TEMP/ext.vsix"
+          mkdir -p "$RUNNER_TEMP/vsix"
+          unzip -q "$RUNNER_TEMP/ext.vsix" -d "$RUNNER_TEMP/vsix"
+          for task in ChangsetterCheck ChangsetterRelease; do
+            mkdir -p "$RUNNER_TEMP/alone-$task"
+            cp -R "$RUNNER_TEMP/vsix/tasks/$task" "$RUNNER_TEMP/alone-$task/"
+            node -e "const m = require(process.argv[1] + '/index.js'); if (typeof m.run !== 'function') process.exit(1); require(process.argv[1] + '/shared/install.js');" "$RUNNER_TEMP/alone-$task/$task"
+            echo "$task loads from the package"
+          done

@@ -63,7 +63,25 @@ pub fn execute_version(repo_root: &Path, opts: &ExecuteOptions) -> anyhow::Resul
     }
 
     if release_plan.releases.is_empty() && release_plan.none_entries.is_empty() {
-        eprintln!("No pending changesets, nothing to release.");
+        // Only empty changesets: nothing to bump or write, but they are
+        // consumed like any other, or they'd sit there forever.
+        let empty = changesets.iter().filter(|c| c.packages.is_empty()).count();
+        if empty > 0 && opts.snapshot.is_none() {
+            if opts.dry_run {
+                eprintln!("Would remove {empty} empty changeset(s); nothing to release.");
+            } else {
+                if !opts.no_commit && !crate::git::is_working_tree_clean(repo_root)? {
+                    anyhow::bail!(ChangesetterError::DirtyWorkingTree);
+                }
+                remove_changesets(&changeset_dir, &changesets)?;
+                if !opts.no_commit {
+                    commit_version_changes(repo_root, &release_plan, &config, &[])?;
+                }
+                eprintln!("Removed {empty} empty changeset(s); nothing to release.");
+            }
+        } else {
+            eprintln!("No pending changesets, nothing to release.");
+        }
         return Ok(ExecuteResult {
             plan: release_plan,
             date: String::default(),
@@ -160,9 +178,18 @@ fn read_changesets(
 fn run_post_bump_hooks(repo_root: &Path, config: &Config) -> anyhow::Result<()> {
     for hook in &config.hooks.post_bump {
         eprintln!("Running post-bump hook: {hook}");
+        // Hook output goes to stderr: stdout is reserved for `--output json`,
+        // and an `npm install` printing there would break the caller's parse
+        // after tags and releases were already pushed. The CI tokens are in
+        // the environment for `version-pr`'s API calls; repo-defined hooks
+        // don't need them.
         let status = std::process::Command::new("sh")
             .args(["-c", hook])
             .current_dir(repo_root)
+            .stdout(std::process::Stdio::from(std::io::stderr()))
+            .env_remove("SYSTEM_ACCESSTOKEN")
+            .env_remove("GITHUB_TOKEN")
+            .env_remove("GH_TOKEN")
             .status()?;
         if !status.success() {
             anyhow::bail!("post-bump hook failed: {hook}");
@@ -349,7 +376,9 @@ fn commit_version_changes(
 
     // A run with only none-bump changesets releases nothing, and the
     // "{versions}" template would leave "chore: release " with nothing after it.
-    let message = if plan.releases.is_empty() && changelogs.is_empty() {
+    let message = if plan.releases.is_empty() && plan.none_entries.is_empty() {
+        "chore: remove empty changesets".to_string()
+    } else if plan.releases.is_empty() && changelogs.is_empty() {
         "chore: remove none-bump changesets".to_string()
     } else if plan.releases.is_empty() {
         "chore: add unreleased changelog notes".to_string()

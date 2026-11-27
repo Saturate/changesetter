@@ -30,13 +30,16 @@ inputs:
 outputs:
   released:
     description: Whether any releases were created
-    value: ${{ steps.direct-release.outputs.released || steps.merged-release.outputs.released || 'false' }}
+    value: ${{ steps.direct-release.outputs.released || steps.version-pr.outputs.released || 'false' }}
   releases:
     description: JSON array of release objects
-    value: ${{ steps.direct-release.outputs.releases || steps.merged-release.outputs.releases || '[]' }}
+    value: ${{ steps.direct-release.outputs.releases || steps.version-pr.outputs.releases || '[]' }}
   version-pr:
     description: URL of the version PR if created/updated
     value: ${{ steps.version-pr.outputs.pr-url || '' }}
+  commit:
+    description: Version-PR mode only, the merge commit the released tags are on. After finishing an earlier merge's release, the action checks it out, so later steps build what was tagged.
+    value: ${{ steps.version-pr.outputs.commit || '' }}
 
 runs:
   using: composite
@@ -99,16 +102,16 @@ runs:
         RELEASES: ${{ steps.direct-release.outputs.releases }}
         DRAFT: ${{ inputs.draft }}
       run: |
-        DRAFT_FLAG=""
-        if [ "$DRAFT" = "true" ]; then
-          DRAFT_FLAG="--draft"
-        fi
-
         while read -r release; do
           TAG=$(jq -r '.tag' <<<"$release")
           NAME=$(jq -r '.name' <<<"$release")
           VERSION=$(jq -r '.version' <<<"$release")
           CHANGELOG=$(jq -r '.changelog' <<<"$release")
+
+          # `[tag] skip` packages are versioned but get no tag to release.
+          if [ "$TAG" = "null" ]; then
+            continue
+          fi
 
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "GitHub Release ${TAG} already exists"
@@ -125,282 +128,49 @@ runs:
             --verify-tag
         done < <(jq -c '.[]' <<<"$RELEASES")
 
-    # Version PR mode (version-pr: true)
-    - name: Find version PR merge to release
-      id: check-merged
+    # Version PR mode (version-pr: true). The CLI does the whole loop: it
+    # finds the version PR this commit merged (or the last one, if its run
+    # never finished), tags what it released, creates the GitHub Releases,
+    # then opens or updates the version PR for pending changesets.
+    - name: Version PR
+      id: version-pr
       if: inputs.version-pr == 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
-      run: |
-        if ! changesetter status --output json > /dev/null; then
-          echo "This action needs changesetter 0.4.0 or newer (status --output json)" >&2
-          exit 1
-        fi
-
-        # Tags decide what's already released, and the parent commit of a
-        # merge is needed to see which versions it changed.
-        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
-          git fetch --quiet --unshallow --tags origin
-        else
-          git fetch --quiet --tags --force origin
-        fi
-
-        # Ask for the PRs associated with HEAD rather than searching merged
-        # PRs: `gh pr list --label` goes through the search index, which can
-        # lag right after the merge. No error swallowing: a failed lookup
-        # would look like "not a version PR" and skip the release.
-        HEAD_SHA=$(git rev-parse HEAD)
-        MERGED_PR=$(gh api "repos/{owner}/{repo}/commits/${HEAD_SHA}/pulls" \
-          --jq "[.[] | select(.merge_commit_sha == \"${HEAD_SHA}\" and any(.labels[]; .name == \"changesetter:version\")) | .number] | first // empty")
-
-        if [ -n "$MERGED_PR" ]; then
-          echo "HEAD is the merge of version PR #${MERGED_PR}"
-          RELEASE_SHA="$HEAD_SHA"
-        else
-          # Not a version PR merge, but the last one may still be unreleased:
-          # its run was cancelled, or failed after tagging some packages. The
-          # release step only creates tags and releases that are missing, so
-          # offering it again is safe.
-          RELEASE_SHA=$(gh api "repos/{owner}/{repo}/pulls?state=closed&head={owner}:changesetter/version-packages&sort=updated&direction=desc&per_page=20" \
-            --jq '[.[] | select(.merged_at != null and any(.labels[]; .name == "changesetter:version"))] | sort_by(.merged_at) | last | .merge_commit_sha // empty')
-          if [ -n "$RELEASE_SHA" ] && ! git merge-base --is-ancestor "$RELEASE_SHA" HEAD; then
-            RELEASE_SHA=""
-          fi
-          if [ -n "$RELEASE_SHA" ]; then
-            echo "Checking that the last version PR merge (${RELEASE_SHA}) was fully released"
-          else
-            echo "HEAD is not a version PR merge"
-          fi
-        fi
-
-        if [ -n "$RELEASE_SHA" ]; then
-          echo "merged=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "merged=false" >> "$GITHUB_OUTPUT"
-        fi
-        echo "release-sha=${RELEASE_SHA}" >> "$GITHUB_OUTPUT"
-
-    - name: Release version PR merge
-      id: merged-release
-      if: inputs.version-pr == 'true' && steps.check-merged.outputs.merged == 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.token }}
-        RELEASE_SHA: ${{ steps.check-merged.outputs.release-sha }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        PR_TITLE: ${{ inputs.version-pr-title }}
         GITHUB_RELEASE: ${{ inputs.github-release }}
         DRAFT: ${{ inputs.draft }}
       run: |
-        # A version PR merge releases every package whose version differs
-        # from the merge's first parent. Both sides come from the CLI, so the
-        # tag format, changelog location and ignore list are the config at
-        # that commit rather than guesses here.
-        WORK="${RUNNER_TEMP:-/tmp}/changesetter-release"
-        git worktree add --quiet --detach "$WORK/after" "$RELEASE_SHA"
-        git worktree add --quiet --detach "$WORK/before" "${RELEASE_SHA}^1"
-        trap 'git worktree remove --force "$WORK/after"; git worktree remove --force "$WORK/before"' EXIT
-        (cd "$WORK/after" && changesetter status --output json) > "$WORK/after.json"
-        (cd "$WORK/before" && changesetter status --output json) > "$WORK/before.json"
+        if ! changesetter version-pr --help > /dev/null 2>&1; then
+          echo "::error::Version PR mode needs changesetter 0.9.0 or newer (changesetter version-pr)"
+          exit 1
+        fi
 
-        CHANGED=$(jq -c --slurpfile before "$WORK/before.json" '
-          ($before[0].packages | map({(.name): .version}) | add // {}) as $old
-          | [.packages[] | select($old[.name] != .version)]' "$WORK/after.json")
+        FLAGS=(--provider github --base "$GITHUB_REF_NAME" --title "$PR_TITLE" --output json)
+        if [ "$GITHUB_RELEASE" != "true" ]; then FLAGS+=(--no-github-release); fi
+        if [ "$DRAFT" = "true" ]; then FLAGS+=(--draft); fi
+        OUT=$(changesetter version-pr "${FLAGS[@]}")
 
-        RELEASES="[]"
-        while read -r pkg; do
-          NAME=$(jq -r '.name' <<<"$pkg")
-          VERSION=$(jq -r '.version' <<<"$pkg")
-          TAG=$(jq -r '.tag' <<<"$pkg")
-          CHANGELOG_FILE=$(jq -r '.changelog' <<<"$pkg")
-
-          NOTES=$("${GITHUB_ACTION_PATH}/release-notes.sh" "$VERSION" "$WORK/after/${CHANGELOG_FILE}")
-          NOTES="${NOTES:-Release ${VERSION}}"
-
-          # Only what this run creates counts as released, so a re-run or the
-          # recovery check on a later push doesn't re-trigger publish steps
-          # gated on `released`.
-          ACTED=false
-          LS_RC=0; git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null 2>&1 || LS_RC=$?
-          if [ "$LS_RC" -eq 0 ]; then
-            echo "${TAG} is already on origin"
-          elif [ "$LS_RC" -eq 2 ]; then
-            # Tag the way `changesetter release` would ([release] tag_annotated).
-            if [ "$(jq -r '.tag_annotated' "$WORK/after.json")" = "true" ]; then
-              git tag -a -f "$TAG" "$RELEASE_SHA" -m "$NOTES" --cleanup=verbatim
-            else
-              git tag -f "$TAG" "$RELEASE_SHA"
-            fi
-            git push origin "refs/tags/${TAG}"
-            echo "Tagged ${TAG}"
-            ACTED=true
-          else
-            echo "::error::Failed to check tag ${TAG} (git ls-remote exit $LS_RC)"
-            exit 1
-          fi
-
-          if [ "$GITHUB_RELEASE" = "true" ]; then
-            if gh release view "$TAG" > /dev/null 2>&1; then
-              echo "GitHub Release ${TAG} already exists"
-            else
-              FLAGS=()
-              if [ "$DRAFT" = "true" ]; then FLAGS+=(--draft); fi
-              case "$VERSION" in *-*) FLAGS+=(--prerelease) ;; esac
-              gh release create "$TAG" --verify-tag \
-                --title "${NAME:+${NAME} }v${VERSION}" --notes "$NOTES" "${FLAGS[@]}"
-              ACTED=true
-            fi
-          fi
-
-          if [ "$ACTED" != "true" ]; then
-            continue
-          fi
-
-          RELEASES=$(jq -c --arg name "$NAME" --arg version "$VERSION" --arg tag "$TAG" --arg changelog "$NOTES" \
-            '. + [{name: $name, version: $version, tag: $tag, changelog: $changelog}]' <<<"$RELEASES")
-        done < <(jq -c '.[]' <<<"$CHANGED")
-
+        # `released` lists only what this run tagged or published, so a
+        # re-run doesn't re-trigger publish steps gated on it.
+        RELEASES=$(jq -c '.released' <<<"$OUT")
+        COMMIT=$(jq -r '.commit // empty' <<<"$OUT")
         if [ "$RELEASES" = "[]" ]; then
-          echo "Nothing left to release for this version PR merge"
           echo "released=false" >> "$GITHUB_OUTPUT"
         else
+          # Finishing an earlier merge's release: the checkout is a newer
+          # commit with the same version numbers, and publish steps gated on
+          # `released` would ship its unreleased code under those versions.
+          if [ "$(jq -r '.recovered' <<<"$OUT")" = "true" ]; then
+            git checkout --quiet --detach "$COMMIT"
+            echo "::notice::Released the tags on ${COMMIT}, the version PR merge an earlier run didn't finish, and checked it out for the steps after this one."
+          fi
           {
             echo "released=true"
             echo "releases=${RELEASES}"
             echo "version=$(jq -r '.[0].version' <<<"$RELEASES")"
           } >> "$GITHUB_OUTPUT"
         fi
-
-    - name: Check for pending changesets
-      id: check-pending
-      # Also after a release: changesets merged while the version PR was open
-      # are still in the tree and need a fresh version PR.
-      if: inputs.version-pr == 'true'
-      shell: bash
-      run: |
-        # The CLI knows changeset_dir, nested dirs and that README.md isn't a
-        # changeset; a glob over .changeset/*.md didn't.
-        COUNT=$(changesetter status --output json | jq '.pending | length')
-        if [ "$COUNT" -gt 0 ]; then
-          echo "pending=true" >> "$GITHUB_OUTPUT"
-          echo "Found ${COUNT} pending changeset(s)"
-        else
-          echo "pending=false" >> "$GITHUB_OUTPUT"
-          echo "No pending changesets"
-        fi
-
-    - name: Create/update version PR
-      id: version-pr
-      if: inputs.version-pr == 'true' && steps.check-pending.outputs.pending == 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.token }}
-        PR_TITLE: ${{ inputs.version-pr-title }}
-      run: |
-        BRANCH="changesetter/version-packages"
-        LABEL="changesetter:version"
-
-        # Compute what would change
-        STATUS=$(changesetter status 2>&1 || true)
-        PLAN=$(changesetter status --output json)
-
-        # Create or reset the version branch
-        git checkout -B "$BRANCH"
-
-        # No commit, we'll commit ourselves. A failure here (say a post_bump
-        # hook) must stop the job: the tree is half bumped, and pushing it
-        # would open a version PR that releases nothing when merged.
-        changesetter version --no-commit
-
-        # Stage and commit
-        git add -A
-
-        # The preview is each release's new version section, read the way the
-        # release after the merge reads it. A diff would miss notes folded in
-        # from "## Unreleased", which are unchanged lines that only moved.
-        # Read from the working tree, so a first release's new CHANGELOG.md is
-        # covered. Releases sharing one section (a grouped monorepo changelog)
-        # are shown once under all their names.
-        # One compact JSON object per release, not tab-separated fields: tab
-        # is IFS whitespace, so read collapses an empty name (a Cargo
-        # workspace root with [workspace.package] has none) and shifts the
-        # version and changelog path into the wrong fields.
-        PREVIEW_LABELS=(); BODIES=(); KEYS=()
-        while read -r release; do
-          name=$(jq -r '.name' <<<"$release")
-          version=$(jq -r '.version' <<<"$release")
-          file=$(jq -r '.changelog' <<<"$release")
-          PKG_LABEL="${name:+${name}@}${version}"
-          NOTES=$("${GITHUB_ACTION_PATH}/release-notes.sh" "$version" "$file")
-          KEY="${file}"$'\n'"${NOTES}"
-          FOUND=""
-          for i in "${!KEYS[@]}"; do
-            if [ "${KEYS[$i]}" = "$KEY" ]; then FOUND=$i; break; fi
-          done
-          if [ -n "$FOUND" ]; then
-            PREVIEW_LABELS[FOUND]="${PREVIEW_LABELS[$FOUND]}, ${PKG_LABEL}"
-          else
-            KEYS+=("$KEY"); PREVIEW_LABELS+=("$PKG_LABEL"); BODIES+=("$NOTES")
-          fi
-        # A release with no matching package has no changelog of its own to
-        # read; release-notes.sh would fall back to the root CHANGELOG.md.
-        done < <(jq -c '.packages as $p | .releases[] | . as $r
-          | ([$p[] | select(.name == $r.name) | .changelog][0]) as $c
-          | select($c != null) | {name: $r.name, version: $r.version, changelog: $c}' <<<"$PLAN")
-
-        CHANGELOG_PREVIEW=""
-        for i in "${!KEYS[@]}"; do
-          CHANGELOG_PREVIEW+="### ${PREVIEW_LABELS[$i]}"$'\n\n'"${BODIES[$i]}"$'\n\n'
-        done
-        if [ ${#KEYS[@]} -eq 0 ]; then
-          # Nothing to release, only none-bump notes going under Unreleased:
-          # the changelog lines this run adds. Diffed from the index, which
-          # covers a changelog that's a new, untracked file.
-          CHANGELOGS=()
-          while IFS= read -r file; do CHANGELOGS+=("$file"); done < <(jq -r '[.packages[].changelog] | unique | .[]' <<<"$PLAN")
-          CHANGELOG_PREVIEW=$(git diff --cached -- "${CHANGELOGS[@]}" | grep "^+" | grep -v "^+++" | sed 's/^+//' || true)
-        fi
-
-        git commit -m "chore: version packages" --allow-empty
-
-        # Force push the version branch
-        git push origin "$BRANCH" --force
-
-        # Go back to the original branch
-        git checkout -
-
-        # Ensure label exists
-        gh label create "$LABEL" --description "Changesetter version PR" --color "6e40c9" 2>/dev/null || true
-
-        # Check for existing PR
-        EXISTING_PR=$(gh pr list \
-          --head "$BRANCH" \
-          --state open \
-          --json number \
-          --jq '.[0].number // empty' 2>/dev/null || true)
-
-        PR_BODY=$(cat <<PREOF
-        This PR was opened by [changesetter](https://github.com/Saturate/changesetter). Merging it will release the following packages.
-
-        ${STATUS}
-
-        ## Changelog preview
-
-        ${CHANGELOG_PREVIEW}
-        PREOF
-        )
-
-        if [ -n "$EXISTING_PR" ]; then
-          gh pr edit "$EXISTING_PR" --body "$PR_BODY" --add-label "$LABEL"
-          PR_URL=$(gh pr view "$EXISTING_PR" --json url --jq '.url')
-          echo "Updated existing PR #${EXISTING_PR}"
-        else
-          PR_URL=$(gh pr create \
-            --base "$GITHUB_REF_NAME" \
-            --head "$BRANCH" \
-            --title "$PR_TITLE" \
-            --body "$PR_BODY" \
-            --label "$LABEL")
-          echo "Created new PR: $PR_URL"
-        fi
-
-        echo "pr-url=$PR_URL" >> "$GITHUB_OUTPUT"
+        echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+        echo "pr-url=$(jq -r '.version_pr.url // empty' <<<"$OUT")" >> "$GITHUB_OUTPUT"

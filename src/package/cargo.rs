@@ -62,25 +62,25 @@ impl Adapter for CargoAdapter {
             }));
         }
 
-        if let Some(ws) = doc.get("workspace") {
-            if let Some(ws_pkg) = ws.get("package") {
-                let name = ws_pkg
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let Some(version_str) = ws_pkg.get("version").and_then(|v| v.as_str()) else {
-                    return Ok(None);
-                };
-                let version = Version::parse(version_str)?;
+        if let Some(ws) = doc.get("workspace")
+            && let Some(ws_pkg) = ws.get("package")
+        {
+            let name = ws_pkg
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let Some(version_str) = ws_pkg.get("version").and_then(|v| v.as_str()) else {
+                return Ok(None);
+            };
+            let version = Version::parse(version_str)?;
 
-                return Ok(Some(Package {
-                    name,
-                    path: path.to_path_buf(),
-                    package_type: PackageType::CargoWorkspace,
-                    version,
-                }));
-            }
+            return Ok(Some(Package {
+                name,
+                path: path.to_path_buf(),
+                package_type: PackageType::CargoWorkspace,
+                version,
+            }));
         }
 
         Ok(None)

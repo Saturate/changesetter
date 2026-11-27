@@ -20,11 +20,12 @@ Create a new changeset file.
 | `--package <name>` | Package(s) affected (repeatable) |
 | `--bump <level>` | Bump level: `patch`, `minor`, `major`, `none` |
 | `--no-bump` | Shorthand for `--bump none` |
+| `--empty` | Write an [empty changeset](/changeset-format#empty-changesets) that names no package. Can't be combined with the other package flags |
 | `-m, --message <text>` | Change description, written as the body's first line in plain text |
 | `--type <type>` | Conventional type (`feat`, `fix`, `perf`, ...) for [grouped changelogs](/configuration#grouped-changelogs) |
 | `--scope <scope>` | Scope shown as `**scope:**` in front of the entry in grouped changelogs |
 
-When run without flags in a terminal, prompts interactively for packages, bump level, and description. When stdin is not a TTY (CI), `--package`, `--bump` (or `--no-bump`) and `--message` are required. `--type` and `--scope` are always optional; see [Type and scope](/changeset-format#type-and-scope).
+When run without flags in a terminal, prompts interactively for packages, bump level, and description. When stdin is not a TTY (CI), `--package`, `--bump` (or `--no-bump`) and `--message` are required, unless `--empty` is given. `--type` and `--scope` are always optional; see [Type and scope](/changeset-format#type-and-scope).
 
 ## `changesetter check`
 
@@ -34,13 +35,20 @@ Verify that at least one changeset file exists. Used in CI to enforce changeset 
 |---|---|
 | `--base <ref>` | Compare against a base branch (e.g. `origin/main`) |
 | `--output json` | Write structured JSON to stdout |
+| `--strict` | With `--base`, fail instead of warn when a changed package has no changeset |
 
 Without `--base`, checks every changeset in the changeset directory. With `--base`, finds the changeset files changed since the branch left `<ref>`: added, changed or deleted, whether committed on the branch, staged, unstaged or untracked (files matched by `.gitignore` don't count). That lets a pre-commit hook or local gate run `changesetter check --base origin/main` before the changeset is committed. CI checkouts are clean, so there it only sees committed files. It fails if one of the changesets can't be parsed, and refuses a changeset that is a symlink. A branch that only deletes changesets, like a version PR, passes. If nothing at all changed since `<ref>` (no commits, no staged, unstaged or untracked files), the check passes, since there is nothing to describe. That covers a gate run on `main` against `origin/main`.
+
+Every package a counted changeset names must be one `version` can bump: a detected package that `ignore` doesn't exclude, or `default` in a single-package repo. A name that doesn't match fails the check with exit code 1, listing each file and name, so a typo is caught on the PR instead of failing the version PR on `main`. Deleted changesets aren't checked.
+
+With `--base`, the check also maps every changed file to the package whose directory holds it (the deepest one, so a root package doesn't claim files in a nested package) and warns about packages that changed with no changeset on the branch naming them. A `none` bump counts as naming the package. It's a warning because a dependency cascade or a deliberately unversioned change can be right; `--strict` makes it fail. Files under the changeset directory don't count. On a branch that only deletes changesets, like a version PR, manifests, lockfiles and changelogs don't count either, since `version` rewrites those; its other changes still need a changeset. An [empty changeset](/changeset-format#empty-changesets) names no package, so it doesn't cover a change inside one: use `<package>: none` for that. A nameless single package is reported as `default`.
 
 The JSON has these keys:
 
 - `changesets`: each changeset found, with its `file` (relative to the repo root), its `packages` as a map of package name to bump level, and its `summary` text. A changeset the branch deleted has `deleted: true` and no packages or summary.
 - `bumps`: the highest bump level per package across those changesets.
+- `unknown_packages`: each package name no detected package has, as `{ "file", "package" }`. Non-empty means the check failed.
+- `uncovered`: names of packages with changes since `--base` that no changeset on the branch names. Empty without `--base`.
 
 The JSON is written even when no changeset is found (with an empty `changesets` list, and exit code 1, or exit code 0 when nothing changed since `<ref>`), so CI can tell a missing changeset apart from a check that failed. A changeset that can't be parsed, or a base ref that isn't fetched, exits non-zero with no JSON.
 
@@ -51,11 +59,12 @@ Show pending changesets and a preview of what the next release would look like. 
 | Flag | Description |
 |---|---|
 | `--output json` | Write structured JSON to stdout |
+| `--released-by <rev>` | List what a commit released instead; see [below](#what-a-commit-released) |
 
 The JSON has these keys:
 
 - `pending`: changeset file names, relative to the changeset directory and without `.md`.
-- `packages`: every detected package with its current `version`, its `path` (`.` for the repo root), the `changelog` file it writes to, the `tag` for that version (following the configured tag format) and `tagged`, whether that tag exists locally. Run `git fetch --tags` first in CI.
+- `packages`: every detected package with its current `version`, its `path` (`.` for the repo root), the `changelog` file it writes to, the `tag` for that version (following the configured tag format, `null` for a package in `[tag] skip`) and `tagged`, whether that tag exists locally. Run `git fetch --tags` first in CI.
 - `tag_annotated`: whether `release` creates annotated tags (the `[release]` setting).
 - `releases`: what a release would do now: `name`, `previous_version`, `version`, `bump`, `tag` and `entries` (see [entries](#entries)). A package named in a changeset but not detected shows up here with `previous_version` `0.0.0` and no `packages` entry.
 - `none_entries`: changesets that document a change without bumping a version, with the same fields as an entry plus `title` and `body`.
@@ -75,6 +84,39 @@ The JSON has these keys:
   "none_entries": []
 }
 ```
+
+### What a commit released
+
+`status --released-by <rev>` compares each package's version at `<rev>` with its version at `<rev>^1`, the first parent, and lists the ones that differ. On a version PR merge that's what the merge released. A build pipeline can use it to decide whether to publish a versioned artifact:
+
+```sh
+changesetter status --released-by HEAD --output json
+```
+
+```json
+{
+  "commit": "4f2a...",
+  "parent": "9c1e...",
+  "released": [
+    { "name": "@acme/web", "path": "apps/web", "previous_version": "1.4.0", "version": "1.5.0", "tag": "@acme/web@v1.5.0" },
+    { "name": "@acme/ui", "path": "packages/ui", "previous_version": "0.3.1", "version": "0.3.2", "tag": null }
+  ]
+}
+```
+
+- `released` is empty when the commit changes no version.
+- `previous_version` is `null` for a package the commit added. A package the commit removed isn't listed.
+- `tag` is the tag name for that version under the config at `<rev>`, or `null` for a package in `[tag] skip`. Whether the tag exists doesn't matter, so the answer is the same before and after the release pipeline tags the commit.
+- Only `<rev>` and its parent are read, each from a temporary worktree, so a checkout with fetch depth 2 is enough. With depth 1 it fails and says so, rather than reporting nothing.
+
+## Stable JSON
+
+These outputs are a stable interface: within a major version, keys are only added, never renamed, removed or given a different meaning, so pipelines can rely on them.
+
+- `status --released-by <rev> --output json`
+- `tag --output json`
+
+Read keys by name and ignore ones you don't know. Human-readable output (without `--output json`) can change in any release.
 
 ## `changesetter version`
 
@@ -142,6 +184,54 @@ Each entry in `releases[].entries` and `none_entries` has these fields:
 ```
 
 When no changesets are pending, exits 0 with a message and no side effects. With `--output json` it still prints JSON, with empty `releases` and `none_entries`.
+
+## `changesetter tag`
+
+Create the git tags missing for the current package versions, on HEAD. CI runs it after a version PR merges, where `version` already bumped the manifests and `release` isn't run.
+
+| Flag | Description |
+|---|---|
+| `--since <rev>` | Only tag packages whose version differs from `<rev>`, such as the first parent of the version PR merge |
+| `--push` | Look up existing tags on the remote instead of locally, and push the new tags to it in one atomic push |
+| `--remote <name>` | Remote for `--push` (default `origin`) |
+| `--dry-run` | Report the tags without creating them |
+| `--output json` | Print `{"tags": [{"name", "version", "tag", "created"}]}` ([stable](#stable-json)) |
+
+Tag names follow `[tag] format`, and packages in `[tag] skip` get none. A tag that already points at HEAD is reported with `created: false`. Without `--since` every package is a candidate, and a tag that already exists on an older commit just means that version was released earlier, so it's left alone. With `--since`, the versions changed since `<rev>` are the ones being released, so such a tag is a version collision: the command fails and creates no tags. The versions at `<rev>` are read from a temporary worktree, so the commit has to be in the local repository (`git fetch --depth=1 origin <sha>` in a shallow checkout).
+
+Tags are annotated with the version's section from the package's changelog, like `release` writes them; in a shared monorepo changelog, only that package's `### <name>` part of it. Without such a section the message is `Release <name>@<version>` (`Release <version>` in a single-package repo). `[release] tag_annotated = false` makes them lightweight.
+
+A nameless package in a monorepo, such as a `{"private": true}` workspace root, gets no tag. If two packages would get the same tag name (a `[tag] format` without `{name}`), the command fails before creating any. Temporary worktrees for `--since` run without git hooks.
+
+```sh
+changesetter tag --since HEAD^1 --push --output json
+```
+
+`tag --dry-run` reports `created: false` for a tag that already points at HEAD, so its answer changes once the release pipeline has tagged the commit. To decide what a commit released, use [`status --released-by`](#what-a-commit-released), which doesn't depend on tags.
+
+## `changesetter version-pr`
+
+The version-PR loop for CI on `main`: tag a merged version PR, then create or update the next one. See [Azure DevOps](/azure-devops#version-pr-pattern) for what each step does.
+
+| Flag | Description |
+|---|---|
+| `--provider <azure\|github>` | Where the repository is hosted (required) |
+| `--title <text>` | Title for a new version PR (default `Version Packages`) |
+| `--base <branch>` | Branch the version PR targets (default `main`) |
+| `--commit <rev>` | Commit to check for a version PR merge (default: `BUILD_SOURCEVERSION` or `GITHUB_SHA`, then HEAD) |
+| `--remote <name>` | Remote for tags and the version branch (default `origin`) |
+| `--no-github-release` | GitHub only: don't create GitHub Releases |
+| `--draft` | GitHub only: create GitHub Releases as drafts |
+| `--output json` | Print `{"merged_pr", "commit", "recovered", "tags", "released", "github_releases", "version_pr"}` |
+
+`azure` reads `SYSTEM_ACCESSTOKEN`, `SYSTEM_COLLECTIONURI`, `SYSTEM_TEAMPROJECT` and `BUILD_REPOSITORY_ID`. `github` reads `GITHUB_TOKEN` (or `GH_TOKEN`), `GITHUB_REPOSITORY` and `GITHUB_API_URL`, recognises a version PR merge by its merge commit, its `changesetter:version` label and its `changesetter/version-packages` head branch, and diffs against the merge's first parent. On GitHub it also:
+
+- creates a GitHub Release for each tag that doesn't have one (a draft counts), titled `<name> v<version>` and with the version's changelog section as notes; a version with a pre-release part becomes a pre-release. `--no-github-release` turns this off, and `--draft` creates them as drafts.
+- when the commit isn't a version PR merge, finishes the newest merged version PR whose merge is in the commit's history, in case its run was cancelled. Only missing tags and releases are created.
+
+The JSON also has `released` (`[{name, version, tag, changelog}]`, only what this run tagged or published, so a re-run reports nothing), `github_releases` (`[{tag, created, url}]`), `commit` (the merge commit the tags are on) and `recovered` (`true` when that merge isn't the commit being built, after finishing an earlier run's release). A step that publishes on `released` should build `commit`.
+
+Pending changesets are read from HEAD, which the bump runs on, so a changeset that's only in the working tree doesn't open a version PR. `post_bump` hooks run in the temporary worktree with their output on stderr, and without `SYSTEM_ACCESSTOKEN`, `GITHUB_TOKEN` or `GH_TOKEN`.
 
 ## `changesetter pre`
 
