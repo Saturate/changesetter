@@ -20,11 +20,12 @@ Create a new changeset file.
 | `--package <name>` | Package(s) affected (repeatable) |
 | `--bump <level>` | Bump level: `patch`, `minor`, `major`, `none` |
 | `--no-bump` | Shorthand for `--bump none` |
+| `--empty` | Write an [empty changeset](/changeset-format#empty-changesets) that names no package. Can't be combined with the other package flags |
 | `-m, --message <text>` | Change description, written as the body's first line in plain text |
 | `--type <type>` | Conventional type (`feat`, `fix`, `perf`, ...) for [grouped changelogs](/configuration#grouped-changelogs) |
 | `--scope <scope>` | Scope shown as `**scope:**` in front of the entry in grouped changelogs |
 
-When run without flags in a terminal, prompts interactively for packages, bump level, and description. When stdin is not a TTY (CI), `--package`, `--bump` (or `--no-bump`) and `--message` are required. `--type` and `--scope` are always optional; see [Type and scope](/changeset-format#type-and-scope).
+When run without flags in a terminal, prompts interactively for packages, bump level, and description. When stdin is not a TTY (CI), `--package`, `--bump` (or `--no-bump`) and `--message` are required, unless `--empty` is given. `--type` and `--scope` are always optional; see [Type and scope](/changeset-format#type-and-scope).
 
 ## `changesetter check`
 

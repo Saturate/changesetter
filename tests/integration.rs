@@ -121,6 +121,7 @@ fn roundtrip_cargo() {
             package: vec!["testpkg".to_string()],
             bump: Some("patch".to_string()),
             no_bump: false,
+            empty: false,
             message: Some("Fixed a bug".to_string()),
             kind: None,
             scope: None,
@@ -181,6 +182,7 @@ fn roundtrip_npm() {
             package: vec!["my-app".to_string()],
             bump: Some("minor".to_string()),
             no_bump: false,
+            empty: false,
             message: Some("Added feature".to_string()),
             kind: None,
             scope: None,
@@ -238,6 +240,7 @@ fn roundtrip_polyglot() {
             package: vec!["backend".to_string()],
             bump: Some("minor".to_string()),
             no_bump: false,
+            empty: false,
             message: Some("New API endpoint".to_string()),
             kind: None,
             scope: None,
@@ -252,6 +255,7 @@ fn roundtrip_polyglot() {
             package: vec!["frontend".to_string()],
             bump: Some("patch".to_string()),
             no_bump: false,
+            empty: false,
             message: Some("UI fix".to_string()),
             kind: None,
             scope: None,
@@ -294,6 +298,7 @@ fn roundtrip_none_bump() {
             package: vec!["testpkg".to_string()],
             bump: None,
             no_bump: true,
+            empty: false,
             message: Some("Updated CI config".to_string()),
             kind: None,
             scope: None,
@@ -1221,6 +1226,7 @@ fn add_unknown_package_errors() {
             package: vec!["nonexistent".to_string()],
             bump: Some("patch".to_string()),
             no_bump: false,
+            empty: false,
             message: Some("Fix".to_string()),
             kind: None,
             scope: None,
@@ -2042,4 +2048,172 @@ fn status_lists_members_but_not_an_unversioned_workspace_root() {
     assert_eq!(packages[0]["name"], "member");
     assert_eq!(packages[0]["version"], "1.2.3");
     assert_eq!(packages[0]["tag"], "v1.2.3");
+}
+
+// ---------- Empty changesets ----------
+
+fn add_empty(dir: &Path, message: Option<&str>) {
+    changesetter::cli::add::run_in(
+        dir,
+        &AddArgs {
+            package: vec![],
+            bump: None,
+            no_bump: false,
+            empty: true,
+            message: message.map(str::to_string),
+            kind: None,
+            scope: None,
+        },
+    )
+    .unwrap();
+}
+
+fn changeset_contents(dir: &Path) -> Vec<String> {
+    let mut files: Vec<_> = std::fs::read_dir(dir.join(".changeset"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    files.sort();
+    files
+        .iter()
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .collect()
+}
+
+fn head_subject(dir: &Path) -> String {
+    let out = Command::new("git")
+        .args(["log", "-1", "--format=%s"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn add_empty_writes_bare_frontmatter_and_check_counts_it() {
+    // A pnpm-style workspace: a versionless private root and one app.
+    let dir = setup_repo();
+    std::fs::write(dir.path().join("package.json"), "{\"private\": true}\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("apps/web")).unwrap();
+    std::fs::write(
+        dir.path().join("apps/web/package.json"),
+        "{\"name\": \"@d/web\", \"version\": \"1.0.0\"}\n",
+    )
+    .unwrap();
+    git_add_commit(dir.path(), "workspace");
+    Command::new("git")
+        .args(["checkout", "-q", "-b", "ci-only"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    add_empty(dir.path(), None);
+    add_empty(dir.path(), Some("Only the pipeline changed."));
+    let contents = changeset_contents(dir.path());
+    assert!(contents.contains(&"---\n---\n".to_string()), "{contents:?}");
+    assert!(
+        contents.contains(&"---\n---\n\nOnly the pipeline changed.\n".to_string()),
+        "{contents:?}"
+    );
+
+    std::fs::create_dir_all(dir.path().join("Pipelines")).unwrap();
+    std::fs::write(dir.path().join("Pipelines/build.yml"), "steps: []\n").unwrap();
+    git_add_commit(dir.path(), "ci change");
+
+    let check = |strict| {
+        changesetter::cli::check::run_in(
+            dir.path(),
+            &CheckArgs {
+                base: Some("main".to_string()),
+                output: None,
+                strict,
+            },
+        )
+    };
+    check(true).unwrap();
+
+    // The empty changeset names nothing, so an app change is still uncovered.
+    std::fs::write(dir.path().join("apps/web/index.js"), "x").unwrap();
+    assert!(check(true).is_err());
+    check(false).unwrap();
+}
+
+#[test]
+fn version_consumes_only_empty_changesets_without_bumping() {
+    let dir = setup_cargo_repo();
+    add_empty(dir.path(), Some("Docs only."));
+    git_add_commit(dir.path(), "empty changeset");
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: false,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(count_changeset_files(dir.path()), 0);
+    assert_eq!(
+        CargoAdapter.read_version(dir.path()).unwrap(),
+        Version::new(1, 0, 0)
+    );
+    assert!(!dir.path().join("CHANGELOG.md").exists());
+    assert_eq!(head_subject(dir.path()), "chore: remove empty changesets");
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(status.stdout.is_empty(), "release left a dirty tree");
+}
+
+#[test]
+fn release_with_empty_and_real_changesets_consumes_both() {
+    let dir = setup_cargo_repo();
+    add_empty(dir.path(), Some("Pipeline tweak."));
+    std::fs::write(
+        dir.path().join(".changeset/fix.md"),
+        "---\ntestpkg: patch\n---\n\nFixed it.\n",
+    )
+    .unwrap();
+    git_add_commit(dir.path(), "changesets");
+
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: false,
+            no_commit: false,
+            output: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(count_changeset_files(dir.path()), 0);
+    assert_eq!(
+        CargoAdapter.read_version(dir.path()).unwrap(),
+        Version::new(1, 0, 1)
+    );
+    let changelog = std::fs::read_to_string(dir.path().join("CHANGELOG.md")).unwrap();
+    assert!(changelog.contains("Fixed it."));
+    assert!(!changelog.contains("Pipeline tweak."));
+}
+
+#[test]
+fn version_dry_run_keeps_empty_changesets() {
+    let dir = setup_cargo_repo();
+    add_empty(dir.path(), None);
+    git_add_commit(dir.path(), "empty changeset");
+    changesetter::cli::release::run_in(
+        dir.path(),
+        &ReleaseArgs {
+            dry_run: true,
+            no_commit: false,
+            output: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(count_changeset_files(dir.path()), 1);
 }

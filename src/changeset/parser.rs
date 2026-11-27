@@ -15,20 +15,32 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
     }
 
     let after_start = 4;
-    let Some(end) = input[after_start..].find("\n---") else {
-        return Err(ChangesetterError::InvalidFrontmatter {
-            path: err_path(),
-            reason: "missing closing ---".to_string(),
-        });
+    // `---\n---` has no line between the fences, so the closing one starts
+    // right where the front matter would.
+    let (frontmatter, closing) = if input[after_start..].starts_with("---") {
+        ("", after_start)
+    } else {
+        let Some(end) = input[after_start..].find("\n---") else {
+            return Err(ChangesetterError::InvalidFrontmatter {
+                path: err_path(),
+                reason: "missing closing ---".to_string(),
+            });
+        };
+        (
+            &input[after_start..after_start + end],
+            after_start + end + 1,
+        )
     };
 
-    let frontmatter = &input[after_start..after_start + end];
-
-    let entries: BTreeMap<String, serde_yaml::Value> =
+    // An empty YAML document isn't a map to serde_yaml.
+    let entries: BTreeMap<String, serde_yaml::Value> = if frontmatter.trim().is_empty() {
+        BTreeMap::new()
+    } else {
         serde_yaml::from_str(frontmatter).map_err(|e| ChangesetterError::InvalidFrontmatter {
             path: err_path(),
             reason: e.to_string(),
-        })?;
+        })?
+    };
 
     // `type:` and `scope:` are metadata unless their value is a bump level,
     // which keeps a package that happens to be called "type" working.
@@ -71,16 +83,16 @@ pub fn parse(input: &str, filename: Option<String>) -> Result<Changeset, Changes
         }
     }
 
-    if packages.is_empty() {
+    // No packages is an empty changeset, as `changeset add --empty` writes:
+    // it says a change needs no release, and `version` just removes it. A
+    // `type:` or `scope:` with no packages reads like a forgotten package.
+    if packages.is_empty() && (kind.is_some() || scope.is_some()) {
         return Err(ChangesetterError::InvalidFrontmatter {
             path: err_path(),
             reason: "frontmatter contains no package entries".to_string(),
         });
     }
-
-    // end is offset within input[after_start..] pointing at the \n before closing ---
-    // So the closing --- starts at after_start + end + 1, and is 3 chars long
-    let after_closing = after_start + end + 1 + 3; // skip past ---
+    let after_closing = closing + 3; // skip past ---
     let body = if after_closing < input.len() {
         let raw = &input[after_closing..];
         // Strip up to two newlines right after --- (the \n after --- plus the blank line before body)
@@ -208,8 +220,19 @@ mod tests {
 
     #[test]
     fn parse_empty_frontmatter() {
-        let result = parse("---\n---\n", None);
-        assert!(result.is_err());
+        let cs = parse("---\n---\n", None).unwrap();
+        assert!(cs.packages.is_empty());
+        assert_eq!(cs.body, "");
+
+        let cs = parse("---\n---\n\nOnly CI changed.\n", None).unwrap();
+        assert!(cs.packages.is_empty());
+        assert_eq!(cs.body, "Only CI changed.");
+
+        let cs = parse("---\n\n---", None).unwrap();
+        assert!(cs.packages.is_empty());
+
+        assert!(parse("---\n---", None).unwrap().packages.is_empty());
+        assert!(parse("---\n", None).is_err());
     }
 
     #[test]

@@ -94,6 +94,19 @@ A changeset that bumps one package and is `none` for another is listed only in t
 
 When the changelog gets no new version in the same release run, the entries go under an `## Unreleased` heading at the top and move into the next version that changelog gets. See [Configuration](/configuration#none-bump-entries-without-a-release).
 
+## Empty changesets
+
+A changeset with nothing between its fences names no package. It records that a change needs no release, such as a PR that only touches pipelines or repo config, so a PR check that requires a changeset passes on a decision instead of an exemption. `changesetter add --empty` writes one, as `changeset add --empty` does:
+
+```markdown
+---
+---
+
+Only the build pipeline changed.
+```
+
+`check` counts it, and `version` and `release` delete it without bumping anything. The body goes nowhere: no changelog, tag message or release notes. When every pending changeset is empty, `release` commits only their removal (`chore: remove empty changesets`) and creates no tags.
+
 ## Type and scope
 
 A changeset can name a conventional type and a scope. They decide only where the entry is listed in a [grouped changelog](/configuration#grouped-changelogs) and what `--output json` reports. The bump alone decides the version.
@@ -130,7 +143,7 @@ With neither, the type follows the bump: `major` is `breaking`, `minor` is `feat
 - Package values must be one of: `none`, `patch`, `minor`, `major`
 - Keys with `@` or `/` must be quoted
 - Multiple packages allowed in one changeset
-- Empty frontmatter is an error
+- Empty frontmatter makes an [empty changeset](#empty-changesets); `type` or `scope` without any package is an error
 - The body after the closing `---` is markdown. Its first line is the entry's summary, whether it's plain text (what `changesetter add -m` writes) or a heading
 
 ## Headings in the body
