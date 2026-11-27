@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.9.0, 0.2.0, 0.1.1, 0.2.0 - 2026-11-27
+
+### changesetter
+
+A dependency cascade's changelog entry lists every bumped dependency with its new version, instead of naming only the first one
+
+`check --base` warns about packages with changed files that no changeset on the branch names, and lists them in `uncovered`; `--strict` makes that fail
+
+`check` fails when a changeset names a package that doesn't exist, listing the file and name in `unknown_packages`
+
+A typo in a package name used to pass the PR check and then fail `version` on `main`. Checks that passed with such a changeset now exit 1.
+
+Empty changesets (`---` followed directly by `---`) are valid, as in `@changesets/cli`, and `add --empty` writes one
+
+`check` counts an empty changeset, and `version` and `release` delete it without bumping anything or writing its body to a changelog. A changeset with only `type:` or `scope:` and no package is still an error.
+
+`post_bump` hook output goes to stderr, so `release --output json` stays valid JSON when a hook prints, and hooks no longer see `SYSTEM_ACCESSTOKEN`, `GITHUB_TOKEN` or `GH_TOKEN`
+
+`rust-version` is 1.88, the oldest Rust that builds changesetter; it said 1.85, which `cargo install` on 1.85 to 1.87 failed with
+
+Releases publish a `SHA256SUMS` file and a GitHub build provenance attestation for the binaries, and the install docs show how to verify a pinned download
+
+Annotated tags end their message with a newline, so a signed tag (`tag.gpgSign`) verifies instead of having its signature run into the message
+
+`status --released-by <rev>` lists the packages whose version a commit changed against its first parent, with their tags, and works on a checkout with fetch depth 2
+
+Its JSON and `tag --output json` are documented as a stable interface.
+
+`changesetter tag` creates the missing tags for the current package versions, and `[tag] skip` keeps matching packages versioned but untagged
+
+`tag --since <rev>` only tags packages whose version changed since `<rev>` and fails on a version collision; `--push` checks the remote and pushes the new tags atomically. `[tag] skip` takes globs over package names and paths, and applies to `release`, `tag` and the `tag` field of `status --output json`.
+
+`changesetter version-pr --provider azure|github` runs the version-PR loop: it tags what a merged version PR released, then creates or updates the next version PR
+
+Pipelines that call the binary directly no longer have to script the PR API calls. The PR description is a changelog preview per package, with cascade-only bumps on one line, cut to Azure DevOps' 4000-character limit when needed.
+
+`version-pr --provider github` creates GitHub Releases and finishes a version PR merge whose run was cancelled, and `tag` annotates tags with the version's changelog section
+
+The release action's version-PR mode now runs `changesetter version-pr` instead of its own scripts. `--no-github-release` and `--draft` match the action's inputs.
+
+Its JSON names the merge commit the tags are on and whether this run finished an earlier merge's release (`commit`, `recovered`).
+
+### changesetter-azure-pipelines
+
+The extension package includes the installer both tasks load and their npm dependencies, which `npm run build` didn't put in each task folder
+
+The tasks download the CLI from its `changesetter@v<version>` release instead of a `v<version>` URL that doesn't exist, and verify it against the release's `SHA256SUMS` when one is published
+
+Version-PR releases tag every package the merge bumped, so monorepos without a root version release instead of failing
+
+The task runs `changesetter tag --since <merge target> --push`, which follows `[tag] format` and `[tag] skip` and pushes the tags atomically. It needs changesetter 0.9.0 or newer.
+
+Version PR mode runs `changesetter version-pr`, so the version PR description is a per-package changelog preview, and the new `versionPrId` output names the PR
+
+It needs changesetter 0.9.0 or newer.
+
+Output `releases[].name` is now the package name instead of the repository folder, and tags are annotated with the package's changelog section (lightweight with `[release] tag_annotated = false`). `post_bump` hooks run in a temporary worktree of HEAD, without `SYSTEM_ACCESSTOKEN`.
+
+### changesetter-check-task
+
+The extension package includes the installer both tasks load and their npm dependencies, which `npm run build` didn't put in each task folder
+
+The tasks download the CLI from its `changesetter@v<version>` release instead of a `v<version>` URL that doesn't exist, and verify it against the release's `SHA256SUMS` when one is published
+
+The check task reports a changeset that names an unknown package as such, instead of "No changeset found", and shows the uncovered-package warning in the log and the PR comment
+
+It also passes the `base` input to the CLI as one argument instead of through a shell.
+
+### changesetter-release-task
+
+The extension package includes the installer both tasks load and their npm dependencies, which `npm run build` didn't put in each task folder
+
+The tasks download the CLI from its `changesetter@v<version>` release instead of a `v<version>` URL that doesn't exist, and verify it against the release's `SHA256SUMS` when one is published
+
+Version-PR releases tag every package the merge bumped, so monorepos without a root version release instead of failing
+
+The task runs `changesetter tag --since <merge target> --push`, which follows `[tag] format` and `[tag] skip` and pushes the tags atomically. It needs changesetter 0.9.0 or newer.
+
+Version PR mode runs `changesetter version-pr`, so the version PR description is a per-package changelog preview, and the new `versionPrId` output names the PR
+
+It needs changesetter 0.9.0 or newer.
+
+Output `releases[].name` is now the package name instead of the repository folder, and tags are annotated with the package's changelog section (lightweight with `[release] tag_annotated = false`). `post_bump` hooks run in a temporary worktree of HEAD, without `SYSTEM_ACCESSTOKEN`.
+
 ## 0.1.2, 0.1.2 - 2026-11-23
 
 ### changesetter-azure-pipelines
