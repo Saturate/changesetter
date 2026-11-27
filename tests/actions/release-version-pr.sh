@@ -155,6 +155,22 @@ M=$(git rev-parse HEAD); label_merge "$M"
 run_steps 1; check "only @s/a tagged, custom format" '[ "$(remote_tag_at @s/a-1.1.0)" = "$M" ] && [ -z "$(git ls-remote "$O" "refs/tags/@s/b*")" ]'
 check "notes from the per-package changelog" 'grep -q "a notes" <(git -C "$W" fetch -q --tags origin; git -C "$W" tag -l --format="%(contents)" "@s/a-1.1.0")'
 
+echo "H2: [tag] skip leaves a bumped package untagged"
+O="$ROOT/h2-origin.git"; W="$ROOT/h2-work"; FX="$ROOT/h2-fx"
+git init -q --bare -b main "$O"; git clone -q "$O" "$W" 2>/dev/null; mkdir -p "$FX"; echo '[]' > "$FX/empty.json"; echo '[]' > "$FX/pulls.json"
+cd "$W" || exit 1
+mkdir -p apps/web packages/ui
+printf '{"name":"@s/web","version":"1.0.0"}' > apps/web/package.json
+printf '{"name":"@s/ui","version":"0.1.0"}' > packages/ui/package.json
+printf '[tag]\nskip = ["packages/*"]\n\n[changelog]\nper_package = true\n' > changesetter.toml
+git add -A; git commit -qm init; git push -q origin main
+git checkout -qb changesetter/version-packages
+printf '{"name":"@s/web","version":"1.0.1"}' > apps/web/package.json
+printf '{"name":"@s/ui","version":"0.1.1"}' > packages/ui/package.json
+git commit -qam "chore: version packages"; git checkout -q main; git merge -q --no-ff changesetter/version-packages -m merge; git push -q origin main
+M=$(git rev-parse HEAD); label_merge "$M"
+run_steps 1; check "only @s/web tagged" '[ "$(remote_tag_at @s/web@v1.0.1)" = "$M" ] && [ -z "$(git ls-remote "$O" "refs/tags/@s/ui*")" ]'
+
 echo "I: [release] tag_annotated = false gives a lightweight tag"
 new_repo i; printf '[release]\ntag_annotated = false\n' > changesetter.toml; git add -A; git commit -qm config; git push -q origin main
 M=$(version_pr_merge 1.1.0); label_merge "$M"

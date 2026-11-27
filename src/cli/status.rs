@@ -41,7 +41,10 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
         .iter()
         .map(|p| {
             let version = p.version.to_string();
-            let tag = config.tag.format_tag(&p.name, &version, is_monorepo);
+            let rel_path = repo_relative(repo_root, &p.path);
+            let tag = config
+                .tag
+                .tag_for(&p.name, &rel_path, &version, is_monorepo);
             // Same rule and same join the executor uses when it writes
             // changelogs, so the path points at the file it really writes.
             let changelog = if is_monorepo && config.changelog.per_package {
@@ -49,14 +52,17 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
             } else {
                 repo_root.join(&config.changelog.file)
             };
-            let path = repo_relative(repo_root, &p.path);
             let changelog = repo_relative(repo_root, &changelog);
+            let tagged = match &tag {
+                Some(tag) => crate::git::tag_exists(repo_root, tag)?,
+                None => false,
+            };
             Ok(serde_json::json!({
                 "name": p.name,
                 "version": version,
-                "path": path,
+                "path": rel_path,
                 "changelog": changelog,
-                "tagged": crate::git::tag_exists(repo_root, &tag)?,
+                "tagged": tagged,
                 "tag": tag,
             }))
         })
@@ -72,12 +78,13 @@ pub fn json_status(repo_root: &Path) -> anyhow::Result<serde_json::Value> {
             .iter()
             .map(|r| {
                 let version = r.version.to_string();
+                let rel_path = repo_relative(repo_root, &r.path);
                 serde_json::json!({
                     "name": r.name,
                     "previous_version": r.previous_version.to_string(),
                     "version": version,
                     "bump": r.bump.to_string(),
-                    "tag": config.tag.format_tag(&r.name, &version, is_monorepo),
+                    "tag": config.tag.tag_for(&r.name, &rel_path, &version, is_monorepo),
                     "entries": r.entries.iter().map(|e| e.to_json()).collect::<Vec<_>>(),
                 })
             })
@@ -159,7 +166,7 @@ pub fn run_in(repo_root: &Path) -> anyhow::Result<()> {
 // stays relative, and `/` on every platform so the JSON reads the same.
 // `..` is kept (a package can live next to the repo), and a path that isn't
 // below the repo stays absolute rather than being mangled into a relative one.
-fn repo_relative(repo_root: &Path, path: &Path) -> String {
+pub(crate) fn repo_relative(repo_root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(repo_root).unwrap_or(path);
     if rel.has_root() {
         return rel.to_string_lossy().replace('\\', "/");
@@ -424,6 +431,51 @@ mod tests {
 
     // A custom format short-circuits `is_monorepo` in format_tag, so the
     // default monorepo format needs its own check.
+    #[test]
+    fn json_has_no_tag_for_tag_skip_packages() {
+        let dir = setup_repo();
+        std::fs::remove_file(dir.path().join("Cargo.toml")).unwrap();
+        write(
+            dir.path(),
+            "changesetter.toml",
+            "[tag]\nskip = [\"@s/a\"]\n",
+        );
+        write(
+            dir.path(),
+            "packages/a/package.json",
+            r#"{"name":"@s/a","version":"1.0.0"}"#,
+        );
+        write(
+            dir.path(),
+            "packages/b/package.json",
+            r#"{"name":"@s/b","version":"2.0.0"}"#,
+        );
+        write(
+            dir.path(),
+            ".changeset/x.md",
+            "---\n\"@s/a\": minor\n---\n\nChange.\n",
+        );
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "monorepo"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let status = json_status(dir.path()).unwrap();
+        let packages = status["packages"].as_array().unwrap();
+        let a = packages.iter().find(|p| p["name"] == "@s/a").unwrap();
+        let b = packages.iter().find(|p| p["name"] == "@s/b").unwrap();
+        assert!(a["tag"].is_null());
+        assert_eq!(a["tagged"], false);
+        assert_eq!(b["tag"], "@s/b@v2.0.0");
+        assert!(status["releases"][0]["tag"].is_null());
+    }
+
     #[test]
     fn json_uses_the_default_monorepo_tag_format() {
         let dir = setup_repo();

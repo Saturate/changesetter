@@ -96,3 +96,19 @@ Monorepos default to `{name}@v{version}` tags (e.g. `mylib@v1.1.0`). Override:
 [tag]
 format = "{name}/v{version}"
 ```
+
+## Internal packages without tags
+
+In a workspace where apps consume internal packages, the packages still need versions so a change to one cascades to the apps that use it, but only the apps are deployed and tagged. Skip tags for the packages by path:
+
+```toml
+update_internal_dependencies = "patch"
+
+[changelog]
+per_package = true
+
+[tag]
+skip = ["packages/*"]
+```
+
+A patch changeset for `@acme/ui` in `packages/ui` bumps it and every app depending on it. Each gets its own `CHANGELOG.md`; the apps' entries read `Updated dependencies` with `@acme/ui@<new version>`. `release` and `tag` then create `@acme/web@v1.0.1` and the like for the apps, and no tag for `@acme/ui`. See [Packages without tags](/configuration#packages-without-tags).

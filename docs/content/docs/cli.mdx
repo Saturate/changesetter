@@ -55,7 +55,7 @@ Show pending changesets and a preview of what the next release would look like. 
 The JSON has these keys:
 
 - `pending`: changeset file names, relative to the changeset directory and without `.md`.
-- `packages`: every detected package with its current `version`, its `path` (`.` for the repo root), the `changelog` file it writes to, the `tag` for that version (following the configured tag format) and `tagged`, whether that tag exists locally. Run `git fetch --tags` first in CI.
+- `packages`: every detected package with its current `version`, its `path` (`.` for the repo root), the `changelog` file it writes to, the `tag` for that version (following the configured tag format, `null` for a package in `[tag] skip`) and `tagged`, whether that tag exists locally. Run `git fetch --tags` first in CI.
 - `tag_annotated`: whether `release` creates annotated tags (the `[release]` setting).
 - `releases`: what a release would do now: `name`, `previous_version`, `version`, `bump`, `tag` and `entries` (see [entries](#entries)). A package named in a changeset but not detected shows up here with `previous_version` `0.0.0` and no `packages` entry.
 - `none_entries`: changesets that document a change without bumping a version, with the same fields as an entry plus `title` and `body`.
@@ -142,6 +142,26 @@ Each entry in `releases[].entries` and `none_entries` has these fields:
 ```
 
 When no changesets are pending, exits 0 with a message and no side effects. With `--output json` it still prints JSON, with empty `releases` and `none_entries`.
+
+## `changesetter tag`
+
+Create the git tags missing for the current package versions, on HEAD. CI runs it after a version PR merges, where `version` already bumped the manifests and `release` isn't run.
+
+| Flag | Description |
+|---|---|
+| `--since <rev>` | Only tag packages whose version differs from `<rev>`, such as the first parent of the version PR merge |
+| `--push` | Look up existing tags on the remote instead of locally, and push the new tags to it in one atomic push |
+| `--remote <name>` | Remote for `--push` (default `origin`) |
+| `--dry-run` | Report the tags without creating them |
+| `--output json` | Print `{"tags": [{"name", "version", "tag", "created"}]}` |
+
+Tag names follow `[tag] format`, and packages in `[tag] skip` get none. A tag that already points at HEAD is reported with `created: false`. Without `--since` every package is a candidate, and a tag that already exists on an older commit just means that version was released earlier, so it's left alone. With `--since`, the versions changed since `<rev>` are the ones being released, so such a tag is a version collision: the command fails and creates no tags. The versions at `<rev>` are read from a temporary worktree, so the commit has to be in the local repository (`git fetch --depth=1 origin <sha>` in a shallow checkout).
+
+Tags are annotated (`Release <name>@<version>`, or `Release <version>` in a single-package repo) unless `[release] tag_annotated = false`.
+
+```sh
+changesetter tag --since HEAD^1 --push --output json
+```
 
 ## `changesetter pre`
 
