@@ -29,7 +29,7 @@ Download a pinned version, verify it against the release's `SHA256SUMS`, and put
   displayName: Install changesetter
 ```
 
-The archive is downloaded outside the repository, so it can't end up in a commit. `SHA256SUMS` is published from 0.9.0 on; see [Verify a download](/#verify-a-download) for the build provenance check. To follow the newest release instead of pinning, use `https://github.com/saturate/changesetter/releases/latest/download` as `BASE`.
+The archive is downloaded outside the repository, so it can't end up in a commit. `version-pr` reads the agent's certificate store for its HTTPS calls, so a container job on a minimal image needs the `ca-certificates` package. `SHA256SUMS` is published from 0.9.0 on; see [Verify a download](/#verify-a-download) for the build provenance check. To follow the newest release instead of pinning, use `https://github.com/saturate/changesetter/releases/latest/download` as `BASE`.
 
 ## Changeset check on PRs
 
@@ -197,94 +197,21 @@ steps:
       echo "##vso[task.prependpath]$(Pipeline.Workspace)/tools"
     displayName: Install changesetter
 
-  - script: |
-      git config user.name "Azure Pipelines"
-      git config user.email "pipelines@dev.azure.com"
-    displayName: Configure git
-
-  - script: |
-      set -eo pipefail
-      BRANCH="changesetter/version-packages"
-      ORG_URL=$(System.CollectionUri)
-      PROJECT=$(System.TeamProject)
-      REPO=$(Build.Repository.Name)
-
-      # Release only when this build's commit is a completed version PR's merge
-      # commit. Matching the newest completed version PR instead would make
-      # every later push look like a release, and an active PR's
-      # lastMergeCommit is the test merge its PR validation builds run on.
-      # curl -f fails the step on API errors so a bad token does not quietly
-      # skip the release.
-      COMMIT=$(Build.SourceVersion)
-      MERGED_PR=$(curl -sSf -X POST \
-        "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequestquery?api-version=7.1" \
-        -H "Authorization: Bearer $(System.AccessToken)" \
-        -H "Content-Type: application/json" \
-        -d "{\"queries\":[{\"type\":\"lastMergeCommit\",\"items\":[\"${COMMIT}\"]}]}" \
-        | jq -er --arg sha "$COMMIT" --arg ref "refs/heads/${BRANCH}" \
-          '[(.results // error("no results in response"))[0][$sha][]? | select(.sourceRefName == $ref and .status == "completed" and .lastMergeCommit.commitId == $sha) | .pullRequestId] | first // ""')
-
-      if [ -n "$MERGED_PR" ]; then
-        echo "Commit is the merge of version PR #${MERGED_PR}, tagging"
-        # Tags every package whose version the merge changed, in the
-        # configured tag format and minus [tag] skip, and pushes them in one
-        # atomic push. It fails on a version collision: a tag for one of
-        # those versions already on origin at another commit.
-        changesetter tag --since "${COMMIT}^1" --push
-      fi
-
-      # Changesets merged while the version PR was open still need a version
-      # PR, even right after a release.
-      # Nested dirs count, README.md doesn't, matching changesetter itself.
-      # -print -quit rather than `| grep -q`: with pipefail, a long listing
-      # makes find die of SIGPIPE and the check would read "none pending".
-      if [ -z "$(find .changeset -type f -name '*.md' ! -name README.md -print -quit 2>/dev/null)" ]; then
-        echo "No pending changesets"
-        exit 0
-      fi
-
-      # Compute status
-      STATUS=$(changesetter status 2>&1 || true)
-
-      # Create version branch and apply changes
-      git checkout -B "$BRANCH"
-      changesetter version --no-commit
-      git add -A
-      git commit -m "chore: version packages" --allow-empty
-      git push origin "$BRANCH" --force
-      git checkout -
-
-      # Create or update PR via Azure DevOps REST API
-      PR_BODY=$(printf 'This PR was opened by changesetter. Merging it will release the following packages.\n\n```\n%s\n```' "$STATUS")
-
-      # Check for existing PR
-      EXISTING=$(curl -sSf \
-        "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequests?searchCriteria.sourceRefName=refs/heads/${BRANCH}&searchCriteria.status=active&api-version=7.1" \
-        -H "Authorization: Bearer $(System.AccessToken)" \
-        | jq -r '.value[0].pullRequestId // empty')
-
-      if [ -n "$EXISTING" ]; then
-        # jq builds the JSON so quotes and newlines in the status stay valid.
-        jq -n --arg d "$PR_BODY" '{description: $d}' | curl -sSf -o /dev/null -X PATCH \
-          "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequests/${EXISTING}?api-version=7.1" \
-          -H "Authorization: Bearer $(System.AccessToken)" \
-          -H "Content-Type: application/json" \
-          --data-binary @-
-        echo "Updated PR #${EXISTING}"
-      else
-        jq -n --arg src "refs/heads/${BRANCH}" --arg d "$PR_BODY" \
-          '{sourceRefName: $src, targetRefName: "refs/heads/main", title: "Next Release", description: $d}' \
-          | curl -sSf -o /dev/null -X POST \
-          "${ORG_URL}${PROJECT}/_apis/git/repositories/${REPO}/pullrequests?api-version=7.1" \
-          -H "Authorization: Bearer $(System.AccessToken)" \
-          -H "Content-Type: application/json" \
-          --data-binary @-
-        echo "Created version PR"
-      fi
-    displayName: Create version PR or release
+  - script: changesetter version-pr --provider azure --title "Next Release"
+    displayName: Tag the version PR merge, update the version PR
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 ```
+
+`changesetter version-pr` does the whole loop, reading `SYSTEM_ACCESSTOKEN`, `SYSTEM_COLLECTIONURI`, `SYSTEM_TEAMPROJECT`, `BUILD_REPOSITORY_ID` and `BUILD_SOURCEVERSION` from the job. Only the token has to be mapped in with `env:`; Azure Pipelines doesn't expose it otherwise.
+
+1. It asks Azure DevOps whether the commit being built is the merge commit of a completed `changesetter/version-packages` PR. It matches by merge commit, because the newest completed version PR stays completed forever and an active PR's merge commit is the test merge its PR validation builds run on. A failed API call fails the step instead of looking like "not a version PR".
+2. If it is, it runs [`tag --since <merge target> --push`](/cli#changesetter-tag): every package whose version the merge changed gets its tag, minus `[tag] skip`, pushed in one atomic push. The merge target comes from the PR, and is fetched when the checkout is shallow.
+3. If changesets are pending (also right after a release, since changesets can land while the version PR is open), it runs `version` in a temporary worktree of HEAD, commits the result, force-pushes it as `changesetter/version-packages` and creates or updates the version PR. The build's own checkout isn't touched, so uncommitted changes and downloaded files in it never reach the version PR, and a failed bump leaves it as it was. `post_bump` hooks run in that worktree, which has no `node_modules` or other ignored files, so a hook needs to install what it uses (`pnpm install --lockfile-only` works). They run without `SYSTEM_ACCESSTOKEN`, and their output goes to the log. Git hooks don't run there. Only the version branch is pushed, so `main` stays protected.
+
+The version PR's description is a changelog preview: one section per package with its version change and the entries as they go into its changelog, packages bumped only by a dependency cascade on one line each, and none-bump notes listed by title. Azure DevOps caps descriptions at 4000 characters, so whole sections are dropped from the end when needed and a note names the packages left out.
+
+With `--output json` it prints `{"merged_pr", "commit", "recovered", "tags", "released", "version_pr"}`, where `tags` is the [`tag --output json`](/cli#changesetter-tag) list and `version_pr` is `{"id", "url", "created"}` or `null`. Options: `--title` (default `Version Packages`), `--base` for the branch the PR targets (default `main`), `--commit` to check another commit than the build's, and `--remote` (default `origin`). Without a git identity in the checkout, the version commit is authored as `changesetter`.
 
 ## Azure Pipelines extension
 
@@ -292,7 +219,7 @@ For a more integrated experience, changesetter provides an Azure Pipelines exten
 
 The extension wraps the same CLI commands with native Azure DevOps integration: PR comment threads, work item linking, and pipeline variables.
 
-In version-PR mode, the `ChangsetterRelease` task releases only when the commit being built (`Build.SourceVersion`) is the merge commit of a completed `changesetter/version-packages` PR. It runs `changesetter tag --since <merge target> --push`, which tags every package whose version the merge changed (`v<version>` in a single-package repo, `<name>@v<version>` in a monorepo, or your `[tag] format`), leaves out packages matched by `[tag] skip`, and pushes the new tags to origin in one atomic push. A tag that already exists on origin at the same commit is skipped and still reported, so re-running a failed release build is safe. If one exists at a different commit, the task fails with a version collision and pushes no tags. The `released`, `releases` (`[{ name, version, tag }]`) and `version` (the first release's) output variables cover the tagged packages. If changesets were merged while the version PR was open, the same run then opens or updates a new version PR for them. A failed Azure DevOps API call fails the task instead of skipping the release, and so does a failing `changesetter version`, so a half-bumped tree never becomes a version PR. The task needs a CLI with `changesetter tag` (0.9.0 or newer); its default `version: latest` installs one.
+In version-PR mode, the `ChangsetterRelease` task runs [`changesetter version-pr --provider azure`](#version-pr-pattern) with the pipeline's variables, so it behaves as described there. The `released`, `releases` (`[{ name, version, tag }]`) and `version` (the first release's) output variables cover the packages tagged for the merge; a tag that already exists on origin at that commit is still reported, so re-running a failed release build is safe and sets `released` again. That differs from the CLI's own `released` JSON list, which only has what the run created. `versionPrId` is the version PR it created or updated. The task needs changesetter 0.9.0 or newer; its default `version: latest` installs one.
 
 ## Permissions
 

@@ -6,6 +6,7 @@ pub mod release;
 pub mod status;
 pub mod tag;
 pub mod version;
+pub mod version_pr;
 
 use clap::{Parser, Subcommand};
 
@@ -17,6 +18,7 @@ pub use release::ReleaseArgs;
 pub use status::StatusArgs;
 pub use tag::TagArgs;
 pub use version::VersionArgs;
+pub use version_pr::VersionPrArgs;
 
 #[derive(Parser)]
 #[command(
@@ -45,6 +47,8 @@ pub enum Command {
     Release(ReleaseArgs),
     /// Tag the current package versions that have no tag yet
     Tag(TagArgs),
+    /// Tag a merged version PR, then create or update the next one
+    VersionPr(VersionPrArgs),
     /// Enter or exit pre-release mode
     Pre(PreArgs),
 }
