@@ -30,10 +30,10 @@ pub fn pr_number(subject: &str, body: &str) -> Option<u64> {
         .trim_end()
         .strip_suffix(')')
         .and_then(|s| s.rfind("(#").map(|i| &s[i + 2..]))
+        && !open.is_empty()
+        && open.chars().all(|c| c.is_ascii_digit())
     {
-        if !open.is_empty() && open.chars().all(|c| c.is_ascii_digit()) {
-            return open.parse().ok();
-        }
+        return open.parse().ok();
     }
     body.lines()
         .filter_map(|l| l.trim().strip_prefix("See merge request "))
@@ -187,14 +187,13 @@ impl History<'_> {
         else {
             return Ok(None);
         };
-        if depth > 0 {
-            if let Some(branch) =
+        if depth > 0
+            && let Some(branch) =
                 self.git(&["rev-parse", "--verify", "-q", &format!("{merge}^2")])?
-            {
-                let inner = self.merged_by(branch.trim(), commit, descendants, depth - 1)?;
-                if inner.is_some() {
-                    return Ok(inner);
-                }
+        {
+            let inner = self.merged_by(branch.trim(), commit, descendants, depth - 1)?;
+            if inner.is_some() {
+                return Ok(inner);
             }
         }
         let format = format!("--format=%s{FIELD}%b");

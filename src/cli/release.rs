@@ -41,19 +41,34 @@ pub fn run_in(repo_root: &Path, args: &ReleaseArgs) -> anyhow::Result<()> {
     }
 
     if args.output.as_deref() == Some("json") {
-        print_json_output(&result)?;
+        print_json_output(repo_root, &result)?;
     }
 
     Ok(())
 }
 
+fn release_tag(
+    repo_root: &Path,
+    result: &ExecuteResult,
+    release: &crate::release::plan::PlannedRelease,
+) -> Option<String> {
+    result.config.tag.tag_for(
+        &release.name,
+        &crate::cli::status::repo_relative(repo_root, &release.path),
+        &release.version.to_string(),
+        result.is_monorepo,
+    )
+}
+
 fn create_tags(repo_root: &Path, result: &ExecuteResult) -> anyhow::Result<()> {
     for release in &result.plan.releases {
-        let tag = result.config.tag.format_tag(
-            &release.name,
-            &release.version.to_string(),
-            result.is_monorepo,
-        );
+        let Some(tag) = release_tag(repo_root, result, release) else {
+            eprintln!(
+                "Not tagging {}@{} ([tag] skip)",
+                release.name, release.version
+            );
+            continue;
+        };
 
         let message = if result.config.release.tag_annotated {
             Some(release.changelog.as_str())
@@ -68,17 +83,13 @@ fn create_tags(repo_root: &Path, result: &ExecuteResult) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_json_output(result: &ExecuteResult) -> anyhow::Result<()> {
+fn print_json_output(repo_root: &Path, result: &ExecuteResult) -> anyhow::Result<()> {
     let releases: Vec<serde_json::Value> = result
         .plan
         .releases
         .iter()
         .map(|r| {
-            let tag =
-                result
-                    .config
-                    .tag
-                    .format_tag(&r.name, &r.version.to_string(), result.is_monorepo);
+            let tag = release_tag(repo_root, result, r);
             serde_json::json!({
                 "name": r.name,
                 "version": r.version.to_string(),
@@ -220,5 +231,54 @@ mod tests {
             .unwrap();
         let tags = String::from_utf8_lossy(&output.stdout);
         assert!(tags.trim().is_empty());
+    }
+
+    #[test]
+    fn release_skips_tags_for_tag_skip_packages() {
+        let dir = setup_repo();
+        let p = dir.path();
+        std::fs::remove_file(p.join("Cargo.toml")).unwrap();
+        for (rel, name) in [("apps/web", "@s/web"), ("packages/ui", "@s/ui")] {
+            std::fs::create_dir_all(p.join(rel)).unwrap();
+            std::fs::write(
+                p.join(rel).join("package.json"),
+                format!(r#"{{"name":"{name}","version":"1.0.0"}}"#),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            p.join(".changeset/test.md"),
+            "---\n\"@s/web\": patch\n\"@s/ui\": patch\n---\n\nFix\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("changesetter.toml"),
+            "[tag]\nskip = [\"packages/*\"]\n",
+        )
+        .unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-q", "-m", "pkgs"]] {
+            Command::new("git")
+                .args(&args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+
+        let args = ReleaseArgs {
+            dry_run: false,
+            no_commit: false,
+            output: None,
+        };
+        run_in(p, &args).unwrap();
+
+        let output = Command::new("git")
+            .args(["tag", "-l"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        let tags = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(tags.trim(), "@s/web@v1.0.1");
+        let ui = std::fs::read_to_string(p.join("packages/ui/package.json")).unwrap();
+        assert!(ui.contains("1.0.1"), "{ui}");
     }
 }

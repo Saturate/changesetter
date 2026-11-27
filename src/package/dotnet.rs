@@ -13,12 +13,11 @@ impl DotnetAdapter {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "csproj" {
-                        return Some(path);
-                    }
-                }
+            if path.is_file()
+                && let Some(ext) = path.extension()
+                && ext == "csproj"
+            {
+                return Some(path);
             }
         }
         None
@@ -33,15 +32,15 @@ impl DotnetAdapter {
     }
 
     fn package_name_from_csproj(content: &str, csproj_path: &Path) -> String {
-        if let Some(name) = Self::extract_xml_element(content, "PackageName") {
-            if !name.is_empty() {
-                return name;
-            }
+        if let Some(name) = Self::extract_xml_element(content, "PackageName")
+            && !name.is_empty()
+        {
+            return name;
         }
-        if let Some(name) = Self::extract_xml_element(content, "AssemblyName") {
-            if !name.is_empty() {
-                return name;
-            }
+        if let Some(name) = Self::extract_xml_element(content, "AssemblyName")
+            && !name.is_empty()
+        {
+            return name;
         }
         csproj_path
             .file_stem()

@@ -2,7 +2,9 @@ const tl = require("azure-pipelines-task-lib/task");
 const https = require("https");
 const { spawnSync } = require("child_process");
 const path = require("path");
-const { install } = require("../../shared/install");
+// prepare.js copies shared/ into each task, since Azure Pipelines ships every
+// task folder on its own.
+const { install } = require("./shared/install");
 
 async function postPrComment(content, passed, title) {
   const orgUrl = tl.getVariable("System.CollectionUri");

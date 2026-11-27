@@ -1815,12 +1815,25 @@ fn dependency_cascade_bumps_dependent() {
     );
 }
 
+/// actions/release/release-notes.sh, run through its shebang as the action
+/// does. Windows has no shebangs, and a bare `bash` there resolves to WSL's
+/// launcher in System32 before PATH; Git for Windows' `sh` is the bash the
+/// action's steps use.
+fn release_notes_script() -> Command {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("actions/release/release-notes.sh");
+    if cfg!(windows) {
+        let mut sh = Command::new("sh");
+        sh.arg(script);
+        sh
+    } else {
+        Command::new(script)
+    }
+}
+
 fn release_notes(version: &str, changelog: &str) -> String {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("CHANGELOG.md"), changelog).unwrap();
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("actions/release/release-notes.sh");
-    // Run through its shebang, as the action does.
-    let out = Command::new(script)
+    let out = release_notes_script()
         .arg(version)
         .current_dir(dir.path())
         .output()
@@ -1915,8 +1928,7 @@ fn release_notes_are_empty_without_a_matching_section() {
     assert_eq!(release_notes("0.3.0", "## 0.2.0 - d\n\n- A\n"), "");
 
     let dir = tempfile::tempdir().unwrap();
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("actions/release/release-notes.sh");
-    let out = Command::new(script)
+    let out = release_notes_script()
         .arg("0.1.0")
         .current_dir(dir.path())
         .output()
@@ -2216,4 +2228,124 @@ fn version_dry_run_keeps_empty_changesets() {
     )
     .unwrap();
     assert_eq!(count_changeset_files(dir.path()), 1);
+}
+
+// ---------- Git identity ----------
+
+/// A fresh CI agent has no git identity. Annotated tags still need a
+/// tagger, so the CLI supplies one instead of failing.
+#[test]
+fn tag_works_without_a_git_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let id = [
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+    ];
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(id)
+            .args(args)
+            .current_dir(p)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(
+        p.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    std::fs::write(
+        p.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"1.1.0\"\n",
+    )
+    .unwrap();
+    git(&["commit", "-q", "-am", "bump"]);
+
+    // No global or system config, and no guessing an identity from the host.
+    let out = Command::new(env!("CARGO_BIN_EXE_changesetter"))
+        .args(["tag", "--since", &base])
+        .current_dir(p)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+        .env("GIT_CONFIG_VALUE_0", "true")
+        .env("GIT_CONFIG_KEY_1", "tag.gpgSign")
+        .env("GIT_CONFIG_VALUE_1", "false")
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+        .env_remove("EMAIL")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let tagger = git(&["tag", "-l", "--format=%(taggername)", "v1.1.0"]);
+    assert_eq!(tagger, "changesetter");
+}
+
+// ---------- post_bump hooks ----------
+
+/// A hook printing to stdout must not corrupt `--output json`, and repo
+/// hooks never see the CI tokens.
+#[test]
+fn post_bump_hook_output_and_environment() {
+    let dir = setup_cargo_repo();
+    std::fs::write(
+        dir.path().join("changesetter.toml"),
+        "[hooks]\npost_bump = [\"echo hook says hi\", \"env > hook-env.txt\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "hook-env.txt\n").unwrap();
+    std::fs::create_dir_all(dir.path().join(".changeset")).unwrap();
+    std::fs::write(
+        dir.path().join(".changeset/fix.md"),
+        "---\ntestpkg: patch\n---\n\nFix\n",
+    )
+    .unwrap();
+    git_add_commit(dir.path(), "changeset and hooks");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_changesetter"))
+        .args(["release", "--output", "json"])
+        .current_dir(dir.path())
+        .env("SYSTEM_ACCESSTOKEN", "azure-secret")
+        .env("GITHUB_TOKEN", "gh-secret")
+        .env("GH_TOKEN", "gh-secret")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout isn't JSON ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(json["releases"][0]["version"], "1.0.1");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("hook says hi"));
+
+    let env = std::fs::read_to_string(dir.path().join("hook-env.txt")).unwrap();
+    assert!(!env.contains("secret"), "a token reached the hook");
 }

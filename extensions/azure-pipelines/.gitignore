@@ -1,2 +1,6 @@
 node_modules/
 *.vsix
+# Copied into each task by prepare.js.
+tasks/*/shared/
+# Written by tfx extension create.
+.taskkey

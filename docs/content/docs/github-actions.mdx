@@ -11,11 +11,24 @@ The actions are versioned separately from the CLI, with the tags GitHub recommen
 
 | Ref | What you get |
 |---|---|
-| `@v1` | The latest v1.x release. Moved forward on every compatible release, so you get fixes without editing your workflow. |
-| `@v1.1.0` | That release's action code. The tag never moves. |
+| `@v2` | The latest v2.x release. Moved forward on every compatible release, so you get fixes without editing your workflow. |
+| `@v2.0.0` | That release's action code. The tag never moves. |
 | `@<commit sha>` | The same, pinned by commit. |
 
-The check and release actions install the CLI through `actions/install@v1`, so that step follows `v1` even when you pin a tag or SHA. A change that breaks inputs, outputs or required permissions ships as `v2`, so `@v1` will not break your workflow. Release notes from v1.1.0 on are on the [releases page](https://github.com/saturate/changesetter/releases) under the `v1.x.y` tags. The CLI's own releases are tagged `changesetter@v<version>`, and the actions always install the latest CLI unless you pin `version`.
+The check and release actions install the CLI through `actions/install@v1`, so that step follows `v1` even when you pin a tag or SHA; the install action didn't change in v2. A change that breaks inputs, outputs or required permissions ships as a new major version, so `@v2` will not break your workflow. Release notes are on the [releases page](https://github.com/saturate/changesetter/releases) under the `vX.Y.Z` tags. The CLI's own releases are tagged `changesetter@v<version>`, and the actions always install the latest CLI unless you pin `version`.
+
+### Moving from v1 to v2
+
+`@v1` stays on v1.2.1 and keeps working. v2 only changes the release action's version-PR mode, which now runs [`changesetter version-pr`](/cli#changesetter-version-pr) instead of its own scripts. The install action and direct release mode are the same as in v1; the check action's PR comment now says when a changeset names a package that doesn't exist, and lists changed packages no changeset names. Change `@v1` to `@v2` and check these:
+
+- **CLI 0.9.0 or newer.** Version-PR mode fails with a clear message on an older CLI. The default `version: latest` covers this; raise a pinned `version` to 0.9.0 or later.
+- **A tag already on another commit fails the job.** When a version this merge released already has a tag on origin at a different commit, v1 skipped that package and v2 fails with a version collision, without pushing any tags. Bump the version in a new version PR, or move the tag if it's wrong.
+- **`fetch-depth: 0` is no longer needed.** The CLI fetches the merge and its parent when a shallow checkout lacks them. Leaving it in is harmless.
+- **The version PR description is a changelog preview,** one section per package, instead of `status` output.
+- **Tags and full history are no longer fetched.** v1 ran `git fetch --unshallow --tags` for its own use, which later steps could rely on. Add `fetch-depth: 0` (and `fetch-tags: true`) to the checkout if they do.
+- **The version commit is made from HEAD in a temporary worktree.** Uncommitted or untracked files in the checkout no longer end up in the version PR, and git hooks don't run for it. `post_bump` hooks run in that worktree, which has no `node_modules` or other ignored files, and without `GITHUB_TOKEN` or `GH_TOKEN`; their output goes to the log, not to stdout.
+- **Release notes in a shared monorepo changelog** are the package's own `### <name>` part of the version's section, not the whole section.
+- **Finishing an earlier release checks out its commit.** When a push finishes the release of an earlier version PR merge whose run was cancelled, the action checks out that merge before setting `released`, so publish steps build the tagged code rather than the newer commit. The new `commit` output names it.
 
 ## Changeset check
 
@@ -39,7 +52,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: saturate/changesetter/actions/check@v1
+      - uses: saturate/changesetter/actions/check@v2
         with:
           comment: true
 ```
@@ -78,7 +91,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: saturate/changesetter/actions/release@v1
+      - uses: saturate/changesetter/actions/release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -104,6 +117,7 @@ When no changesets are pending, the action does nothing.
 | `released` | `true` if releases were created |
 | `releases` | JSON array of `{name, version, tag, changelog}` |
 | `version-pr` | URL of the version PR (version-PR mode only) |
+| `commit` | The version PR merge the released tags are on (version-PR mode only) |
 
 ## Version-PR mode
 
@@ -127,9 +141,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: saturate/changesetter/actions/release@v1
+      - uses: saturate/changesetter/actions/release@v2
         with:
           version-pr: true
         env:
@@ -137,18 +149,20 @@ jobs:
 ```
 
 The flow:
-1. Push to main with pending changesets: creates/updates a PR on `changesetter/version-packages` branch with label `changesetter:version`
-2. Push to main whose HEAD is the merge commit of a version PR: releases every package whose version the PR changed. Each gets a tag in your configured tag format, at the merge commit, plus a GitHub Release with that version's changelog section as notes. Pre-release versions become pre-releases.
+1. Push to main with pending changesets: creates/updates a PR on `changesetter/version-packages` branch with label `changesetter:version`. Its description is a changelog preview: a section per package with its version change and the entries going into its changelog, and packages bumped only by a dependency cascade on one line each.
+2. Push to main whose HEAD is the merge commit of a version PR: releases every package whose version the PR changed. Each gets a tag in your configured tag format at the merge commit, annotated with that version's changelog section, plus a GitHub Release with the same notes. Pre-release versions become pre-releases.
 3. Any other push without pending changesets: does nothing
 
 A version PR merge that also brings in changesets merged while it was open does both: it releases, then opens a new version PR for those changesets.
 
 Releasing is safe to repeat. Tags and GitHub Releases that already exist are left alone, and `released` is only `true` for what the run actually created. If the run for a merge was cancelled or failed partway, the next push to main finishes the release of the last merged version PR.
 
+The action runs [`changesetter version-pr --provider github`](/cli#changesetter-version-pr), which makes the API calls itself with the `token` input, so pipelines that don't use the action can run the same loop.
+
 Requirements:
-- `actions/checkout` with `fetch-depth: 0`. The action reads the merge's parent commit and the existing tags.
-- changesetter 0.4.0 or newer (`changesetter status --output json`). The default `version: latest` covers this.
+- changesetter 0.9.0 or newer (`changesetter version-pr`). The default `version: latest` covers this.
 - `pull-requests: write` to create PRs.
+- Any fetch depth. A shallow checkout fetches the merge and its parent when it needs them, and existing tags are checked on origin.
 
 The `concurrency` group prevents races when multiple pushes arrive in quick succession. `cancel-in-progress: false` keeps the release run for a merge from being cancelled by the next push; if one is cancelled anyway, the next push picks it up.
 

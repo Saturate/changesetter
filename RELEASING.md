@@ -8,7 +8,7 @@ CLI releases are automatic. Merging a PR with a changeset to `main` runs `.githu
 
 1. Runs `changesetter release`: bumps `Cargo.toml`, runs the `post_bump` hook from `changesetter.toml` (`cargo update --workspace`, so `Cargo.lock` matches), writes `CHANGELOG.md`, commits and tags `changesetter@v<version>`.
 2. Creates the GitHub Release with `--latest=false` (plus `--prerelease` for pre mode versions such as `1.0.0-rc.1`).
-3. Calls `build-binaries.yml`, which builds the binaries, attaches them to the release and then marks it as latest, unless it's a pre-release. Publishing to crates.io runs alongside; a failed publish doesn't hold back the binaries, since `actions/install` only needs those.
+3. Calls `build-binaries.yml`, which builds the binaries, attaches them to the release with a `SHA256SUMS` file and a build provenance attestation (`gh attestation verify`), and then marks it as latest, unless it's a pre-release. Publishing to crates.io runs alongside; a failed publish doesn't hold back the binaries, since `actions/install` only needs those.
 
 Two things decide which binary people get:
 
@@ -19,7 +19,7 @@ The release workflow doesn't cancel in-progress runs, so a build is never cut of
 
 To pull a bad release back, mark it as a pre-release (or delete its assets) so `actions/install` falls back to the previous version, and mark the previous CLI release as latest for the quick install.
 
-If a release ends up without binaries or isn't on crates.io, run **Build Binaries** manually (Actions tab, "Run workflow") with the tag, e.g. `changesetter@v0.3.2`. It replaces existing assets and skips crates.io if that version is already published. Tick "Mark the release as latest once binaries are attached" if it should become GitHub's latest release, which the quick install downloads from. If the GitHub Release itself is missing, create it first, since the build only uploads to an existing release: `gh release create <tag> --verify-tag --latest=false --notes-file <notes>`, with that version's section of `CHANGELOG.md` as the notes (`actions/release/release-notes.sh <version>` prints it).
+If a release ends up without binaries or isn't on crates.io, run **Build Binaries** manually (Actions tab, "Run workflow") with the tag, e.g. `changesetter@v0.3.2`. It replaces existing assets, `SHA256SUMS` included, so the sums always describe the archives on the release, and skips crates.io if that version is already published. Tick "Mark the release as latest once binaries are attached" if it should become GitHub's latest release, which the quick install downloads from. If the GitHub Release itself is missing, create it first, since the build only uploads to an existing release: `gh release create <tag> --verify-tag --latest=false --notes-file <notes>`, with that version's section of `CHANGELOG.md` as the notes (`actions/release/release-notes.sh <version>` prints it).
 
 Tags up to `changesetter@v0.3.1` were cut before the `post_bump` hook existed, so their `Cargo.lock` is stale and `cargo publish` from them fails on a dirty tree. 0.3.1 is not on crates.io for that reason; it only changed the GitHub Actions, so the next release covers it.
 
@@ -38,7 +38,7 @@ gh release create v1.2.0 --verify-tag --latest=false --title "Actions v1.2.0" --
 ```
 
 - Bump the patch for fixes, the minor for new optional inputs or outputs. Changes outside `actions/` don't need an action release.
-- A change that removes or renames an input or output, changes required permissions, or otherwise breaks an existing workflow is `v2.0.0`. Tag `v2` for it and leave `v1` where it was.
+- A change that removes or renames an input or output, changes required permissions, or otherwise breaks an existing workflow is `v2.0.0`. Tag `v2` for it and leave `v1` where it was. v2.0.0 is the first such release: the release action's version-PR mode runs `changesetter version-pr` (needs CLI 0.9.0) and fails on a version collision that v1 skipped. `v1` stays on v1.2.1. `actions/install` didn't change, so `check` and `release` keep calling `install@v1`.
 - Always pass `--latest=false`. An action release marked latest has no binaries, so the README's quick install and the Azure DevOps snippets would download nothing. (`actions/install` only looks at `changesetter@v*` releases, so it would keep working.)
 - Plain `vX.Y.Z` tags don't trigger the binary build; only `changesetter@v*` tags do.
 - In the release notes, call out behaviour changes that make a job fail where it used to pass.

@@ -178,9 +178,18 @@ fn read_changesets(
 fn run_post_bump_hooks(repo_root: &Path, config: &Config) -> anyhow::Result<()> {
     for hook in &config.hooks.post_bump {
         eprintln!("Running post-bump hook: {hook}");
+        // Hook output goes to stderr: stdout is reserved for `--output json`,
+        // and an `npm install` printing there would break the caller's parse
+        // after tags and releases were already pushed. The CI tokens are in
+        // the environment for `version-pr`'s API calls; repo-defined hooks
+        // don't need them.
         let status = std::process::Command::new("sh")
             .args(["-c", hook])
             .current_dir(repo_root)
+            .stdout(std::process::Stdio::from(std::io::stderr()))
+            .env_remove("SYSTEM_ACCESSTOKEN")
+            .env_remove("GITHUB_TOKEN")
+            .env_remove("GH_TOKEN")
             .status()?;
         if !status.success() {
             anyhow::bail!("post-bump hook failed: {hook}");
