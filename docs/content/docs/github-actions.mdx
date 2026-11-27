@@ -11,11 +11,20 @@ The actions are versioned separately from the CLI, with the tags GitHub recommen
 
 | Ref | What you get |
 |---|---|
-| `@v1` | The latest v1.x release. Moved forward on every compatible release, so you get fixes without editing your workflow. |
-| `@v1.1.0` | That release's action code. The tag never moves. |
+| `@v2` | The latest v2.x release. Moved forward on every compatible release, so you get fixes without editing your workflow. |
+| `@v2.0.0` | That release's action code. The tag never moves. |
 | `@<commit sha>` | The same, pinned by commit. |
 
-The check and release actions install the CLI through `actions/install@v1`, so that step follows `v1` even when you pin a tag or SHA. A change that breaks inputs, outputs or required permissions ships as `v2`, so `@v1` will not break your workflow. Release notes from v1.1.0 on are on the [releases page](https://github.com/saturate/changesetter/releases) under the `v1.x.y` tags. The CLI's own releases are tagged `changesetter@v<version>`, and the actions always install the latest CLI unless you pin `version`.
+The check and release actions install the CLI through `actions/install@v1`, so that step follows `v1` even when you pin a tag or SHA; the install action didn't change in v2. A change that breaks inputs, outputs or required permissions ships as a new major version, so `@v2` will not break your workflow. Release notes are on the [releases page](https://github.com/saturate/changesetter/releases) under the `vX.Y.Z` tags. The CLI's own releases are tagged `changesetter@v<version>`, and the actions always install the latest CLI unless you pin `version`.
+
+### Moving from v1 to v2
+
+`@v1` stays on v1.2.1 and keeps working. v2 only changes the release action's version-PR mode, which now runs [`changesetter version-pr`](/cli#changesetter-version-pr) instead of its own scripts. The check action, the install action and direct release mode are the same as in v1. Change `@v1` to `@v2` and check these:
+
+- **CLI 0.9.0 or newer.** Version-PR mode fails with a clear message on an older CLI. The default `version: latest` covers this; raise a pinned `version` to 0.9.0 or later.
+- **A tag already on another commit fails the job.** When a version this merge released already has a tag on origin at a different commit, v1 skipped that package and v2 fails with a version collision, without pushing any tags. Bump the version in a new version PR, or move the tag if it's wrong.
+- **`fetch-depth: 0` is no longer needed.** The CLI fetches the merge and its parent when a shallow checkout lacks them. Leaving it in is harmless.
+- **The version PR description is a changelog preview,** one section per package, instead of `status` output.
 
 ## Changeset check
 
@@ -39,7 +48,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: saturate/changesetter/actions/check@v1
+      - uses: saturate/changesetter/actions/check@v2
         with:
           comment: true
 ```
@@ -78,7 +87,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: saturate/changesetter/actions/release@v1
+      - uses: saturate/changesetter/actions/release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -127,7 +136,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-      - uses: saturate/changesetter/actions/release@v1
+      - uses: saturate/changesetter/actions/release@v2
         with:
           version-pr: true
         env:

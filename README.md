@@ -146,7 +146,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: saturate/changesetter/actions/check@v1
+      - uses: saturate/changesetter/actions/check@v2
         with:
           comment: true
 ```
@@ -169,7 +169,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: saturate/changesetter/actions/release@v1
+      - uses: saturate/changesetter/actions/release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
