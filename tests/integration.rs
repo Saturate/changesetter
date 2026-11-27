@@ -1815,12 +1815,25 @@ fn dependency_cascade_bumps_dependent() {
     );
 }
 
+/// actions/release/release-notes.sh, run through its shebang as the action
+/// does. Windows has no shebangs, and a bare `bash` there resolves to WSL's
+/// launcher in System32 before PATH; Git for Windows' `sh` is the bash the
+/// action's steps use.
+fn release_notes_script() -> Command {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("actions/release/release-notes.sh");
+    if cfg!(windows) {
+        let mut sh = Command::new("sh");
+        sh.arg(script);
+        sh
+    } else {
+        Command::new(script)
+    }
+}
+
 fn release_notes(version: &str, changelog: &str) -> String {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("CHANGELOG.md"), changelog).unwrap();
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("actions/release/release-notes.sh");
-    // Run through its shebang, as the action does.
-    let out = Command::new(script)
+    let out = release_notes_script()
         .arg(version)
         .current_dir(dir.path())
         .output()
@@ -1915,8 +1928,7 @@ fn release_notes_are_empty_without_a_matching_section() {
     assert_eq!(release_notes("0.3.0", "## 0.2.0 - d\n\n- A\n"), "");
 
     let dir = tempfile::tempdir().unwrap();
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("actions/release/release-notes.sh");
-    let out = Command::new(script)
+    let out = release_notes_script()
         .arg("0.1.0")
         .current_dir(dir.path())
         .output()
