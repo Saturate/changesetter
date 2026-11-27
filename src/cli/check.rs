@@ -688,11 +688,14 @@ mod tests {
             .current_dir(dir.path())
             .output()
             .unwrap();
-        std::fs::rename(
-            changeset_dir.join("old.md"),
-            changeset_dir.join("ø \"q\".md"),
-        )
-        .unwrap();
+        // git quotes the non-ASCII name; `"` adds an escape where the file
+        // system allows it (Windows doesn't).
+        let renamed = if cfg!(windows) {
+            "ø q.md"
+        } else {
+            "ø \"q\".md"
+        };
+        std::fs::rename(changeset_dir.join("old.md"), changeset_dir.join(renamed)).unwrap();
         std::fs::write(
             changeset_dir.join("fooREADME.md"),
             "---\nmylib: minor\n---\n\nF\n",
@@ -712,7 +715,7 @@ mod tests {
             [
                 (".changeset/fooREADME.md", false),
                 (".changeset/old.md", true),
-                (".changeset/ø \"q\".md", false),
+                (format!(".changeset/{renamed}").as_str(), false),
             ]
         );
         assert_eq!(report["bumps"], serde_json::json!({"mylib": "minor"}));
