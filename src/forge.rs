@@ -10,6 +10,8 @@ pub const VERSION_LABEL: &str = "changesetter:version";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergedPr {
     pub id: u64,
+    /// The PR's merge commit, which gets the tags.
+    pub commit: String,
     /// The commit the PR merged into, when the API says. Versions that differ
     /// between it and the merge were released by the PR.
     pub target_commit: Option<String>,
@@ -29,10 +31,32 @@ pub trait Forge {
     fn open_version_pr(&self) -> anyhow::Result<Option<OpenPr>>;
     fn create_version_pr(&self, title: &str, body: &str) -> anyhow::Result<OpenPr>;
     fn update_version_pr(&self, pr: &OpenPr, body: &str) -> anyhow::Result<()>;
+    /// The newest merged version PR whose merge `commit` contains, for when
+    /// `commit` itself isn't one: the run for that merge may have been
+    /// cancelled, or failed after tagging part of it. Re-releasing it only
+    /// creates what's missing, so offering it again is safe.
+    fn recover_merged_version_pr(&self, _commit: &str) -> anyhow::Result<Option<MergedPr>> {
+        Ok(None)
+    }
+    /// Creates a release for an existing tag unless the forge already has
+    /// one. Returns its URL when this call created it.
+    fn publish_release(&self, _release: &ReleaseInfo) -> anyhow::Result<Option<String>> {
+        anyhow::bail!("this provider has no releases to publish")
+    }
     /// The longest description the forge accepts, in characters.
     fn body_limit(&self) -> usize;
     /// The commit the pipeline was triggered for, from the CI environment.
     fn ci_commit(&self) -> Option<String>;
+}
+
+/// A release page for a tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseInfo {
+    pub tag: String,
+    pub title: String,
+    pub notes: String,
+    pub prerelease: bool,
+    pub draft: bool,
 }
 
 fn env(name: &str) -> anyhow::Result<String> {
@@ -80,13 +104,15 @@ impl Http {
     /// Sends a request and returns the JSON body of a 2xx response. Azure
     /// DevOps answers a missing or under-scoped token with a 203 HTML sign-in
     /// page, so a 2xx that isn't JSON is a failure too.
-    fn json(
+    /// Sends a request and returns the status and the parsed JSON body, if
+    /// the body is JSON.
+    fn send(
         &self,
         what: &str,
         method: &str,
         url: &str,
         body: Option<&serde_json::Value>,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<(u16, Option<serde_json::Value>, String)> {
         let mut req = ureq::http::Request::builder()
             .method(method)
             .uri(url)
@@ -109,15 +135,31 @@ impl Http {
             .with_context(|| format!("{what} failed"))?;
         let status = res.status().as_u16();
         let text = res.body_mut().read_to_string().unwrap_or_default();
-        let parsed: Option<serde_json::Value> = serde_json::from_str(&text).ok();
+        let parsed = serde_json::from_str(&text).ok();
+        Ok((status, parsed, text))
+    }
+
+    /// The JSON body of a 2xx response. Azure DevOps answers a missing or
+    /// under-scoped token with a 203 HTML sign-in page, so a 2xx that isn't
+    /// JSON is a failure too.
+    fn json(
+        &self,
+        what: &str,
+        method: &str,
+        url: &str,
+        body: Option<&serde_json::Value>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let (status, parsed, text) = self.send(what, method, url, body)?;
         match parsed {
             Some(v) if (200..300).contains(&status) && (v.is_object() || v.is_array()) => Ok(v),
-            _ => {
-                let detail: String = text.chars().take(300).collect();
-                anyhow::bail!("{what} failed: HTTP {status} {detail}")
-            }
+            _ => Err(http_error(what, status, &text)),
         }
     }
+}
+
+fn http_error(what: &str, status: u16, text: &str) -> anyhow::Error {
+    let detail: String = text.chars().take(300).collect();
+    anyhow::anyhow!("{what} failed: HTTP {status} {detail}")
 }
 
 fn id_of(v: &serde_json::Value, key: &str) -> Option<u64> {
@@ -233,6 +275,7 @@ impl Forge for Azure {
         Ok(found.and_then(|pr| {
             Some(MergedPr {
                 id: id_of(pr, "pullRequestId")?,
+                commit: commit.to_lowercase(),
                 target_commit: pr["lastMergeTargetCommit"]["commitId"]
                     .as_str()
                     .map(str::to_lowercase),
@@ -384,6 +427,7 @@ impl Forge for GitHub {
             .and_then(|pr| {
                 Some(MergedPr {
                     id: id_of(pr, "number")?,
+                    commit: commit.to_lowercase(),
                     // GitHub's base.sha is the base tip when the PR was last
                     // synced, not the merge's parent; the caller uses ^1.
                     target_commit: None,
@@ -417,8 +461,22 @@ impl Forge for GitHub {
         )?;
         let pr = Self::open(&data)
             .ok_or_else(|| anyhow::anyhow!("Creating version PR returned no number: {data}"))?;
-        // The label is how a later run recognises the merge. Adding a label
-        // that doesn't exist yet creates it.
+        // The label is how a later run recognises the merge. 422 is "already
+        // exists".
+        let what = "Creating the changesetter:version label";
+        let (status, _, text) = self.http.send(
+            what,
+            "POST",
+            &format!("{}labels", self.api),
+            Some(&serde_json::json!({
+                "name": VERSION_LABEL,
+                "color": "6e40c9",
+                "description": "Changesetter version PR",
+            })),
+        )?;
+        if !(200..300).contains(&status) && status != 422 {
+            return Err(http_error(what, status, &text));
+        }
         self.http.json(
             &format!("Labelling version PR #{}", pr.id),
             "POST",
@@ -442,6 +500,68 @@ impl Forge for GitHub {
             Some(&serde_json::json!({ "labels": [VERSION_LABEL] })),
         )?;
         Ok(())
+    }
+
+    fn recover_merged_version_pr(&self, commit: &str) -> anyhow::Result<Option<MergedPr>> {
+        let url = format!(
+            "{}pulls?state=closed&head={}&sort=updated&direction=desc&per_page=20",
+            self.api,
+            encode(&format!("{}:{VERSION_BRANCH}", self.owner))
+        );
+        let data = self
+            .http
+            .json("Merged version PR lookup", "GET", &url, None)?;
+        let last = data.as_array().and_then(|prs| {
+            prs.iter()
+                .filter(|pr| pr["merged_at"].is_string() && has_version_label(pr))
+                // RFC 3339 in UTC, so the text order is the time order.
+                .max_by_key(|pr| pr["merged_at"].as_str().unwrap_or_default().to_string())
+        });
+        let Some(pr) = last else { return Ok(None) };
+        let (Some(id), Some(sha)) = (id_of(pr, "number"), pr["merge_commit_sha"].as_str()) else {
+            return Ok(None);
+        };
+        // Asked of the API rather than local history, which a shallow
+        // checkout doesn't have. "behind" or "diverged" means the merge isn't
+        // in `commit`, as on a branch that was reset past it.
+        let compare = self.http.json(
+            "Version PR merge ancestry check",
+            "GET",
+            &format!("{}compare/{}...{}", self.api, encode(sha), encode(commit)),
+            None,
+        )?;
+        let contained = matches!(compare["status"].as_str(), Some("ahead" | "identical"));
+        Ok(contained.then(|| MergedPr {
+            id,
+            commit: sha.to_lowercase(),
+            target_commit: None,
+        }))
+    }
+
+    fn publish_release(&self, release: &ReleaseInfo) -> anyhow::Result<Option<String>> {
+        let what = format!("Looking up GitHub Release {}", release.tag);
+        let url = format!("{}releases/tags/{}", self.api, encode(&release.tag));
+        let (status, _, text) = self.http.send(&what, "GET", &url, None)?;
+        match status {
+            200..=299 => return Ok(None),
+            404 => {}
+            _ => return Err(http_error(&what, status, &text)),
+        }
+        let data = self.http.json(
+            &format!("Creating GitHub Release {}", release.tag),
+            "POST",
+            &format!("{}releases", self.api),
+            Some(&serde_json::json!({
+                "tag_name": release.tag,
+                "name": release.title,
+                "body": release.notes,
+                "draft": release.draft,
+                "prerelease": release.prerelease,
+            })),
+        )?;
+        Ok(Some(
+            data["html_url"].as_str().unwrap_or_default().to_string(),
+        ))
     }
 
     fn body_limit(&self) -> usize {
@@ -540,6 +660,7 @@ mod tests {
             pr,
             Some(MergedPr {
                 id: 7,
+                commit: "abc123".into(),
                 target_commit: Some("def".into())
             })
         );
@@ -631,6 +752,7 @@ mod tests {
             gh.merged_version_pr("abc").unwrap(),
             Some(MergedPr {
                 id: 5,
+                commit: "abc".into(),
                 target_commit: None
             })
         );
@@ -647,6 +769,7 @@ mod tests {
             ("POST", "/repos/acme/repo/pulls") => {
                 (201, r#"{"number":12,"html_url":"https://gh/pr/12"}"#.into())
             }
+            ("POST", "/repos/acme/repo/labels") => (422, r#"{"message":"already_exists"}"#.into()),
             _ => (200, "[]".into()),
         });
         let gh = GitHub::new(&url, "acme/repo", "tok", "main").unwrap();
@@ -666,10 +789,105 @@ mod tests {
         );
         assert_eq!(seen[1].body["head"], "changesetter/version-packages");
         assert_eq!(seen[1].body["base"], "main");
-        assert_eq!(seen[2].path, "/repos/acme/repo/issues/12/labels");
+        assert_eq!(seen[2].path, "/repos/acme/repo/labels");
+        assert_eq!(seen[2].body["name"], "changesetter:version");
+        assert_eq!(seen[3].path, "/repos/acme/repo/issues/12/labels");
         assert_eq!(
-            seen[2].body,
+            seen[3].body,
             serde_json::json!({"labels": ["changesetter:version"]})
         );
+    }
+
+    #[test]
+    fn github_recovery_takes_the_newest_merged_version_pr_in_history() {
+        let (url, seen) = serve(|s| {
+            if s.path.contains("/compare/") {
+                let status = if s.path.contains("/compare/M2...") {
+                    "ahead"
+                } else {
+                    "diverged"
+                };
+                return (200, serde_json::json!({"status": status}).to_string());
+            }
+            (
+                200,
+                serde_json::json!([
+                    {"number": 1, "merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": "m1", "labels": [{"name": "changesetter:version"}]},
+                    {"number": 2, "merged_at": "2026-02-01T00:00:00Z", "merge_commit_sha": "M2", "labels": [{"name": "changesetter:version"}]},
+                    {"number": 3, "merged_at": null, "merge_commit_sha": "m3", "labels": [{"name": "changesetter:version"}]},
+                    {"number": 4, "merged_at": "2026-03-01T00:00:00Z", "merge_commit_sha": "m4", "labels": []},
+                ])
+                .to_string(),
+            )
+        });
+        let gh = GitHub::new(&url, "acme/repo", "tok", "main").unwrap();
+        assert_eq!(
+            gh.recover_merged_version_pr("head").unwrap(),
+            Some(MergedPr {
+                id: 2,
+                commit: "m2".into(),
+                target_commit: None
+            })
+        );
+        assert_eq!(
+            seen.lock().unwrap()[1].path,
+            "/repos/acme/repo/compare/M2...head"
+        );
+    }
+
+    #[test]
+    fn github_recovery_skips_a_merge_outside_history() {
+        let (url, _) = serve(|s| {
+            if s.path.contains("/compare/") {
+                return (200, r#"{"status":"behind"}"#.into());
+            }
+            (200, r#"[{"number":2,"merged_at":"2026-02-01T00:00:00Z","merge_commit_sha":"m2","labels":[{"name":"changesetter:version"}]}]"#.into())
+        });
+        let gh = GitHub::new(&url, "acme/repo", "tok", "main").unwrap();
+        assert_eq!(gh.recover_merged_version_pr("head").unwrap(), None);
+    }
+
+    fn release(tag: &str) -> ReleaseInfo {
+        ReleaseInfo {
+            tag: tag.into(),
+            title: "pkg v2.0.0-rc.0".into(),
+            notes: "- Notes".into(),
+            prerelease: true,
+            draft: false,
+        }
+    }
+
+    #[test]
+    fn github_publishes_a_release_only_when_missing() {
+        let (url, seen) = serve(|s| match (s.method.as_str(), s.path.as_str()) {
+            ("GET", "/repos/acme/repo/releases/tags/v1.0.0") => (200, "{}".into()),
+            ("GET", _) => (404, r#"{"message":"Not Found"}"#.into()),
+            _ => (201, r#"{"html_url":"https://gh/rel/2"}"#.into()),
+        });
+        let gh = GitHub::new(&url, "acme/repo", "tok", "main").unwrap();
+        assert_eq!(gh.publish_release(&release("v1.0.0")).unwrap(), None);
+        assert_eq!(
+            gh.publish_release(&release("@s/a@v2.0.0-rc.0"))
+                .unwrap()
+                .as_deref(),
+            Some("https://gh/rel/2")
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen[1].path,
+            "/repos/acme/repo/releases/tags/%40s%2Fa%40v2.0.0-rc.0"
+        );
+        assert_eq!(
+            seen[2].body,
+            serde_json::json!({"tag_name": "@s/a@v2.0.0-rc.0", "name": "pkg v2.0.0-rc.0", "body": "- Notes", "draft": false, "prerelease": true})
+        );
+    }
+
+    #[test]
+    fn github_release_lookup_errors_fail() {
+        let (url, _) = serve(|_| (500, "boom".into()));
+        let gh = GitHub::new(&url, "acme/repo", "tok", "main").unwrap();
+        let err = gh.publish_release(&release("v1")).unwrap_err().to_string();
+        assert!(err.contains("HTTP 500"), "{err}");
     }
 }

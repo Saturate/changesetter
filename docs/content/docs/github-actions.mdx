@@ -127,8 +127,6 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: saturate/changesetter/actions/release@v1
         with:
           version-pr: true
@@ -137,18 +135,20 @@ jobs:
 ```
 
 The flow:
-1. Push to main with pending changesets: creates/updates a PR on `changesetter/version-packages` branch with label `changesetter:version`
-2. Push to main whose HEAD is the merge commit of a version PR: releases every package whose version the PR changed. Each gets a tag in your configured tag format, at the merge commit, plus a GitHub Release with that version's changelog section as notes. Pre-release versions become pre-releases.
+1. Push to main with pending changesets: creates/updates a PR on `changesetter/version-packages` branch with label `changesetter:version`. Its description is a changelog preview: a section per package with its version change and the entries going into its changelog, and packages bumped only by a dependency cascade on one line each.
+2. Push to main whose HEAD is the merge commit of a version PR: releases every package whose version the PR changed. Each gets a tag in your configured tag format at the merge commit, annotated with that version's changelog section, plus a GitHub Release with the same notes. Pre-release versions become pre-releases.
 3. Any other push without pending changesets: does nothing
 
 A version PR merge that also brings in changesets merged while it was open does both: it releases, then opens a new version PR for those changesets.
 
 Releasing is safe to repeat. Tags and GitHub Releases that already exist are left alone, and `released` is only `true` for what the run actually created. If the run for a merge was cancelled or failed partway, the next push to main finishes the release of the last merged version PR.
 
+The action runs [`changesetter version-pr --provider github`](/cli#changesetter-version-pr), which makes the API calls itself with the `token` input, so pipelines that don't use the action can run the same loop.
+
 Requirements:
-- `actions/checkout` with `fetch-depth: 0`. The action reads the merge's parent commit and the existing tags.
-- changesetter 0.4.0 or newer (`changesetter status --output json`). The default `version: latest` covers this.
+- changesetter 0.9.0 or newer (`changesetter version-pr`). The default `version: latest` covers this.
 - `pull-requests: write` to create PRs.
+- Any fetch depth. A shallow checkout fetches the merge and its parent when it needs them, and existing tags are checked on origin.
 
 The `concurrency` group prevents races when multiple pushes arrive in quick succession. `cancel-in-progress: false` keeps the release run for a merge from being cancelled by the next push; if one is cancelled anyway, the next push picks it up.
 

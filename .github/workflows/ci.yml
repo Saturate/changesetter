@@ -21,7 +21,7 @@ jobs:
       - run: cargo test --locked
 
   # The version-PR flow only really runs after a version PR merges, so run
-  # its steps here against scratch repos with a stubbed gh.
+  # its steps here against scratch repos and a mock GitHub API.
   release-action:
     runs-on: ubuntu-latest
     steps:

@@ -40,6 +40,8 @@ pub struct TagResult {
     pub tag: String,
     /// False when the tag already pointed at HEAD.
     pub created: bool,
+    /// The version's section from the package's changelog, when it has one.
+    pub notes: Option<String>,
 }
 
 pub fn run(args: &TagArgs) -> anyhow::Result<()> {
@@ -70,6 +72,7 @@ struct Candidate {
     name: String,
     version: String,
     tag: String,
+    changelog: PathBuf,
 }
 
 /// Creates the tags missing for the current package versions at HEAD and
@@ -96,10 +99,17 @@ pub fn run_in(repo_root: &Path, args: &TagArgs) -> anyhow::Result<Vec<TagResult>
             }
             let path = repo_relative(repo_root, &p.path);
             let tag = config.tag.tag_for(&p.name, &path, &version, is_monorepo)?;
+            // Where `version` wrote this package's section, as `status` reports it.
+            let changelog = if is_monorepo && config.changelog.per_package {
+                p.path.join(&config.changelog.file)
+            } else {
+                repo_root.join(&config.changelog.file)
+            };
             Some(Candidate {
                 name: p.name.clone(),
                 version,
                 tag,
+                changelog,
             })
         })
         .collect();
@@ -123,6 +133,7 @@ pub fn run_in(repo_root: &Path, args: &TagArgs) -> anyhow::Result<Vec<TagResult>
             Some(commit) if *commit == head => {
                 eprintln!("{} already exists at {head}", c.tag);
                 results.push(TagResult {
+                    notes: notes_for(&c),
                     name: c.name,
                     version: c.version,
                     tag: c.tag,
@@ -137,6 +148,7 @@ pub fn run_in(repo_root: &Path, args: &TagArgs) -> anyhow::Result<Vec<TagResult>
                 c.tag
             )),
             None => results.push(TagResult {
+                notes: notes_for(&c),
                 name: c.name,
                 version: c.version,
                 tag: c.tag,
@@ -163,12 +175,15 @@ pub fn run_in(repo_root: &Path, args: &TagArgs) -> anyhow::Result<Vec<TagResult>
     }
 
     for r in &created {
+        // The version's changelog section, as `release` writes into its tags.
         let message = if config.release.tag_annotated {
-            Some(if is_monorepo && !r.name.is_empty() {
-                format!("Release {}@{}", r.name, r.version)
-            } else {
-                format!("Release {}", r.version)
-            })
+            Some(r.notes.clone().unwrap_or_else(|| {
+                if is_monorepo && !r.name.is_empty() {
+                    format!("Release {}@{}", r.name, r.version)
+                } else {
+                    format!("Release {}", r.version)
+                }
+            }))
         } else {
             None
         };
@@ -191,6 +206,11 @@ pub fn run_in(repo_root: &Path, args: &TagArgs) -> anyhow::Result<Vec<TagResult>
     }
 
     Ok(results)
+}
+
+fn notes_for(c: &Candidate) -> Option<String> {
+    let text = std::fs::read_to_string(&c.changelog).ok()?;
+    crate::changelog::generator::version_notes(&text, &c.version)
 }
 
 fn run_checked(repo_root: &Path, args: &[&str]) -> anyhow::Result<String> {
@@ -463,6 +483,7 @@ mod tests {
                 version: "1.0.1".into(),
                 tag: "@s/web@v1.0.1".into(),
                 created: true,
+                notes: None,
             }]
         );
         assert_eq!(tags(dir.path()), vec!["@s/web@v1.0.1"]);
@@ -570,5 +591,26 @@ mod tests {
         assert_eq!(found.get("v1.0.0").map(String::as_str), Some("bbb"));
         assert_eq!(found.get("lw").map(String::as_str), Some("ddd"));
         assert!(!found.contains_key("v2.0.0"));
+    }
+
+    #[test]
+    fn annotated_tags_carry_the_changelog_section() {
+        let (dir, base, _) = monorepo();
+        let p = dir.path();
+        std::fs::write(
+            p.join("changesetter.toml"),
+            "[tag]\nskip = [\"packages/*\"]\n[changelog]\nper_package = true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("apps/web/CHANGELOG.md"),
+            "# web\n\n## 1.0.1 - 2026-01-01\n\n- Web fix\n\n## 1.0.0 - 2025-01-01\n\n- Old\n",
+        )
+        .unwrap();
+        commit(p, "changelog");
+        let results = run_in(p, &args(Some(&base))).unwrap();
+        assert_eq!(results[0].notes.as_deref(), Some("- Web fix"));
+        let message = git(p, &["tag", "-l", "--format=%(contents)", "@s/web@v1.0.1"]);
+        assert_eq!(message, "- Web fix");
     }
 }

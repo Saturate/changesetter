@@ -4,7 +4,7 @@ use clap::{Args, ValueEnum};
 
 use crate::cli::tag::{self, TagArgs, TagResult};
 use crate::config::Config;
-use crate::forge::{self, Forge, OpenPr, VERSION_BRANCH};
+use crate::forge::{self, Forge, OpenPr, ReleaseInfo, VERSION_BRANCH};
 use crate::release::executor::{self, ExecuteOptions};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -38,6 +38,14 @@ pub struct VersionPrArgs {
     #[arg(long, default_value = "origin")]
     pub remote: String,
 
+    /// GitHub only: don't create a GitHub Release for each new tag
+    #[arg(long)]
+    pub no_github_release: bool,
+
+    /// GitHub only: create GitHub Releases as drafts
+    #[arg(long)]
+    pub draft: bool,
+
     /// Output format (json for CI consumption)
     #[arg(long)]
     pub output: Option<String>,
@@ -47,13 +55,50 @@ pub struct VersionPrArgs {
 pub struct Outcome {
     pub merged_pr: Option<u64>,
     pub tags: Vec<TagResult>,
+    /// Per tag, the URL of the GitHub Release this run created.
+    pub github_releases: Vec<(String, Option<String>)>,
     pub version_pr: Option<(OpenPr, bool)>,
 }
 
 impl Outcome {
+    /// What this run released: a tag it created or a release page it
+    /// created. A re-run, or the recovery check on a later push, releases
+    /// nothing again, so publish steps gated on it don't run twice.
+    fn released(&self) -> Vec<&TagResult> {
+        self.tags
+            .iter()
+            .filter(|t| {
+                t.created
+                    || self
+                        .github_releases
+                        .iter()
+                        .any(|(tag, url)| *tag == t.tag && url.is_some())
+            })
+            .collect()
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
+        let released: Vec<_> = self
+            .released()
+            .into_iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "version": t.version,
+                    "tag": t.tag,
+                    "changelog": t.notes.clone().unwrap_or_default(),
+                })
+            })
+            .collect();
+        let github_releases: Vec<_> = self
+            .github_releases
+            .iter()
+            .map(|(tag, url)| serde_json::json!({"tag": tag, "created": url.is_some(), "url": url}))
+            .collect();
         let mut json = serde_json::json!({
             "merged_pr": self.merged_pr,
+            "released": released,
+            "github_releases": github_releases,
             "version_pr": self.version_pr.as_ref().map(|(pr, created)| serde_json::json!({
                 "id": pr.id,
                 "url": pr.url,
@@ -97,25 +142,63 @@ pub fn run_with(
     let mut outcome = Outcome {
         merged_pr: None,
         tags: Vec::new(),
+        github_releases: Vec::new(),
         version_pr: None,
     };
 
-    match forge.merged_version_pr(&commit)? {
+    let merged = match forge.merged_version_pr(&commit)? {
         Some(pr) => {
             eprintln!("{commit} is the merge of version PR #{}, tagging", pr.id);
-            outcome.merged_pr = Some(pr.id);
-            let since = merge_target(
-                repo_root,
-                &commit,
-                pr.target_commit.as_deref(),
-                &args.remote,
-            )?;
-            outcome.tags = tag_commit(repo_root, &commit, &since, &args.remote)?;
-            if outcome.tags.is_empty() {
-                eprintln!("No package with a tag changed version in this merge");
+            Some(pr)
+        }
+        None => {
+            eprintln!("{commit} is not a version PR merge");
+            let pr = forge.recover_merged_version_pr(&commit)?;
+            if let Some(pr) = &pr {
+                eprintln!(
+                    "Checking that version PR #{} ({}) was fully released",
+                    pr.id, pr.commit
+                );
+            }
+            pr
+        }
+    };
+    if let Some(pr) = merged {
+        outcome.merged_pr = Some(pr.id);
+        ensure_commit(repo_root, &pr.commit, &args.remote)?;
+        let since = merge_target(
+            repo_root,
+            &pr.commit,
+            pr.target_commit.as_deref(),
+            &args.remote,
+        )?;
+        outcome.tags = tag_commit(repo_root, &pr.commit, &since, &args.remote)?;
+        if outcome.tags.is_empty() {
+            eprintln!("No package with a tag changed version in this merge");
+        }
+        if matches!(args.provider, Provider::Github) && !args.no_github_release {
+            for t in &outcome.tags {
+                let url = forge.publish_release(&ReleaseInfo {
+                    tag: t.tag.clone(),
+                    title: if t.name.is_empty() {
+                        format!("v{}", t.version)
+                    } else {
+                        format!("{} v{}", t.name, t.version)
+                    },
+                    notes: t
+                        .notes
+                        .clone()
+                        .unwrap_or_else(|| format!("Release {}", t.version)),
+                    prerelease: t.version.contains('-'),
+                    draft: args.draft,
+                })?;
+                match &url {
+                    Some(url) => eprintln!("Created GitHub Release {} ({url})", t.tag),
+                    None => eprintln!("GitHub Release {} already exists", t.tag),
+                }
+                outcome.github_releases.push((t.tag.clone(), url));
             }
         }
-        None => eprintln!("{commit} is not a version PR merge"),
     }
 
     let config = Config::load(repo_root)?;
@@ -141,6 +224,33 @@ pub fn run_with(
     Ok(outcome)
 }
 
+/// Fetches a commit a shallow checkout doesn't have, with its parent, which
+/// the release is diffed against.
+fn ensure_commit(repo_root: &Path, commit: &str, remote: &str) -> anyhow::Result<()> {
+    let have = |rev: &str| -> anyhow::Result<bool> {
+        let spec = format!("{rev}^{{commit}}");
+        Ok(crate::git::run_git(repo_root, &["cat-file", "-e", &spec])?.is_some())
+    };
+    if !have(commit)? || !have(&format!("{commit}^1"))? {
+        fetch_commit(repo_root, remote, commit, 2)?;
+    }
+    Ok(())
+}
+
+/// `--depth` only in a shallow checkout: in a full clone it would make the
+/// repository shallow.
+fn fetch_commit(repo_root: &Path, remote: &str, commit: &str, depth: u32) -> anyhow::Result<()> {
+    let shallow = git(repo_root, &["rev-parse", "--is-shallow-repository"])?;
+    let depth = format!("--depth={depth}");
+    let mut args = vec!["fetch", "--quiet"];
+    if shallow.trim() == "true" {
+        args.push(&depth);
+    }
+    args.extend([remote, commit]);
+    git(repo_root, &args)?;
+    Ok(())
+}
+
 /// The commit the version PR merged into: versions that differ between it
 /// and the merge are what the PR released. The forge's answer covers every
 /// merge strategy; a shallow checkout may not have it yet. Without one, the
@@ -154,10 +264,7 @@ fn merge_target(
     if let Some(target) = target {
         let spec = format!("{target}^{{commit}}");
         if crate::git::run_git(repo_root, &["cat-file", "-e", &spec])?.is_none() {
-            git(
-                repo_root,
-                &["fetch", "--quiet", "--depth=1", remote, target],
-            )?;
+            fetch_commit(repo_root, remote, target, 1)?;
         }
         return Ok(target.to_string());
     }
@@ -300,8 +407,11 @@ mod tests {
     struct FakeForge {
         merged: Option<MergedPr>,
         open: Option<OpenPr>,
+        recover: Option<MergedPr>,
+        existing_releases: Vec<String>,
         fail_lookup: bool,
         calls: RefCell<Vec<String>>,
+        published: RefCell<Vec<ReleaseInfo>>,
         bodies: RefCell<Vec<String>>,
     }
 
@@ -326,6 +436,22 @@ mod tests {
             self.calls.borrow_mut().push(format!("update {}", pr.id));
             self.bodies.borrow_mut().push(body.to_string());
             Ok(())
+        }
+        fn recover_merged_version_pr(&self, _commit: &str) -> anyhow::Result<Option<MergedPr>> {
+            self.calls.borrow_mut().push("recover".into());
+            Ok(self.recover.clone())
+        }
+        fn publish_release(&self, release: &ReleaseInfo) -> anyhow::Result<Option<String>> {
+            self.calls
+                .borrow_mut()
+                .push(format!("release {}", release.tag));
+            let exists = self.existing_releases.contains(&release.tag)
+                || self.published.borrow().iter().any(|r| r.tag == release.tag);
+            if exists {
+                return Ok(None);
+            }
+            self.published.borrow_mut().push(release.clone());
+            Ok(Some(format!("https://gh/releases/{}", release.tag)))
         }
         fn body_limit(&self) -> usize {
             crate::release::pr_body::AZURE_LIMIT
@@ -447,6 +573,8 @@ mod tests {
             base: "main".into(),
             commit: None,
             remote: "origin".into(),
+            no_github_release: false,
+            draft: false,
             output: None,
         }
     }
@@ -458,6 +586,7 @@ mod tests {
     fn merged(r: &Repo) -> Option<MergedPr> {
         Some(MergedPr {
             id: 7,
+            commit: r.head.clone(),
             target_commit: Some(r.base.clone()),
         })
     }
@@ -492,6 +621,7 @@ mod tests {
             *forge.calls.borrow(),
             [
                 format!("merged {}", r.head),
+                "recover".into(),
                 "open".into(),
                 "create Next Release".into()
             ]
@@ -612,5 +742,124 @@ mod tests {
         };
         let out = run_with(&shallow, &args(), &forge).unwrap();
         assert_eq!(out.tags.len(), 1);
+    }
+
+    fn github() -> VersionPrArgs {
+        VersionPrArgs {
+            provider: Provider::Github,
+            ..args()
+        }
+    }
+
+    #[test]
+    fn github_publishes_a_release_per_new_tag_once() {
+        let r = repo(false);
+        std::fs::write(
+            r.work.join("CHANGELOG.md"),
+            "# Changelog\n\n## 1.0.1, 0.1.1 - 2026-02-01\n\n- Web fix\n",
+        )
+        .unwrap();
+        sh(&r.work, &["add", "-A"]);
+        sh(&r.work, &["commit", "-q", "--amend", "--no-edit"]);
+        sh(&r.work, &["push", "-q", "-f", "origin", "main"]);
+        let head = sh(&r.work, &["rev-parse", "HEAD"]);
+        let merged = Some(MergedPr {
+            id: 7,
+            commit: head.clone(),
+            target_commit: Some(r.base.clone()),
+        });
+
+        let forge = FakeForge {
+            merged: merged.clone(),
+            ..Default::default()
+        };
+        let out = run_with(&r.work, &github(), &forge).unwrap();
+        let published = forge.published.borrow();
+        assert_eq!(
+            *published,
+            [ReleaseInfo {
+                tag: "@d/web@v1.0.1".into(),
+                title: "@d/web v1.0.1".into(),
+                notes: "- Web fix".into(),
+                prerelease: false,
+                draft: false,
+            }]
+        );
+        let json = out.to_json();
+        assert_eq!(json["released"][0]["changelog"], "- Web fix");
+        assert_eq!(json["github_releases"][0]["created"], true);
+
+        // A re-run creates nothing and reports nothing released.
+        let again = FakeForge {
+            merged,
+            existing_releases: vec!["@d/web@v1.0.1".into()],
+            ..Default::default()
+        };
+        let out = run_with(&r.work, &github(), &again).unwrap();
+        assert_eq!(out.to_json()["released"], serde_json::json!([]));
+        assert!(again.published.borrow().is_empty());
+    }
+
+    #[test]
+    fn github_recovers_a_merge_whose_run_was_cancelled() {
+        let r = repo(false);
+        sh(
+            &r.work,
+            &["commit", "-q", "--allow-empty", "-m", "unrelated"],
+        );
+        sh(&r.work, &["push", "-q", "origin", "main"]);
+        let forge = FakeForge {
+            recover: merged(&r),
+            ..Default::default()
+        };
+        let out = run_with(&r.work, &github(), &forge).unwrap();
+        assert_eq!(out.merged_pr, Some(7));
+        let tagged = sh(
+            &r.work,
+            &[
+                "ls-remote",
+                r.origin.to_str().unwrap(),
+                "refs/tags/@d/web@v1.0.1^{}",
+            ],
+        );
+        assert!(tagged.starts_with(&r.head), "{tagged}");
+        assert_eq!(out.released().len(), 1);
+
+        // The next push finds it fully released.
+        let out = run_with(
+            &r.work,
+            &github(),
+            &FakeForge {
+                recover: merged(&r),
+                existing_releases: vec!["@d/web@v1.0.1".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(out.released().is_empty());
+        assert!(!out.tags[0].created);
+    }
+
+    #[test]
+    fn github_prerelease_and_draft_flags() {
+        let r = repo(false);
+        let mut a = github();
+        a.draft = true;
+        let forge = FakeForge {
+            merged: merged(&r),
+            ..Default::default()
+        };
+        run_with(&r.work, &a, &forge).unwrap();
+        assert!(forge.published.borrow()[0].draft);
+
+        let mut a = github();
+        a.no_github_release = true;
+        let r = repo(false);
+        let forge = FakeForge {
+            merged: merged(&r),
+            ..Default::default()
+        };
+        run_with(&r.work, &a, &forge).unwrap();
+        assert!(forge.published.borrow().is_empty());
     }
 }
