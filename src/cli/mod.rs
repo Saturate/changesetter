@@ -4,6 +4,7 @@ pub mod init;
 pub mod pre;
 pub mod release;
 pub mod status;
+pub mod tag;
 pub mod version;
 
 use clap::{Parser, Subcommand};
@@ -14,6 +15,7 @@ pub use init::InitArgs;
 pub use pre::PreArgs;
 pub use release::ReleaseArgs;
 pub use status::StatusArgs;
+pub use tag::TagArgs;
 pub use version::VersionArgs;
 
 #[derive(Parser)]
@@ -41,6 +43,8 @@ pub enum Command {
     Version(VersionArgs),
     /// Run the full release pipeline
     Release(ReleaseArgs),
+    /// Tag the current package versions that have no tag yet
+    Tag(TagArgs),
     /// Enter or exit pre-release mode
     Pre(PreArgs),
 }

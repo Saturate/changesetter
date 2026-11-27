@@ -1,5 +1,7 @@
 // Runs the ChangsetterRelease task against real git repos (bare origin + clone)
-// with tl, install and https stubbed. Usage: node index.test.js
+// with tl, install and https stubbed. `changesetter tag` is the real CLI
+// (CHANGESETTER_BIN, default target/debug/changesetter; run `cargo build`
+// first); the other subcommands are faked. Usage: node index.test.js
 const Module = require("module");
 const https = require("https");
 const { EventEmitter } = require("events");
@@ -51,12 +53,19 @@ const task = require(taskPath);
 const sh = (cmd, cwd) => execSync(cmd, { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 const tmpRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "changesetter-release-task-"));
 const GIT_COMMIT = ["git", "commit"].join(" ");
+const REAL_CLI = path.resolve(process.env.CHANGESETTER_BIN || path.join(__dirname, "../../../../target/debug/changesetter"));
+if (!fs.existsSync(REAL_CLI)) {
+  console.error(`No changesetter binary at ${REAL_CLI}; run cargo build or set CHANGESETTER_BIN`);
+  process.exit(1);
+}
 
 function makeFakeCli() {
   const dir = path.join(tmpRoot, "bin");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "changesetter"), `#!/bin/sh
+REAL_CLI="${REAL_CLI}"
 case "$1" in
+  tag) exec "${REAL_CLI}" "$@";;
   status) echo "demo: 1.1.0 -> 1.2.0 (minor)";;
   version) [ -n "$FAKE_VERSION_FAIL" ] && { echo "bump failed" >&2; exit 1; }; rm -f .changeset/*.md; sed -i.bak 's/^version = ".*"/version = "1.2.0"/' Cargo.toml && rm -f Cargo.toml.bak;;
 esac
@@ -64,13 +73,23 @@ esac
   return dir;
 }
 
-function makeRepo(name, { version, changesets = [] }) {
+function initRepo(name) {
   const origin = path.join(tmpRoot, `${name}-origin.git`);
   const work = path.join(tmpRoot, `${name}-work`);
   sh(`git init -q --bare -b main "${origin}"`);
   sh(`git clone -q "${origin}" "${work}" 2>/dev/null`);
-  sh(`git config user.name t && git config user.email t@t`, work);
-  fs.writeFileSync(path.join(work, "Cargo.toml"), `[package]\nname = "demo"\nversion = "${version}"\n`);
+  sh(`git config user.name t && git config user.email t@t && git config commit.gpgsign false && git config tag.gpgsign false`, work);
+  return { origin, work };
+}
+
+// Two commits: the version before the version PR (base), then its merge.
+function makeRepo(name, { version, changesets = [] }) {
+  const { origin, work } = initRepo(name);
+  const manifest = (v) => fs.writeFileSync(path.join(work, "Cargo.toml"), `[package]\nname = "demo"\nversion = "${v}"\n`);
+  manifest("0.9.0");
+  sh(`git add -A && ${GIT_COMMIT} -q -m base`, work);
+  const base = sh("git rev-parse HEAD", work);
+  manifest(version);
   fs.mkdirSync(path.join(work, ".changeset"), { recursive: true });
   fs.writeFileSync(path.join(work, ".changeset/README.md"), "readme\n");
   for (const c of changesets) {
@@ -78,21 +97,42 @@ function makeRepo(name, { version, changesets = [] }) {
     fs.writeFileSync(path.join(work, `.changeset/${c}.md`), "---\ndemo: minor\n---\n\nLate change\n");
   }
   sh(`git add -A && ${GIT_COMMIT} -q -m "Merged PR 7: Next Release" && git push -q origin main`, work);
-  return { origin, work, head: sh("git rev-parse HEAD", work) };
+  return { origin, work, base, head: sh("git rev-parse HEAD", work) };
 }
 
-const versionPr = (sha, status = "completed") => ({
+// npm workspace: apps/web, apps/admin and packages/ui, with packages/* never
+// tagged. The merge bumps web and ui.
+function makeMonorepo(name) {
+  const { origin, work } = initRepo(name);
+  const pkg = (dir, n, v) => {
+    fs.mkdirSync(path.join(work, dir), { recursive: true });
+    fs.writeFileSync(path.join(work, dir, "package.json"), JSON.stringify({ name: n, version: v }));
+  };
+  fs.writeFileSync(path.join(work, "changesetter.toml"), '[tag]\nskip = ["packages/*"]\n');
+  pkg("apps/web", "@s/web", "1.0.0");
+  pkg("apps/admin", "@s/admin", "1.0.0");
+  pkg("packages/ui", "@s/ui", "0.1.0");
+  sh(`git add -A && ${GIT_COMMIT} -q -m base`, work);
+  const base = sh("git rev-parse HEAD", work);
+  pkg("apps/web", "@s/web", "1.0.1");
+  pkg("packages/ui", "@s/ui", "0.1.1");
+  sh(`git add -A && ${GIT_COMMIT} -q -m "Merged PR 7: Next Release" && git push -q origin main`, work);
+  return { origin, work, base, head: sh("git rev-parse HEAD", work) };
+}
+
+const versionPr = (sha, status = "completed", target) => ({
   pullRequestId: 7, status,
   sourceRefName: "refs/heads/changesetter/version-packages",
   lastMergeCommit: { commitId: sha },
+  ...(target ? { lastMergeTargetCommit: { commitId: target } } : {}),
 });
 
-function handlerFor(head, { merged, prStatus, openPr = null, queryData }) {
+function handlerFor(head, { merged, prStatus, openPr = null, queryData, target }) {
   return (call) => {
     if (call.url.includes("/pullrequestquery")) {
       assert.deepStrictEqual(call.body.queries, [{ type: "lastMergeCommit", items: [head] }]);
       if (queryData) return { status: 200, data: queryData };
-      return { status: 200, data: { queries: call.body.queries, results: [{ [head]: merged ? [versionPr(head, prStatus)] : [] }] } };
+      return { status: 200, data: { queries: call.body.queries, results: [{ [head]: merged ? [versionPr(head, prStatus, target)] : [] }] } };
     }
     if (call.method === "GET" && call.url.includes("searchCriteria.status=active")) {
       return { status: 200, data: { value: openPr ? [openPr] : [] } };
@@ -196,10 +236,9 @@ const methods = () => state.calls.map((c) => `${c.method} ${new URL(c.url).pathn
 
   await scenario("tag exists on origin at another commit: version collision, task fails", () => {
     const r = makeRepo("elsewhere", { version: "1.1.0" });
-    sh(`git tag -a v1.1.0 -m old HEAD && ${GIT_COMMIT} -q --allow-empty -m next && git push -q origin main v1.1.0`, r.work);
-    const head = sh("git rev-parse HEAD", r.work);
-    state.handler = handlerFor(head, { merged: true });
-    return { ...r, head, old: r.head };
+    sh(`git tag -a v1.1.0 -m old ${r.base} && git push -q origin v1.1.0`, r.work);
+    state.handler = handlerFor(r.head, { merged: true });
+    return { ...r, old: r.base };
   }, (r) => {
     assert.strictEqual(state.result.r, 2);
     console.log(`task failed with: ${state.result.m}`);
@@ -310,14 +349,38 @@ const methods = () => state.calls.map((c) => `${c.method} ${new URL(c.url).pathn
     assert.deepStrictEqual(methods(), ["POST pullrequestquery", "GET pullrequests", "PATCH 9"]);
   });
 
-  await scenario("version.workspace = true: no literal version, task fails", () => {
-    const r = makeRepo("workspace", { version: "x" });
-    fs.writeFileSync(path.join(r.work, "Cargo.toml"), "[package]\nname = \"demo\"\nversion.workspace = true\n");
+  await scenario("monorepo merge: tags each bumped package except [tag] skip", () => {
+    const r = makeMonorepo("mono");
+    state.handler = handlerFor(r.head, { merged: true, target: r.base });
+    return r;
+  }, (r) => {
+    assert.strictEqual(state.result.r, 0, state.result.m);
+    assert.strictEqual(state.out.released, "true");
+    assert.deepStrictEqual(JSON.parse(state.out.releases), [{ name: "@s/web", version: "1.0.1", tag: "@s/web@v1.0.1" }]);
+    const tags = remoteTags(r);
+    assert.match(tags, /refs\/tags\/@s\/web@v1\.0\.1/);
+    assert.doesNotMatch(tags, /@s\/ui|@s\/admin/);
+  });
+
+  await scenario("shallow checkout: fetches the merge target from origin", () => {
+    const r = makeMonorepo("shallow-src");
+    const work = path.join(tmpRoot, "shallow-work");
+    sh(`git clone -q --depth=1 "file://${r.origin}" "${work}" 2>/dev/null`);
+    sh(`git config user.name t && git config user.email t@t && git config tag.gpgsign false`, work);
+    state.handler = handlerFor(r.head, { merged: true, target: r.base });
+    return { ...r, work };
+  }, (r) => {
+    assert.strictEqual(state.result.r, 0, state.result.m);
+    assert.match(remoteTags(r), /refs\/tags\/@s\/web@v1\.0\.1/);
+  });
+
+  await scenario("merge that changes no tagged version: no release", () => {
+    const r = makeRepo("unchanged", { version: "0.9.0" });
     state.handler = handlerFor(r.head, { merged: true });
     return r;
   }, (r) => {
-    assert.strictEqual(state.result.r, 2);
-    console.log(`task failed with: ${state.result.m}`);
+    assert.strictEqual(state.result.r, 0, state.result.m);
+    assert.strictEqual(state.out.released, "false");
     assert.strictEqual(remoteTags(r), "");
   });
 

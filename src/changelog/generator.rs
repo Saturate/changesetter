@@ -271,6 +271,54 @@ pub fn is_section_end(line: &str) -> bool {
     is_any_version_heading(line) || is_unreleased_heading(line) || is_link_reference(line)
 }
 
+/// The body of `version`'s section in a changelog: everything after its
+/// "## <versions> - <date>" heading up to the next section end, without
+/// leading blank lines. A monorepo heading lists several versions
+/// comma-separated, and each is compared as plain text, so 1.0.1 never
+/// matches 1.0.10. The same reading as actions/release/release-notes.sh.
+pub fn version_notes(changelog: &str, version: &str) -> Option<String> {
+    version_sections(changelog, version).into_iter().next()
+}
+
+/// Every non-empty section whose heading lists `version`, newest first. A
+/// shared monorepo changelog can have several, when packages reach the
+/// same version number in different releases.
+pub fn version_sections(changelog: &str, version: &str) -> Vec<String> {
+    let mut sections = Vec::new();
+    let mut current: Option<Vec<&str>> = None;
+    let mut finish = |current: &mut Option<Vec<&str>>| {
+        if let Some(lines) = current.take() {
+            let notes = lines.join("\n").trim_end().to_string();
+            if !notes.is_empty() {
+                sections.push(notes);
+            }
+        }
+    };
+    for line in changelog.lines() {
+        let line = line.trim_end_matches([' ', '\t', '\r']);
+        if is_version_heading(line) {
+            finish(&mut current);
+            let list = &line[3..];
+            let list = list.split_once(" - ").map_or(list, |(l, _)| l);
+            if list.split(", ").any(|v| v == version) {
+                current = Some(Vec::new());
+            }
+            continue;
+        }
+        if is_section_end(line) {
+            finish(&mut current);
+            continue;
+        }
+        if let Some(lines) = current.as_mut()
+            && (!lines.is_empty() || !line.trim().is_empty())
+        {
+            lines.push(line);
+        }
+    }
+    finish(&mut current);
+    sections
+}
+
 /// Lines in a changeset body's fenced code that the changelog parsers would
 /// take for a section boundary. Parsers read plain lines, not fences, so such
 /// a line ends the entry's section early once it's in the changelog. Bodies
@@ -1202,5 +1250,30 @@ mod tests {
         };
         let entry = entry_text(&plan, &config, "2026-07-25", false);
         assert!(entry.contains("### Misc"));
+    }
+
+    #[test]
+    fn version_notes_reads_one_section() {
+        let log = "# Changelog\n\n## Unreleased\n\n- later\n\n## 1.0.10, 2.0.0 - 2026-02-01\n\n#### Ten\n\n## 2FA support\n\nkept\n\n## 1.0.1 - 2026-01-01  \r\n\n\n- One\n\n[1.0.1]: https://x\n";
+        assert_eq!(version_notes(log, "1.0.1").as_deref(), Some("- One"));
+        assert_eq!(
+            version_notes(log, "2.0.0").as_deref(),
+            Some("#### Ten\n\n## 2FA support\n\nkept")
+        );
+        assert_eq!(version_notes(log, "1.0.0"), None);
+        assert_eq!(version_notes("## 3.0.0 - d\n\n", "3.0.0"), None);
+    }
+
+    #[test]
+    fn version_sections_lists_every_matching_section() {
+        let log = "## 1.0.1 - b\n\n### b\n\n- b fix\n\n## 1.0.1, 2.0.0 - a\n\n### a\n\n- a fix\n";
+        assert_eq!(
+            version_sections(log, "1.0.1"),
+            ["### b\n\n- b fix", "### a\n\n- a fix"]
+        );
+        assert_eq!(
+            version_notes(log, "1.0.1").as_deref(),
+            Some("### b\n\n- b fix")
+        );
     }
 }

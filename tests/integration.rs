@@ -2229,3 +2229,76 @@ fn version_dry_run_keeps_empty_changesets() {
     .unwrap();
     assert_eq!(count_changeset_files(dir.path()), 1);
 }
+
+// ---------- Git identity ----------
+
+/// A fresh CI agent has no git identity. Annotated tags still need a
+/// tagger, so the CLI supplies one instead of failing.
+#[test]
+fn tag_works_without_a_git_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let id = [
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+    ];
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(id)
+            .args(args)
+            .current_dir(p)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(
+        p.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    std::fs::write(
+        p.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"1.1.0\"\n",
+    )
+    .unwrap();
+    git(&["commit", "-q", "-am", "bump"]);
+
+    // No global or system config, and no guessing an identity from the host.
+    let out = Command::new(env!("CARGO_BIN_EXE_changesetter"))
+        .args(["tag", "--since", &base])
+        .current_dir(p)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+        .env("GIT_CONFIG_VALUE_0", "true")
+        .env("GIT_CONFIG_KEY_1", "tag.gpgSign")
+        .env("GIT_CONFIG_VALUE_1", "false")
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+        .env_remove("EMAIL")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let tagger = git(&["tag", "-l", "--format=%(taggername)", "v1.1.0"]);
+    assert_eq!(tagger, "changesetter");
+}

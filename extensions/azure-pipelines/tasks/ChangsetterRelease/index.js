@@ -3,6 +3,7 @@ const https = require("https");
 const { execSync, execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 // prepare.js copies shared/ into each task, since Azure Pipelines ships every
 // task folder on its own.
 const { install } = require("./shared/install");
@@ -126,8 +127,7 @@ function exec(cmd) {
   return execSync(cmd, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 }
 
-// No shell: the version comes from Cargo.toml or package.json, and a value
-// like `$(...)` must reach git as a literal argument.
+// No shell: shas and paths must reach git as literal arguments.
 function git(...args) {
   return execFileSync("git", args, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 }
@@ -185,57 +185,65 @@ async function directRelease(binDir) {
   console.log(`Released: ${releases.map((r) => `${r.name}@${r.version}`).join(", ")}`);
 }
 
-// The version PR already bumped the manifest, so it holds the version being
-// released. Not `changesetter status`: changesets merged while the version PR
-// was open would make it report another package's version. Only a literal
-// `version = "..."` counts, so `version.workspace = true` is not taken as one.
-function readManifestVersion() {
-  try {
-    const cargoToml = fs.readFileSync("Cargo.toml", "utf8");
-    const match = cargoToml.match(/^version\s*=\s*"([^"]+)"/m);
-    if (match) return match[1];
-  } catch {}
-  try {
-    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-    if (typeof pkg.version === "string" && pkg.version) return pkg.version;
-  } catch {}
-  return "";
-}
-
-// Returns the commit an existing remote tag points to, or "" if it is absent.
-// Asks origin directly: a self-hosted agent can keep a local tag from an
-// earlier run that never got pushed.
-function remoteTagCommit(tag) {
-  const out = git("ls-remote", "--tags", "origin", `refs/tags/${tag}`, `refs/tags/${tag}^{}`).trim();
-  if (!out) return "";
-  const lines = out.split("\n").map((l) => l.split(/\s+/));
-  const peeled = lines.find(([, ref]) => ref.endsWith("^{}"));
-  return (peeled || lines[0])[0].toLowerCase();
-}
-
-function tagRelease(version, commitId) {
-  const tag = `v${version}`;
-  const existing = remoteTagCommit(tag);
-  if (existing && existing !== commitId) {
-    // Another commit already shipped as this version. Reporting a release
-    // here would let downstream steps publish this commit under that version.
-    throw new Error(
-      `Version collision: tag ${tag} already exists on origin at ${existing}, not at ${commitId}. ` +
-        "Bump the version in a new version PR, or move the tag if it is wrong."
-    );
+// The commit the version PR merged into. Each package whose version differs
+// between it and the merge was released by the PR. The API's target commit
+// works for every merge strategy; a shallow checkout may not have it yet.
+function mergeTarget(mergedPr, commitId) {
+  const target = mergedPr.lastMergeTargetCommit && mergedPr.lastMergeTargetCommit.commitId;
+  if (target) {
+    const sha = String(target).toLowerCase();
+    try {
+      git("cat-file", "-e", `${sha}^{commit}`);
+    } catch {
+      git("fetch", "--quiet", "--depth=1", "origin", sha);
+    }
+    return sha;
   }
-  if (existing) {
-    console.log(`Tag ${tag} already exists on origin at ${commitId}, skipping tag creation`);
-  } else {
-    // -f replaces a stale local tag that a previous run created but never pushed.
-    git("tag", "-a", "-f", tag, "-m", `Release ${version}`, "--cleanup=verbatim", commitId);
-    git("push", "origin", `refs/tags/${tag}`);
-    console.log(`Tagged ${tag}`);
+  try {
+    return git("rev-parse", "--verify", `${commitId}^1`).trim().toLowerCase();
+  } catch {
+    throw new Error(`Could not find the commit version PR #${mergedPr.pullRequestId} merged into`);
+  }
+}
+
+// The CLI names, creates and atomically pushes the tags, so the tag format and
+// [tag] skip apply as they do for `changesetter release`. It checks origin
+// rather than local tags, and fails on a tag that already sits on another
+// commit. It reads versions from the working tree, so a HEAD that moved off
+// the merge gets a worktree at the merge.
+function tagRelease(bin, commitId, since) {
+  let worktree = null;
+  if (git("rev-parse", "HEAD").trim().toLowerCase() !== commitId) {
+    worktree = path.join(os.tmpdir(), `changesetter-tag-${process.pid}-${Date.now()}`);
+    git("worktree", "add", "--quiet", "--detach", worktree, commitId);
+  }
+
+  let output;
+  try {
+    output = execFileSync(bin, ["tag", "--since", since, "--push", "--output", "json"], {
+      cwd: worktree || process.cwd(),
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (err) {
+    const stderr = String(err.stderr || "").trim();
+    throw new Error(stderr.replace(/^error: /, "") || err.message);
+  } finally {
+    if (worktree) git("worktree", "remove", "--force", worktree);
+  }
+
+  const tags = JSON.parse(output).tags || [];
+  for (const t of tags) {
+    console.log(t.created ? `Tagged ${t.tag}` : `Tag ${t.tag} already exists on origin at ${commitId}`);
+  }
+  if (tags.length === 0) {
+    console.log("No package with a tag changed version in this merge");
+    return;
   }
 
   tl.setVariable("released", "true");
-  tl.setVariable("releases", JSON.stringify([{ name: path.basename(process.cwd()), version, tag }]));
-  tl.setVariable("version", version);
+  tl.setVariable("releases", JSON.stringify(tags.map(({ name, version, tag }) => ({ name, version, tag }))));
+  tl.setVariable("version", tags[0].version);
 }
 
 async function versionPrRelease(binDir, prTitle) {
@@ -251,11 +259,7 @@ async function versionPrRelease(binDir, prTitle) {
   const mergedPr = await findMergedVersionPr(commitId);
   if (mergedPr) {
     console.log(`Commit ${commitId} is the merge of version PR #${mergedPr.pullRequestId}, releasing`);
-    const version = readManifestVersion();
-    if (!version) {
-      throw new Error("Could not determine the released version from Cargo.toml or package.json");
-    }
-    tagRelease(version, commitId);
+    tagRelease(bin, commitId, mergeTarget(mergedPr, commitId));
   } else {
     console.log(`Commit ${commitId} is not a version PR merge`);
   }
@@ -316,7 +320,7 @@ async function run() {
   }
 }
 
-module.exports = { run, versionPrRelease, findMergedVersionPr, readManifestVersion };
+module.exports = { run, versionPrRelease, findMergedVersionPr };
 
 if (require.main === module) {
   run();

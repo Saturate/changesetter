@@ -94,6 +94,15 @@ update_internal_dependencies = "patch"
 
 Dependencies are detected from manifest files: `[dependencies]` in Cargo.toml, `dependencies`/`devDependencies` in package.json, `dependencies` in Chart.yaml.
 
+A cascaded package's changelog gets an entry naming each bumped package it depends on with its new version:
+
+```md
+#### Updated dependencies
+
+- @acme/auth@0.2.0
+- @acme/ui@0.0.1
+```
+
 ## Changelog
 
 ```toml
@@ -263,6 +272,17 @@ format = "v{version}"
 | `{name}` | The package name |
 
 Defaults: `v{version}` for single-package repos, `{name}@v{version}` for monorepos. A repo counts as single-package when exactly one package is left after `ignore`, so a configured `[[package]]` with its helper manifests ignored gets plain `v1.2.3` tags.
+
+### Packages without tags
+
+`skip` lists packages that are versioned and get changelogs but never a git tag. Each entry is a glob (`*` matches any run of characters, `/` included; `?` one character) matched against the package name and against its path relative to the repo root:
+
+```toml
+[tag]
+skip = ["packages/*"]
+```
+
+Use it for internal workspace packages that only exist to be consumed by the apps next to them. With `update_internal_dependencies` on, a bump to such a package still cascades to its dependents, and those get their tags. `release` and `tag` create no tag for a skipped package; in the `--output json` of `release` and `status` its `tag` is `null`. Unlike `ignore`, a skipped package keeps its version bumps and changelog.
 
 ## Release
 

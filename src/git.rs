@@ -213,8 +213,35 @@ pub fn tag_exists(repo_root: &Path, tag: &str) -> anyhow::Result<bool> {
     }
 }
 
+/// `-c user.name=… -c user.email=…` when git has no usable identity, as on a
+/// fresh CI agent, so a commit or annotated tag doesn't fail with "Committer
+/// identity unknown". Empty when an identity is configured or set through
+/// the environment, which then wins.
+pub fn identity_fallback(repo_root: &Path) -> anyhow::Result<Vec<String>> {
+    if run_git(repo_root, &["var", "GIT_COMMITTER_IDENT"])?.is_some() {
+        return Ok(Vec::new());
+    }
+    Ok([
+        "-c",
+        "user.name=changesetter",
+        "-c",
+        "user.email=changesetter@users.noreply.github.com",
+    ]
+    .map(str::to_string)
+    .to_vec())
+}
+
 pub fn git_tag(repo_root: &Path, tag: &str, message: Option<&str>) -> anyhow::Result<()> {
-    let output = if let Some(msg) = message {
+    // With --cleanup=verbatim a message without a final newline runs into
+    // the signature git appends for tag.gpgSign, and the tag won't verify.
+    let message = message.map(|m| {
+        if m.ends_with('\n') {
+            m.to_string()
+        } else {
+            format!("{m}\n")
+        }
+    });
+    let output = if let Some(msg) = &message {
         Command::new("git")
             .args(["tag", "-a", tag, "-m", msg, "--cleanup=verbatim"])
             .current_dir(repo_root)

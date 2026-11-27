@@ -28,6 +28,8 @@ changesetter add                     # interactive: pick packages, bump level, w
 changesetter check                   # CI: fails if no changeset on the branch
 changesetter status                  # preview: what would release look like?
 changesetter release                 # bump versions, update CHANGELOG.md, commit, tag
+changesetter tag --since HEAD^1      # tag what a merged version PR bumped
+changesetter status --released-by HEAD    # which package versions this commit changed
 changesetter pre enter rc            # enter pre-release mode
 changesetter pre exit                # exit pre-release mode
 ```
@@ -199,6 +201,7 @@ none_bump_heading = "Internal"
 [tag]
 format = "v{version}"            # single-package (default)
 # format = "{name}@v{version}"   # monorepo (default when >1 package)
+skip = ["packages/*"]            # name/path globs: versioned, never tagged
 
 # Release
 [release]

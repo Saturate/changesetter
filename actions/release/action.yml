@@ -105,6 +105,11 @@ runs:
           VERSION=$(jq -r '.version' <<<"$release")
           CHANGELOG=$(jq -r '.changelog' <<<"$release")
 
+          # `[tag] skip` packages are versioned but get no tag to release.
+          if [ "$TAG" = "null" ]; then
+            continue
+          fi
+
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "GitHub Release ${TAG} already exists"
             continue
@@ -187,7 +192,8 @@ runs:
         DRAFT: ${{ inputs.draft }}
       run: |
         # A version PR merge releases every package whose version differs
-        # from the merge's first parent. Both sides come from the CLI, so the
+        # from the merge's first parent, except those `[tag] skip` leaves
+        # untagged (their tag is null). Both sides come from the CLI, so the
         # tag format, changelog location and ignore list are the config at
         # that commit rather than guesses here.
         WORK="${RUNNER_TEMP:-/tmp}/changesetter-release"
@@ -199,7 +205,7 @@ runs:
 
         CHANGED=$(jq -c --slurpfile before "$WORK/before.json" '
           ($before[0].packages | map({(.name): .version}) | add // {}) as $old
-          | [.packages[] | select($old[.name] != .version)]' "$WORK/after.json")
+          | [.packages[] | select($old[.name] != .version and .tag != null)]' "$WORK/after.json")
 
         RELEASES="[]"
         while read -r pkg; do

@@ -226,23 +226,11 @@ steps:
 
       if [ -n "$MERGED_PR" ]; then
         echo "Commit is the merge of version PR #${MERGED_PR}, tagging"
-        VERSION=$(grep -E '^version[[:space:]]*=[[:space:]]*"' Cargo.toml 2>/dev/null | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
-        [ -n "$VERSION" ] || VERSION=$(jq -r '.version // empty' package.json 2>/dev/null || true)
-        [ -n "$VERSION" ] || { echo "Could not determine version"; exit 1; }
-
-        # The peeled ^{} line, when present, sorts last and names the commit.
-        TAG_COMMIT=$(git ls-remote --tags origin "refs/tags/v${VERSION}" "refs/tags/v${VERSION}^{}" | sort -k2 | tail -1 | cut -f1)
-        if [ -z "$TAG_COMMIT" ]; then
-          # -f: a self-hosted agent can keep a local tag from a run that
-          # never pushed it.
-          git tag -a -f "v${VERSION}" -m "Release ${VERSION}" "$COMMIT"
-          git push origin "refs/tags/v${VERSION}"
-        elif [ "$TAG_COMMIT" = "$COMMIT" ]; then
-          echo "Tag v${VERSION} already exists at this commit, skipping"
-        else
-          echo "Version collision: tag v${VERSION} already exists at ${TAG_COMMIT}, not at ${COMMIT}"
-          exit 1
-        fi
+        # Tags every package whose version the merge changed, in the
+        # configured tag format and minus [tag] skip, and pushes them in one
+        # atomic push. It fails on a version collision: a tag for one of
+        # those versions already on origin at another commit.
+        changesetter tag --since "${COMMIT}^1" --push
       fi
 
       # Changesets merged while the version PR was open still need a version
@@ -304,7 +292,7 @@ For a more integrated experience, changesetter provides an Azure Pipelines exten
 
 The extension wraps the same CLI commands with native Azure DevOps integration: PR comment threads, work item linking, and pipeline variables.
 
-In version-PR mode, the `ChangsetterRelease` task releases only when the commit being built (`Build.SourceVersion`) is the merge commit of a completed `changesetter/version-packages` PR. It reads the version from `Cargo.toml` or `package.json` and creates and pushes the `v<version>` tag on that commit. If the tag already exists on origin at the same commit, it skips the tag and still reports the release, so re-running a failed release build is safe. If the tag exists at a different commit, the task fails with a version collision instead of reporting a release. If changesets were merged while the version PR was open, the same run then opens or updates a new version PR for them. A failed Azure DevOps API call fails the task instead of skipping the release, and so does a failing `changesetter version`, so a half-bumped tree never becomes a version PR.
+In version-PR mode, the `ChangsetterRelease` task releases only when the commit being built (`Build.SourceVersion`) is the merge commit of a completed `changesetter/version-packages` PR. It runs `changesetter tag --since <merge target> --push`, which tags every package whose version the merge changed (`v<version>` in a single-package repo, `<name>@v<version>` in a monorepo, or your `[tag] format`), leaves out packages matched by `[tag] skip`, and pushes the new tags to origin in one atomic push. A tag that already exists on origin at the same commit is skipped and still reported, so re-running a failed release build is safe. If one exists at a different commit, the task fails with a version collision and pushes no tags. The `released`, `releases` (`[{ name, version, tag }]`) and `version` (the first release's) output variables cover the tagged packages. If changesets were merged while the version PR was open, the same run then opens or updates a new version PR for them. A failed Azure DevOps API call fails the task instead of skipping the release, and so does a failing `changesetter version`, so a half-bumped tree never becomes a version PR. The task needs a CLI with `changesetter tag` (0.9.0 or newer); its default `version: latest` installs one.
 
 ## Permissions
 
