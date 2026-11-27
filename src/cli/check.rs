@@ -175,8 +175,12 @@ fn touched_packages(
     changed: &[String],
     changeset_dir: &str,
 ) -> BTreeSet<String> {
+    // A workspace root like `{"private": true}` is detected as a nameless
+    // package, but a monorepo changeset can't name it, so it owns nothing.
+    let monorepo = packages.len() > 1;
     let dirs: Vec<(String, &str)> = packages
         .iter()
+        .filter(|p| !(monorepo && p.name.is_empty()))
         .map(|p| {
             (
                 crate::cli::status::repo_relative(repo_root, &p.path),
@@ -1061,6 +1065,7 @@ mylib: patch
             "apps/web/src/a.ts".to_string(),
             "apps/webx-old/b.ts".to_string(),
             ".changeset/x.md".to_string(),
+            "tools/x.sh".to_string(),
         ];
         let touched = touched_packages(root, &packages, &changed, ".changeset");
         assert_eq!(
