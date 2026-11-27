@@ -5,6 +5,10 @@ on:
     paths:
       - "extensions/azure-pipelines/**"
       - ".github/workflows/azure-extension.yml"
+      # The release task's scenarios run the real `changesetter tag`.
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
 
 permissions:
   contents: read
@@ -17,6 +21,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
       - name: Release task scenarios
         working-directory: extensions/azure-pipelines/tasks/ChangsetterRelease
         run: |
